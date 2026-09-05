@@ -7,7 +7,12 @@ from typing import Any, Optional
 from app.catalog import get_challenge_by_tier_num
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, utcnow_iso
-from app.services.verify import VerifyResult, evaluate_logs, parse_iso
+from app.services.verify import (
+    VerifyResult,
+    evaluate_logs,
+    parse_iso,
+    synthetic_logs_for_goal,
+)
 from app.tadoku.client import resolve_logs_for_user
 
 
@@ -204,10 +209,16 @@ async def confirm_attempt(
     *,
     note: str | None = None,
     force_honor: bool = False,
+    dry_run: bool = False,
+    fake_logs: list[dict[str, Any]] | None = None,
+    method_override: str | None = None,
 ) -> dict[str, Any]:
     """
     Confirm active attempt. Tadoku challenges must pass verify unless force_honor
     (admin/manual only).
+
+    dry_run: evaluate only, never write completed.
+    fake_logs: admin test inject — skip Tadoku fetch, run evaluate_logs on these.
     """
     expire_overdue()
     att = active_attempt(discord_id)
@@ -218,36 +229,69 @@ async def confirm_attempt(
     ends = parse_iso(att["ends_at"])
     if ends.tzinfo is None:
         ends = ends.replace(tzinfo=timezone.utc)
-    if now > ends:
+    if now > ends and not dry_run:
         expire_overdue()
         return {"ok": False, "error": "Challenge window has ended."}
 
     ch_verify = att.get("verify") or "tadoku"
     rt = _runtime()
 
-    if ch_verify == "honor" or force_honor:
+    if force_honor and not fake_logs:
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "would_complete": True,
+                "method": method_override or "manual",
+                "attempt": att,
+                "note": note,
+            }
         return _complete(
             att,
-            method="honor" if ch_verify == "honor" else "manual",
+            method=method_override
+            or ("honor" if ch_verify == "honor" else "manual"),
             evidence={"note": note, "forced": force_honor},
             note=note,
         )
 
+    if ch_verify == "honor" and fake_logs is None and not force_honor:
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "would_complete": True,
+                "method": "honor",
+                "attempt": att,
+                "progress": "Honor challenge — confirm would succeed without Tadoku.",
+            }
+        return _complete(
+            att,
+            method="honor",
+            evidence={"note": note, "forced": False},
+            note=note,
+        )
+
     user = get_user(discord_id)
-    if not user or not user.get("tadoku_user_id"):
-        return {"ok": False, "error": "Link Tadoku first (`/challenge link`)."}
+    logs: list[dict[str, Any]]
+    source = "tadoku"
 
-    started = parse_iso(att["started_at"])
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
+    if fake_logs is not None:
+        logs = list(fake_logs)
+        source = "fake"
+    else:
+        if not user or not user.get("tadoku_user_id"):
+            return {"ok": False, "error": "Link Tadoku first (`/challenge link`)."}
+        started = parse_iso(att["started_at"])
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        logs = await resolve_logs_for_user(
+            tadoku_user_id=user["tadoku_user_id"],
+            contest_id=str(rt["tadoku_contest_id"]),
+            api_base=str(rt["tadoku_api_base"]),
+            since=started,
+            until=min(now, ends),
+        )
 
-    logs = await resolve_logs_for_user(
-        tadoku_user_id=user["tadoku_user_id"],
-        contest_id=str(rt["tadoku_contest_id"]),
-        api_base=str(rt["tadoku_api_base"]),
-        since=started,
-        until=min(now, ends),
-    )
     result = evaluate_logs(
         logs,
         goal_kind=att["goal_kind"],
@@ -257,25 +301,164 @@ async def confirm_attempt(
         pages_per_volume=float(rt["pages_per_volume"]),
         episode_minutes=float(rt["episode_minutes"]),
     )
+    payload = {
+        "progress": result.detail,
+        "verify": _result_dict(result),
+        "log_count": len(logs),
+        "log_source": source,
+        "attempt": att,
+        "tadoku_user_id": (user or {}).get("tadoku_user_id"),
+    }
     if not result.ok:
         return {
             "ok": False,
-            "error": "Tadoku logs do not meet the goal yet.",
-            "progress": result.detail,
-            "verify": _result_dict(result),
-            "log_count": len(logs),
+            "error": "Tadoku logs do not meet the goal yet."
+            if source == "tadoku"
+            else "Fake logs do not meet the goal.",
+            "dry_run": dry_run,
+            **payload,
+        }
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "would_complete": True,
+            "method": method_override
+            or ("tadoku_poll" if source == "tadoku" else "test_fake"),
+            **payload,
         }
     return _complete(
         att,
-        method="tadoku_poll",
+        method=method_override
+        or ("tadoku_poll" if source == "tadoku" else "test_fake"),
         evidence={
             "note": note,
             "verify": _result_dict(result),
             "log_count": len(logs),
+            "log_source": source,
+            "test": source == "fake",
         },
         note=note,
         verify_result=result,
     )
+
+
+async def probe_tadoku_link(
+    discord_id: str | None = None,
+    *,
+    tadoku_user_id: str | None = None,
+    hours_back: float = 48.0,
+) -> dict[str, Any]:
+    """Fetch recent Tadoku logs for a linked user or raw tadoku id (admin test)."""
+    rt = _runtime()
+    uid = (tadoku_user_id or "").strip() or None
+    user = get_user(discord_id) if discord_id else None
+    if not uid:
+        if not user or not user.get("tadoku_user_id"):
+            return {
+                "ok": False,
+                "error": "No Tadoku id — link the user or pass tadoku_user_id.",
+                "user": user,
+            }
+        uid = user["tadoku_user_id"]
+    until = datetime.now(timezone.utc)
+    since = until - timedelta(hours=hours_back)
+    try:
+        logs = await resolve_logs_for_user(
+            tadoku_user_id=uid,
+            contest_id=str(rt["tadoku_contest_id"]),
+            api_base=str(rt["tadoku_api_base"]),
+            since=since,
+            until=until,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"Tadoku fetch failed: {type(exc).__name__}: {exc}"}
+    samples = []
+    for log in logs[:5]:
+        samples.append(
+            {
+                "id": log.get("id"),
+                "created_at": log.get("created_at"),
+                "amount": log.get("amount"),
+                "unit": log.get("unit") or log.get("unit_name"),
+                "tags": log.get("tags"),
+                "description": (log.get("description") or "")[:80],
+            }
+        )
+    return {
+        "ok": True,
+        "tadoku_user_id": uid,
+        "discord_user": user,
+        "contest_id": rt["tadoku_contest_id"],
+        "window_hours": hours_back,
+        "log_count": len(logs),
+        "samples": samples,
+    }
+
+
+async def admin_test_verify(
+    discord_id: str,
+    *,
+    mode: str = "preview_real",
+    apply: bool = False,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """
+    Admin test harness.
+
+    mode:
+      preview_real — dry-run with live Tadoku logs
+      fake_pass    — synthetic logs that should pass
+      fake_fail    — synthetic logs that should fail
+      force        — honor/manual complete without Tadoku
+    apply=True writes completion (except pure fail cases).
+    """
+    mode = (mode or "preview_real").lower().strip()
+    att = active_attempt(discord_id)
+    if not att and mode != "force":
+        # force still needs active attempt via confirm_attempt
+        pass
+
+    rt = _runtime()
+    if mode == "preview_real":
+        return await confirm_attempt(discord_id, note=note, dry_run=not apply)
+    if mode == "force":
+        return await confirm_attempt(
+            discord_id,
+            note=note or "admin test force",
+            force_honor=True,
+            dry_run=not apply,
+            method_override="test_force",
+        )
+    if mode in ("fake_pass", "fake_fail"):
+        if not att:
+            return {"ok": False, "error": "No active challenge to test against."}
+        if (att.get("verify") or "") == "honor" and mode == "fake_pass":
+            # honor challenges don't use logs
+            return await confirm_attempt(
+                discord_id,
+                note=note or "admin test honor",
+                force_honor=True,
+                dry_run=not apply,
+                method_override="test_force",
+            )
+        logs = synthetic_logs_for_goal(
+            goal_kind=att["goal_kind"],
+            goal_amount=float(att["goal_amount"]),
+            media_filter=att.get("media_filter") or "any",
+            param=att.get("param"),
+            meet_goal=(mode == "fake_pass"),
+            pages_per_volume=float(rt["pages_per_volume"]),
+            episode_minutes=float(rt["episode_minutes"]),
+        )
+        return await confirm_attempt(
+            discord_id,
+            note=note or f"admin test {mode}",
+            dry_run=not apply,
+            fake_logs=logs,
+            method_override="test_fake",
+        )
+    return {"ok": False, "error": f"Unknown mode: {mode}"}
 
 
 def _result_dict(r: VerifyResult) -> dict:

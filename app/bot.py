@@ -417,5 +417,241 @@ async def challenge_admin_force(
     )
 
 
+test_group = app_commands.Group(
+    name="test",
+    description="Admin-only tests (Tadoku link, dry-run, fake accept)",
+    parent=challenge_group,
+)
+
+
+def _fmt_test_result(result: dict) -> str:
+    lines = []
+    if result.get("error"):
+        lines.append(f"**Error:** {result['error']}")
+    if result.get("dry_run"):
+        lines.append(
+            f"**Dry-run** — would_complete={result.get('would_complete')} "
+            f"method=`{result.get('method')}`"
+        )
+    elif result.get("ok"):
+        lines.append(f"**Applied** method=`{result.get('method')}`")
+    if result.get("progress"):
+        lines.append(f"Progress: {result['progress']}")
+    if result.get("log_count") is not None:
+        lines.append(
+            f"Logs: **{result['log_count']}** (source=`{result.get('log_source')}`)"
+        )
+    if result.get("tadoku_user_id"):
+        lines.append(f"Tadoku: `{result['tadoku_user_id']}`")
+    att = result.get("attempt") or {}
+    if att.get("title"):
+        lines.append(
+            f"Attempt: **{att.get('tier')} #{att.get('number')} {att.get('title')}** "
+            f"(id={att.get('id')})"
+        )
+    v = result.get("verify") or {}
+    if v:
+        lines.append(
+            f"Verify: ok={v.get('ok')} {v.get('progress')} / {v.get('target')} "
+            f"{v.get('unit_label')}"
+        )
+    return "\n".join(lines) or str(result)[:1500]
+
+
+@test_group.command(
+    name="link",
+    description="Admin: probe Tadoku link + fetch recent logs (real API)",
+)
+@app_commands.describe(
+    user="Discord member (uses their linked Tadoku id)",
+    tadoku_user_id="Or paste a Tadoku UUID / profile URL directly",
+    hours="How far back to scan (default 48)",
+)
+async def challenge_test_link(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+    tadoku_user_id: Optional[str] = None,
+    hours: app_commands.Range[float, 1, 720] = 48.0,
+) -> None:
+    if not is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    uid = None
+    if tadoku_user_id:
+        m = re.search(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            tadoku_user_id,
+            re.I,
+        )
+        uid = m.group(0) if m else tadoku_user_id.strip()
+    target = user or interaction.user
+    result = await att_svc.probe_tadoku_link(
+        str(target.id),
+        tadoku_user_id=uid,
+        hours_back=float(hours),
+    )
+    if not result.get("ok"):
+        await interaction.followup.send(result.get("error") or "Failed", ephemeral=True)
+        return
+    lines = [
+        f"**Tadoku probe** for {target.mention}",
+        f"Tadoku id: `{result['tadoku_user_id']}`",
+        f"Contest: `{result['contest_id']}`",
+        f"Logs in last {result['window_hours']:g}h: **{result['log_count']}**",
+    ]
+    for s in result.get("samples") or []:
+        lines.append(
+            f"- `{s.get('created_at')}` amt={s.get('amount')} {s.get('unit')} "
+            f"tags={s.get('tags')} · {s.get('description')}"
+        )
+    if result["log_count"] == 0:
+        lines.append(
+            "_No logs in window — link may still be valid; try a larger `hours` "
+            "or confirm the UUID._"
+        )
+    await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
+
+
+@test_group.command(
+    name="preview",
+    description="Admin: dry-run confirm with REAL Tadoku logs (no complete)",
+)
+@app_commands.describe(user="Member with an active challenge")
+async def challenge_test_preview(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+) -> None:
+    if not is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    result = await att_svc.admin_test_verify(str(target.id), mode="preview_real", apply=False)
+    await interaction.followup.send(
+        f"**preview_real** for {target.mention}\n{_fmt_test_result(result)}",
+        ephemeral=True,
+    )
+
+
+@test_group.command(
+    name="fake",
+    description="Admin: synthetic logs pass/fail (no Tadoku writes)",
+)
+@app_commands.describe(
+    user="Member with an active challenge",
+    meet_goal="Generate logs that pass (true) or fail (false)",
+    apply="If true, mark attempt completed as test_fake (use carefully)",
+    announce="If apply: post public completion",
+    rewards="If apply: grant reward roles",
+)
+async def challenge_test_fake(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+    meet_goal: bool = True,
+    apply: bool = False,
+    announce: bool = False,
+    rewards: bool = False,
+) -> None:
+    if not is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    mode = "fake_pass" if meet_goal else "fake_fail"
+    result = await att_svc.admin_test_verify(
+        str(target.id),
+        mode=mode,
+        apply=apply and meet_goal,
+        note=f"admin test {mode} by {interaction.user.id}",
+    )
+    extra = ""
+    if apply and meet_goal and result.get("ok") and not result.get("dry_run"):
+        att = result.get("attempt") or {}
+        if rewards and interaction.guild and isinstance(target, discord.Member):
+            got = await apply_rewards(target, tier=att.get("tier") or "easy")
+            extra += f"\nRewards: {', '.join(got) or 'none'}"
+        if announce and interaction.guild:
+            await announce_completion(
+                interaction.client,
+                guild=interaction.guild,
+                user=target,
+                title=att.get("title") or "?",
+                tier=att.get("tier") or "?",
+                number=int(att.get("number") or 0),
+                param=att.get("param"),
+                method="test_fake",
+            )
+            extra += "\nAnnounced."
+    await interaction.followup.send(
+        f"**{mode}** apply={apply} for {target.mention}\n"
+        f"{_fmt_test_result(result)}{extra}\n"
+        f"_Synthetic logs only — nothing written to Tadoku._",
+        ephemeral=True,
+    )
+
+
+@test_group.command(
+    name="accept",
+    description="Admin: simulate acceptance (force / fake / real)",
+)
+@app_commands.describe(
+    user="Member with an active challenge",
+    mode="force=manual, fake=synthetic pass, real=live Tadoku",
+    apply="Write completion (false = dry-run only)",
+    announce="Public announce if apply",
+    rewards="Grant roles if apply",
+)
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="force (no Tadoku)", value="force"),
+        app_commands.Choice(name="fake pass (synthetic logs)", value="fake_pass"),
+        app_commands.Choice(name="real Tadoku logs", value="preview_real"),
+    ]
+)
+async def challenge_test_accept(
+    interaction: discord.Interaction,
+    mode: app_commands.Choice[str],
+    user: Optional[discord.Member] = None,
+    apply: bool = False,
+    announce: bool = False,
+    rewards: bool = False,
+) -> None:
+    if not is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    result = await att_svc.admin_test_verify(
+        str(target.id),
+        mode=mode.value,
+        apply=apply,
+        note=f"admin test accept {mode.value} by {interaction.user.id}",
+    )
+    extra = ""
+    if apply and result.get("ok") and not result.get("dry_run"):
+        att = result.get("attempt") or {}
+        if rewards and interaction.guild and isinstance(target, discord.Member):
+            got = await apply_rewards(target, tier=att.get("tier") or "easy")
+            extra += f"\nRewards: {', '.join(got) or 'none'}"
+        if announce and interaction.guild:
+            await announce_completion(
+                interaction.client,
+                guild=interaction.guild,
+                user=target,
+                title=att.get("title") or "?",
+                tier=att.get("tier") or "?",
+                number=int(att.get("number") or 0),
+                param=att.get("param"),
+                method=str(result.get("method") or mode.value),
+            )
+            extra += "\nAnnounced."
+    await interaction.followup.send(
+        f"**accept/{mode.value}** apply={apply} for {target.mention}\n"
+        f"{_fmt_test_result(result)}{extra}",
+        ephemeral=True,
+    )
+
+
 def build_bot() -> ChallengeBot:
     return ChallengeBot()

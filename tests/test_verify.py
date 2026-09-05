@@ -1,6 +1,15 @@
-"""Minimal checks for goal evaluation."""
+"""Goal evaluation + synthetic logs (no DB)."""
 
-from app.services.verify import evaluate_logs
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.services.verify import evaluate_logs, synthetic_logs_for_goal
 
 
 def test_characters():
@@ -87,6 +96,55 @@ def test_volumes_from_pages():
     assert abs(r.progress - 5.0) < 0.01
 
 
+def test_episodes_unit():
+    logs = [
+        {
+            "id": "1",
+            "amount": 8,
+            "unit": "episodes",
+            "tags": ["anime"],
+            "description": "Show S01",
+            "activity": "listening",
+        }
+    ]
+    r = evaluate_logs(
+        logs,
+        goal_kind="episodes",
+        goal_amount=8,
+        media_filter="anime",
+        param="Show",
+    )
+    assert r.ok
+    assert r.progress == 8
+
+
+def test_immersion_hours():
+    logs = [
+        {
+            "id": "1",
+            "duration_seconds": 4 * 3600,
+            "tags": ["anime"],
+            "description": "mix",
+            "activity": "listening",
+        },
+        {
+            "id": "2",
+            "duration_seconds": 4 * 3600,
+            "tags": ["youtube"],
+            "description": "mix",
+            "activity": "listening",
+        },
+    ]
+    r = evaluate_logs(
+        logs,
+        goal_kind="immersion_hours",
+        goal_amount=8,
+        media_filter="any",
+    )
+    assert r.ok
+    assert abs(r.progress - 8.0) < 0.01
+
+
 def test_honor_complete_work():
     r = evaluate_logs(
         [],
@@ -96,6 +154,63 @@ def test_honor_complete_work():
     )
     assert not r.ok
     assert r.method == "honor"
+
+
+def test_synthetic_pass_fail():
+    logs = synthetic_logs_for_goal(
+        goal_kind="characters",
+        goal_amount=30000,
+        media_filter="vn",
+        param="Game X",
+        meet_goal=True,
+    )
+    r = evaluate_logs(
+        logs,
+        goal_kind="characters",
+        goal_amount=30000,
+        media_filter="vn",
+        param="Game X",
+    )
+    assert r.ok
+    logs_fail = synthetic_logs_for_goal(
+        goal_kind="characters",
+        goal_amount=30000,
+        media_filter="vn",
+        param="Game X",
+        meet_goal=False,
+    )
+    r2 = evaluate_logs(
+        logs_fail,
+        goal_kind="characters",
+        goal_amount=30000,
+        media_filter="vn",
+        param="Game X",
+    )
+    assert not r2.ok
+
+
+def test_synthetic_volumes_and_episodes():
+    for kind, amount, media in (
+        ("volumes", 5, "manga"),
+        ("episodes", 8, "anime"),
+        ("minutes", 180, "youtube"),
+        ("immersion_hours", 8, "any"),
+    ):
+        logs = synthetic_logs_for_goal(
+            goal_kind=kind,
+            goal_amount=amount,
+            media_filter=media,
+            param="Test",
+            meet_goal=True,
+        )
+        r = evaluate_logs(
+            logs,
+            goal_kind=kind,
+            goal_amount=amount,
+            media_filter=media,
+            param="Test",
+        )
+        assert r.ok, (kind, r.detail)
 
 
 def test_param_filters_out():
@@ -120,9 +235,8 @@ def test_param_filters_out():
 
 
 if __name__ == "__main__":
-    test_characters()
-    test_minutes_youtube()
-    test_volumes_from_pages()
-    test_honor_complete_work()
-    test_param_filters_out()
-    print("ok")
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print("ok", name)
+    print("test_verify ok")

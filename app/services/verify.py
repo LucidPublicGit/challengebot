@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 _EP_RE = re.compile(r"[Ss]?\d{0,2}[Ee](?P<ep>\d{1,3})")
@@ -322,3 +322,103 @@ def parse_iso(dt: str) -> datetime:
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     return datetime.fromisoformat(s)
+
+
+def synthetic_logs_for_goal(
+    *,
+    goal_kind: str,
+    goal_amount: float,
+    media_filter: str = "any",
+    param: str | None = None,
+    meet_goal: bool = True,
+    pages_per_volume: float = 180.0,
+    episode_minutes: float = 24.0,
+) -> list[dict[str, Any]]:
+    """
+    Build fake Tadoku-shaped logs for admin tests (no network, no real logs).
+    meet_goal=False produces ~half target so verify should fail.
+    """
+    kind = (goal_kind or "").lower()
+    target = float(goal_amount)
+    amt = target if meet_goal else max(target * 0.4, 0.0)
+    if kind not in ("complete_work", "immersion_hours") and amt == 0 and meet_goal:
+        amt = target
+    media = (media_filter or "any").lower()
+    tag = {
+        "manga": "manga",
+        "anime": "anime",
+        "youtube": "youtube",
+        "vn": "vn",
+        "visual_novel": "vn",
+        "book": "book",
+        "reading": "book",
+        "any": "anime",
+    }.get(media, media if media != "any" else "anime")
+    title = (param or "Test Work").strip() or "Test Work"
+    base = {
+        "id": f"fake-{'pass' if meet_goal else 'fail'}-1",
+        "tags": [tag],
+        "description": title,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if kind == "characters":
+        return [
+            {
+                **base,
+                "amount": amt,
+                "unit": "characters",
+                "activity": "reading",
+            }
+        ]
+    if kind == "minutes":
+        return [
+            {
+                **base,
+                "duration_seconds": int(amt * 60),
+                "amount": amt,
+                "unit": "minutes",
+                "activity": "listening",
+            }
+        ]
+    if kind == "immersion_hours":
+        mins = amt * 60.0
+        return [
+            {
+                **base,
+                "duration_seconds": int(mins * 60),
+                "amount": mins,
+                "unit": "minutes",
+                "activity": "listening",
+                "tags": ["anime", "youtube"],
+            }
+        ]
+    if kind == "volumes":
+        pages = amt * float(pages_per_volume or 180.0)
+        return [
+            {
+                **base,
+                "amount": pages,
+                "unit": "comic pages",
+                "activity": "reading",
+                "tags": ["manga"],
+                "description": f"{title} vol 1",
+            }
+        ]
+    if kind == "episodes":
+        # Prefer explicit episode units so we don't depend on description parsing alone
+        return [
+            {
+                **base,
+                "amount": amt,
+                "unit": "episodes",
+                "activity": "listening",
+                "tags": ["anime"],
+                "description": f"{title} S01E01",
+                "duration_seconds": int(amt * float(episode_minutes or 24) * 60),
+            }
+        ]
+    if kind == "complete_work":
+        # Honor path — empty logs; complete_work never auto-passes via evaluate
+        return []
+    return [{**base, "amount": amt, "unit": "characters", "activity": "reading"}]
