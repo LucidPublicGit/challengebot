@@ -1,0 +1,13 @@
+services:
+  challengetracker:
+    build: .
+    container_name: challengetracker
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${UI_PORT:-8090}:8090"
+    volumes:
+      - ./data:/app/data
+      - ./challenges:/app/challenges:ro
+    # Single replica only — SQLite one-writer.

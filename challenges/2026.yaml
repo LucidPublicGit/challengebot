@@ -1,0 +1,209 @@
+year: 2026
+challenges:
+  # Easy
+  - id: easy-1
+    tier: easy
+    number: 1
+    title: Manga Mini-Marathon
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: volumes
+    goal_amount: 5
+    media_filter: manga
+    description: Read at least 5 full manga volumes in one day.
+
+  - id: easy-2
+    tier: easy
+    number: 2
+    title: Anime Sprint
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: episodes
+    goal_amount: 8
+    media_filter: anime
+    description: Watch at least 8 anime episodes in one day.
+
+  - id: easy-3
+    tier: easy
+    number: 3
+    title: YouTube Deep Dive
+    param_label: creator / topic
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: minutes
+    goal_amount: 180
+    media_filter: youtube
+    description: Watch at least 3 hours of Japanese YouTube content in one day.
+
+  - id: easy-4
+    tier: easy
+    number: 4
+    title: VN 30k
+    param_label: game
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: characters
+    goal_amount: 30000
+    media_filter: vn
+    description: Read at least 30,000 Japanese characters from a visual novel in one day.
+
+  # Medium
+  - id: medium-1
+    tier: medium
+    number: 1
+    title: Manga 10
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: volumes
+    goal_amount: 10
+    media_filter: manga
+    description: Read at least 10 full manga volumes in one day.
+
+  - id: medium-2
+    tier: medium
+    number: 2
+    title: Anime 15
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: episodes
+    goal_amount: 15
+    media_filter: anime
+    description: Watch at least 15 anime episodes in one day.
+
+  - id: medium-3
+    tier: medium
+    number: 3
+    title: YouTube Workday
+    param_label: creator / topic
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: minutes
+    goal_amount: 360
+    media_filter: youtube
+    description: Watch at least 6 hours of Japanese YouTube content in one day.
+
+  - id: medium-4
+    tier: medium
+    number: 4
+    title: VN 50k
+    param_label: game
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: characters
+    goal_amount: 50000
+    media_filter: vn
+    description: Read at least 50,000 Japanese characters from a visual novel in one day.
+
+  # Hard
+  - id: hard-1
+    tier: hard
+    number: 1
+    title: Novel in a Day
+    param_label: book
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: book
+    description: Read one complete Japanese novel from front to back in a single day.
+
+  - id: hard-2
+    tier: hard
+    number: 2
+    title: Manga 15
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: volumes
+    goal_amount: 15
+    media_filter: manga
+    description: Read at least 15 full manga volumes in one day.
+
+  - id: hard-3
+    tier: hard
+    number: 3
+    title: Anime 20
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: episodes
+    goal_amount: 20
+    media_filter: anime
+    description: Watch at least 20 anime episodes in one day.
+
+  - id: hard-4
+    tier: hard
+    number: 4
+    title: VN 100k
+    param_label: game
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: characters
+    goal_amount: 100000
+    media_filter: vn
+    description: Read at least 100,000 Japanese characters from a visual novel in one day.
+
+  - id: hard-5
+    tier: hard
+    number: 5
+    title: 8-Hour Immersion Day
+    param_label: null
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 8
+    media_filter: any
+    description: Complete at least 8 hours of immersion in any combination of approved media.
+
+  # Ota-Master
+  - id: ota-1
+    tier: ota_master
+    number: 1
+    title: 200k Reading Day
+    param_label: work(s)
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: characters
+    goal_amount: 200000
+    media_filter: reading
+    description: Read at least 200,000 Japanese characters in one day.
+
+  - id: ota-2
+    tier: ota_master
+    number: 2
+    title: Manga 25
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: volumes
+    goal_amount: 25
+    media_filter: manga
+    description: Read at least 25 full manga volumes in one day.
+
+  - id: ota-3
+    tier: ota_master
+    number: 3
+    title: Anime 30
+    param_label: series
+    time_limit_hours: 24
+    verify: tadoku
+    goal_kind: episodes
+    goal_amount: 30
+    media_filter: anime
+    description: Watch at least 30 anime episodes in one day.
+
+  - id: ota-4
+    tier: ota_master
+    number: 4
+    title: 12-Hour Immersion Day
+    param_label: null
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 12
+    media_filter: any
+    description: Complete at least 12 hours of immersion in any combination of approved media.
