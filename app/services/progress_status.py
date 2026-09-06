@@ -1,7 +1,7 @@
 """Automatic channel status posts for active challenges.
 
 v1:
-  - Time milestones (25/50/75% of window + 1h left) for ALL actives
+  - Time milestones: short windows (<7d) 50% + 1h left; long windows 25/50/75% + 1h left
   - Goal milestones (25/50/75% of target + goal-met hint) for verify=tadoku only
   - Honor never gets log/goal-based posts
 """
@@ -20,10 +20,14 @@ from app.services.verify import parse_iso
 
 logger = logging.getLogger(__name__)
 
-TIME_FRACS = (0.25, 0.5, 0.75)
+TIME_FRACS_LONG = (0.25, 0.5, 0.75)  # >= 7 day windows
+TIME_FRACS_SHORT = (0.5,)  # day-scale challenges: halfway only
+TIME_LONG_WINDOW_SEC = 7 * 24 * 3600
 GOAL_FRACS = (0.25, 0.5, 0.75)
 ONE_H_LEFT = "1h_left"
 GOAL_MET = "goal_met"
+# back-compat alias
+TIME_FRACS = TIME_FRACS_LONG
 
 
 def _runtime() -> dict[str, Any]:
@@ -52,7 +56,7 @@ class StatusEvent:
     mark_time: list  # floats or ONE_H_LEFT
     mark_goal: list  # floats
     mark_goal_met: bool = False
-    kind: str = "active"  # announce card kind
+    kind: str = "status"  # text status post (not lifecycle card)
 
 
 def list_active_attempts() -> list[dict]:
@@ -160,12 +164,11 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
     verify = (att.get("verify") or "tadoku").lower()
     honor = verify == "honor"
     events: list[StatusEvent] = []
-    new_hits: list = []
+    fracs = TIME_FRACS_LONG if total >= TIME_LONG_WINDOW_SEC else TIME_FRACS_SHORT
 
-    for m in TIME_FRACS:
+    for m in fracs:
         key = round(float(m), 2)
         if frac + 1e-9 >= m and key not in hit_set:
-            new_hits.append(key)
             hit_set.add(key)
             primary = _time_label(m)
             if honor:
@@ -182,6 +185,7 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
                     secondary=secondary,
                     mark_time=[key],
                     mark_goal=[],
+                    kind="status",
                 )
             )
 
@@ -191,7 +195,6 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
         and 0 < remaining <= 3600
         and ONE_H_LEFT not in hit_set
     ):
-        new_hits.append(ONE_H_LEFT)
         if honor:
             secondary = (
                 f"{_fmt_remaining(remaining)} · honor · "
@@ -206,6 +209,7 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
                 secondary=secondary,
                 mark_time=[ONE_H_LEFT],
                 mark_goal=[],
+                kind="status",
             )
         )
 
@@ -301,6 +305,7 @@ async def check_goal_milestones(
                     secondary=detail,
                     mark_time=[],
                     mark_goal=[key],
+                    kind="status",
                 )
             )
 
@@ -313,6 +318,7 @@ async def check_goal_milestones(
                 mark_time=[],
                 mark_goal=[],
                 mark_goal_met=True,
+                kind="status",
             )
         )
 

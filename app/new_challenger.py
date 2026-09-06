@@ -154,6 +154,94 @@ def _avatar_image(avatar_bytes: Optional[bytes], size: int) -> Image.Image:
     return out
 
 
+def _crop_white_letterbox(im: Image.Image, thr: int = 242) -> Image.Image:
+    """Strip near-white letterbox bars (templates are often square-padded rectangles)."""
+    rgb = im.convert("RGB")
+    w, h = rgb.size
+    px = rgb.load()
+
+    def mostly_white_row(y: int) -> bool:
+        step = max(1, w // 64)
+        n = total = 0
+        for x in range(0, w, step):
+            r, g, b = px[x, y]
+            total += 1
+            if r >= thr and g >= thr and b >= thr:
+                n += 1
+        return total > 0 and n / total >= 0.90
+
+    def mostly_white_col(x: int) -> bool:
+        step = max(1, h // 64)
+        n = total = 0
+        for y in range(0, h, step):
+            r, g, b = px[x, y]
+            total += 1
+            if r >= thr and g >= thr and b >= thr:
+                n += 1
+        return total > 0 and n / total >= 0.90
+
+    y0 = 0
+    while y0 < h - 1 and mostly_white_row(y0):
+        y0 += 1
+    y1 = h - 1
+    while y1 > y0 and mostly_white_row(y1):
+        y1 -= 1
+    x0 = 0
+    while x0 < w - 1 and mostly_white_col(x0):
+        x0 += 1
+    x1 = w - 1
+    while x1 > x0 and mostly_white_col(x1):
+        x1 -= 1
+    # pad 1px so edges aren't harsh
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w - 1, x1), min(h - 1, y1)
+    if x1 - x0 < w * 0.4 or y1 - y0 < h * 0.3:
+        return im  # safety: don't nuke the image
+    return im.crop((x0, y0, x1 + 1, y1 + 1))
+
+
+def _append_tier_strip(canvas: Image.Image, tier: str) -> Image.Image:
+    """Dark tier bar under the cropped banner (not over letterbox)."""
+    try:
+        from app.challenge_card import ACCENT_GOLD, TIER_COLOR, TIER_LABEL
+    except Exception:  # noqa: BLE001
+        return canvas
+
+    tier_key = (tier or "").lower().strip()
+    tc = TIER_COLOR.get(tier_key, (150, 128, 226))
+    if tier_key == "ota_master":
+        tc = ACCENT_GOLD
+    w, h = canvas.size
+    bar_h = max(22, h // 14)
+    out = Image.new("RGBA", (w, h + bar_h), (12, 10, 14, 255))
+    out.paste(canvas, (0, 0), canvas if canvas.mode == "RGBA" else None)
+    draw = ImageDraw.Draw(out)
+    draw.rectangle((0, h, w, h + bar_h), fill=(12, 10, 14, 255))
+    draw.rectangle((0, h, w, h + 3), fill=(*tc, 255))
+    label = TIER_LABEL.get(tier_key, tier_key.replace("_", " ").title())
+    if tier_key == "ota_master":
+        label = "★ OTA-MASTER"
+    try:
+        font = ImageFont.truetype("C:/Windows/Fonts/segoeui.ttf", max(12, bar_h - 8))
+    except OSError:
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                max(11, bar_h - 8),
+            )
+        except OSError:
+            font = ImageFont.load_default()
+    # center tier label
+    tw = draw.textlength(label.upper(), font=font)
+    draw.text(
+        ((w - tw) / 2, h + (bar_h - font.size) / 2),
+        label.upper(),
+        fill=(*tc, 255),
+        font=font,
+    )
+    return out
+
+
 def render_new_challenger(
     avatar_bytes: Optional[bytes] = None,
     *,
@@ -163,7 +251,8 @@ def render_new_challenger(
 ) -> bytes | None:
     """Composite avatar into a random (or given) template; return PNG bytes.
 
-    Optional tier draws a thin colored bar + label under the banner.
+    Crops baked-in white letterbox so the banner stays a true rectangle.
+    Optional tier bar is appended under the art (centered label).
     """
     path = template or pick_template(rng)
     if path is None:
@@ -200,41 +289,12 @@ def render_new_challenger(
     overlay.putalpha(inv)
     canvas = Image.alpha_composite(canvas, overlay)
 
-    # Tier accent strip under banner (matches challenge card language)
+    # Drop square white pads — keep native rectangle
+    canvas = _crop_white_letterbox(canvas)
+
     if tier:
         try:
-            from app.challenge_card import (
-                ACCENT_GOLD,
-                TIER_COLOR,
-                TIER_LABEL,
-                _mix,
-            )
-
-            tier_key = (tier or "").lower().strip()
-            tc = TIER_COLOR.get(tier_key, (150, 128, 226))
-            if tier_key == "ota_master":
-                tc = ACCENT_GOLD
-            w, h = canvas.size
-            bar_h = max(10, h // 18)
-            draw = ImageDraw.Draw(canvas)
-            # draw over bottom letterbox if present, else append feel via overlay line
-            y_bar = h - bar_h - 4
-            draw.rectangle((0, y_bar, w, h), fill=(12, 10, 14, 230))
-            draw.rectangle((0, y_bar, w, y_bar + 3), fill=(*tc, 255))
-            label = TIER_LABEL.get(tier_key, tier_key.replace("_", " ").title())
-            if tier_key == "ota_master":
-                label = "★ OTA-MASTER"
-            try:
-                font = ImageFont.truetype("C:/Windows/Fonts/segoeui.ttf", max(12, bar_h - 4))
-            except OSError:
-                try:
-                    font = ImageFont.truetype(
-                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                        max(11, bar_h - 4),
-                    )
-                except OSError:
-                    font = ImageFont.load_default()
-            draw.text((10, y_bar + 5), label.upper(), fill=(*tc, 255), font=font)
+            canvas = _append_tier_strip(canvas, tier)
         except Exception as exc:  # noqa: BLE001
             logger.debug("new_challenger tier strip skipped: %s", exc)
 

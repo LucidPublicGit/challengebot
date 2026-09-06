@@ -62,13 +62,29 @@ TIER_COLOR = {
 # Escalating flair: higher tier = stronger wash, thicker rail, more ornaments
 # wash: max tier mix at left edge; rail_tier/kind in CSS-ish px before SCALE
 TIER_FLAIR: dict[str, dict] = {
+    # Dialed down — one accent rail, softer wash (was dual-rail + loud mist)
     "easy": {
-        "wash": 0.08,
-        "wash_width": 0.40,
-        "rail_tier": 4,
-        "rail_kind": 5,
+        "wash": 0.04,
+        "wash_width": 0.28,
+        "rail_tier": 0,
+        "rail_kind": 4,
         "ring": 2,
-        "ring_outer": 0,  # extra outer ring width (0 = none)
+        "ring_outer": 0,
+        "ring_outer_color": None,
+        "edge": 0.22,
+        "top_rule": False,
+        "corners": False,
+        "tier_pill_pad": 0,
+        "spark": False,
+        "secondary": None,
+    },
+    "medium": {
+        "wash": 0.06,
+        "wash_width": 0.32,
+        "rail_tier": 0,
+        "rail_kind": 4,
+        "ring": 2,
+        "ring_outer": 0,
         "ring_outer_color": None,
         "edge": 0.28,
         "top_rule": False,
@@ -77,49 +93,34 @@ TIER_FLAIR: dict[str, dict] = {
         "spark": False,
         "secondary": None,
     },
-    "medium": {
-        "wash": 0.14,
-        "wash_width": 0.48,
-        "rail_tier": 6,
-        "rail_kind": 5,
+    "hard": {
+        "wash": 0.08,
+        "wash_width": 0.36,
+        "rail_tier": 3,
+        "rail_kind": 4,
         "ring": 2,
-        "ring_outer": 2,
-        "ring_outer_color": "secondary",  # cyan glow ring
-        "edge": 0.40,
+        "ring_outer": 0,
+        "ring_outer_color": None,
+        "edge": 0.35,
         "top_rule": False,
         "corners": False,
         "tier_pill_pad": 1,
         "spark": False,
-        "secondary": ACCENT_BLUE,  # deeper blue accent line in rail
-    },
-    "hard": {
-        "wash": 0.17,
-        "wash_width": 0.52,
-        "rail_tier": 7,
-        "rail_kind": 5,
-        "ring": 3,
-        "ring_outer": 2,
-        "ring_outer_color": "amber",
-        "edge": 0.48,
-        "top_rule": True,  # thin heat line under top edge
-        "corners": False,
-        "tier_pill_pad": 2,
-        "spark": False,
         "secondary": ACCENT_AMBER,
     },
     "ota_master": {
-        "wash": 0.20,
-        "wash_width": 0.58,
-        "rail_tier": 8,
-        "rail_kind": 5,
-        "ring": 3,
-        "ring_outer": 3,
+        "wash": 0.10,
+        "wash_width": 0.40,
+        "rail_tier": 4,
+        "rail_kind": 4,
+        "ring": 2,
+        "ring_outer": 2,
         "ring_outer_color": "gold",
-        "edge": 0.55,
+        "edge": 0.40,
         "top_rule": True,
-        "corners": True,  # gold corner brackets
-        "tier_pill_pad": 3,
-        "spark": True,  # small gold marks by tier pill
+        "corners": True,
+        "tier_pill_pad": 2,
+        "spark": True,
         "secondary": ACCENT_GOLD,
     },
 }
@@ -400,6 +401,7 @@ def _render_challenge(
     line_secondary: str,
     footer: str,
     poster_bytes: Optional[bytes] = None,
+    cleared_style: str = "D_soft_glow",
 ) -> bytes:
     """
     Layout:
@@ -500,20 +502,13 @@ def _render_challenge(
         strength=float(flair.get("wash") or 0.1),
         width_frac=float(flair.get("wash_width") or 0.45),
     )
-    # Dual left rail: outer = tier (wider on higher tiers), inner = kind
-    rail_tier = int(flair.get("rail_tier") or 5) * S
-    rail_kind = int(flair.get("rail_kind") or 5) * S
-    rail_w = rail_tier + rail_kind
+    # Left rail: difficulty theme only (same color language as outcome tick)
+    rail_w = max(3, int(flair.get("rail_kind") or 4)) * S
+    if int(flair.get("rail_tier") or 0) > 0:
+        rail_w = max(rail_w, int(flair["rail_tier"]) * S + rail_w // 2)
     draw.rounded_rectangle(
         (0, 0, rail_w, H * S - 1), radius=8 * S, fill=tier_color
     )
-    draw.rectangle((rail_tier, 0, rail_w, H * S - 1), fill=accent)
-    # Secondary stripe between tier/kind (medium+) or gold hairline (ota)
-    if sec_color is not None and rail_tier >= 2 * S:
-        stripe_x = rail_tier - max(1, S)
-        draw.rectangle(
-            (stripe_x, 0, rail_tier, H * S - 1), fill=sec_color
-        )
 
     # Prestige / heat rule under top edge
     if flair.get("top_rule"):
@@ -547,27 +542,30 @@ def _render_challenge(
     right = (WIDTH - MARGIN) * S
     y = 20 * S
 
-    # Status pill (right) + name — kind-colored
+    # Status pill (right) — skipped on complete; "Cleared" is the hero instead of DONE
     pill_font = _font(11 * S, bold=True)
-    pill_pad_x, pill_pad_y = 12 * S, 5 * S
-    pill_h = pill_font.size + pill_pad_y * 2
-    pill_w = draw.textlength(badge, font=pill_font) + pill_pad_x * 2
-    pill_x = right - pill_w
-    pill_y = y + 4 * S
-    draw.rounded_rectangle(
-        (pill_x, pill_y, pill_x + pill_w, pill_y + pill_h),
-        radius=pill_h / 2,
-        fill=_mix(accent, BG, 0.30),
-        outline=_mix(accent, BG, 0.55),
-        width=max(1, S // 2),
-    )
-    draw.text(
-        (pill_x + pill_w / 2, pill_y + pill_h / 2),
-        badge,
-        font=pill_font,
-        fill=accent,
-        anchor="mm",
-    )
+    show_kind_pill = kind != "complete"
+    pill_x = right
+    if show_kind_pill:
+        pill_pad_x, pill_pad_y = 12 * S, 5 * S
+        pill_h = pill_font.size + pill_pad_y * 2
+        pill_w = draw.textlength(badge, font=pill_font) + pill_pad_x * 2
+        pill_x = right - pill_w
+        pill_y = y + 4 * S
+        draw.rounded_rectangle(
+            (pill_x, pill_y, pill_x + pill_w, pill_y + pill_h),
+            radius=pill_h / 2,
+            fill=_mix(accent, BG, 0.30),
+            outline=_mix(accent, BG, 0.55),
+            width=max(1, S // 2),
+        )
+        draw.text(
+            (pill_x + pill_w / 2, pill_y + pill_h / 2),
+            badge,
+            font=pill_font,
+            fill=accent,
+            anchor="mm",
+        )
 
     name_font = _font(24 * S, bold=True)
     name_max = max(40.0, pill_x - cx - 12 * S)
@@ -642,7 +640,7 @@ def _render_challenge(
         )
         y += 22 * S
 
-    # Outcome block — single accented panel
+    # Outcome: side tick only (tier-colored, matches card left rail) — no nested panel
     if has_outcome:
         y += 8 * S
         if has_progress:
@@ -652,26 +650,145 @@ def _render_challenge(
         else:
             oh_s = 54 * S
 
-        box = (cx, y, right, y + oh_s)
-        panel_fill = _mix(accent, PANEL_BG, 0.10)
-        panel_line = _mix(accent, HAIRLINE, 0.25)
-        draw.rounded_rectangle(
-            box, radius=12 * S, fill=panel_fill, outline=panel_line, width=S
+        tick_w = 3 * S
+        draw.rectangle(
+            (cx, y + 6 * S, cx + tick_w, y + oh_s - 6 * S), fill=tier_color
         )
-        # Kind accent bar on outcome
-        draw.rounded_rectangle(
-            (cx, y, cx + 5 * S, y + oh_s), radius=3 * S, fill=accent
-        )
-        pad = 16 * S
-        tx = cx + pad
+        pad = 14 * S
+        tx = cx + tick_w + pad
         tw = right - tx - 12 * S
 
         primary_size = 22 if terminal else 17
-        pf = _font(primary_size * S, bold=True)
-        primary_y = y + (14 * S if has_progress or outcome_meta else (oh_s - primary_size * S) / 2)
-        if has_progress:
-            # Primary left, fraction right
-            draw.text((tx, y + 12 * S), _truncate(draw, line_primary or badge, pf, tw * 0.55), font=pf, fill=INK)
+        # Complete: hero "Cleared" treatment (kind pill already hidden)
+        cs = (cleared_style or "A_tier_bold") if kind == "complete" else ""
+        if kind == "complete" and cs:
+            label = line_primary or "Cleared"
+            meta = outcome_meta or progress_disp or line_secondary or ""
+            if cs == "B_check_tier":
+                label = f"✓  {(label or 'Cleared').upper()}"
+                pf = _font(24 * S, bold=True)
+                draw.text((tx, y + 10 * S), _truncate(draw, label, pf, tw), font=pf, fill=tier_color)
+                if meta:
+                    draw.text(
+                        (tx, y + 44 * S),
+                        _truncate(draw, meta, _font(14 * S), tw),
+                        font=_font(14 * S),
+                        fill=INK_SOFT,
+                    )
+            elif cs == "C_gold_underline":
+                pf = _font(26 * S, bold=True)
+                fill = ACCENT_GOLD if tier_key == "ota_master" else INK
+                lab = _truncate(draw, label, pf, tw)
+                draw.text((tx, y + 8 * S), lab, font=pf, fill=fill)
+                lw = draw.textlength(lab, font=pf)
+                draw.line(
+                    (tx, y + 8 * S + pf.size + 4 * S, tx + lw, y + 8 * S + pf.size + 4 * S),
+                    fill=tier_color,
+                    width=max(2, 2 * S),
+                )
+                if meta:
+                    draw.text(
+                        (tx, y + 8 * S + pf.size + 12 * S),
+                        _truncate(draw, meta, _font(14 * S), tw),
+                        font=_font(14 * S),
+                        fill=INK_SOFT,
+                    )
+            elif cs == "D_soft_glow":
+                pf = _font(26 * S, bold=True)
+                lab = _truncate(draw, label, pf, tw)
+                for dx, dy in ((-S, 0), (S, 0), (0, -S), (0, S)):
+                    draw.text(
+                        (tx + dx, y + 10 * S + dy),
+                        lab,
+                        font=pf,
+                        fill=_mix(tier_color, BG, 0.45),
+                    )
+                draw.text((tx, y + 10 * S), lab, font=pf, fill=tier_color)
+                if meta:
+                    draw.text(
+                        (tx, y + 46 * S),
+                        _truncate(draw, meta, _font(14 * S), tw),
+                        font=_font(14 * S),
+                        fill=INK_SOFT,
+                    )
+            elif cs == "E_label_stack":
+                draw.text(
+                    (tx, y + 6 * S),
+                    "CLEARED",
+                    font=_font(12 * S, bold=True),
+                    fill=tier_color,
+                )
+                big = progress_disp or meta or label
+                draw.text(
+                    (tx, y + 26 * S),
+                    _truncate(draw, big, _font(22 * S, bold=True), tw),
+                    font=_font(22 * S, bold=True),
+                    fill=INK,
+                )
+                sub = outcome_meta if progress_disp else ""
+                if sub:
+                    draw.text(
+                        (tx, y + 56 * S),
+                        _truncate(draw, sub, _font(13 * S), tw),
+                        font=_font(13 * S),
+                        fill=INK_SOFT,
+                    )
+            else:
+                # A_tier_bold — default: large tier-colored Cleared
+                pf = _font(26 * S, bold=True)
+                draw.text(
+                    (tx, y + 10 * S),
+                    _truncate(draw, label, pf, tw * (0.55 if has_progress else 1.0)),
+                    font=pf,
+                    fill=tier_color,
+                )
+                if has_progress:
+                    sf = _font(15 * S, bold=True)
+                    draw.text(
+                        (right - 14 * S, y + 10 * S + 26 * S / 2),
+                        _truncate(draw, progress_disp, sf, tw * 0.4),
+                        font=sf,
+                        fill=INK,
+                        anchor="rm",
+                    )
+                    bar_x0, bar_x1 = tx, right - 14 * S
+                    bar_y0 = y + 48 * S
+                    bar_y1 = bar_y0 + 8 * S
+                    draw.rounded_rectangle(
+                        (bar_x0, bar_y0, bar_x1, bar_y1),
+                        radius=4 * S,
+                        fill=(48, 50, 62),
+                    )
+                    fill_r = max(0.0, min(1.0, float(progress_ratio or 0)))
+                    if fill_r > 0.02:
+                        fx1 = bar_x0 + (bar_x1 - bar_x0) * fill_r
+                        draw.rounded_rectangle(
+                            (bar_x0, bar_y0, fx1, bar_y1),
+                            radius=4 * S,
+                            fill=tier_color,
+                        )
+                    if outcome_meta:
+                        draw.text(
+                            (tx, bar_y1 + 8 * S),
+                            _truncate(draw, outcome_meta, _font(13 * S), tw),
+                            font=_font(13 * S),
+                            fill=INK_SOFT,
+                        )
+                elif meta:
+                    draw.text(
+                        (tx, y + 46 * S),
+                        _truncate(draw, meta, _font(14 * S), tw),
+                        font=_font(14 * S),
+                        fill=INK_SOFT,
+                    )
+        elif has_progress:
+            pf = _font(primary_size * S, bold=True)
+            draw.text(
+                (tx, y + 12 * S),
+                _truncate(draw, line_primary or badge, pf, tw * 0.55),
+                font=pf,
+                fill=INK,
+            )
             sf = _font(15 * S, bold=True)
             draw.text(
                 (right - 14 * S, y + 12 * S + primary_size * S / 2),
@@ -680,7 +797,6 @@ def _render_challenge(
                 fill=INK,
                 anchor="rm",
             )
-            # Progress bar
             bar_x0 = tx
             bar_x1 = right - 14 * S
             bar_y0 = y + 44 * S
@@ -691,11 +807,8 @@ def _render_challenge(
             fill_r = max(0.0, min(1.0, float(progress_ratio)))
             if fill_r > 0.02:
                 fx1 = bar_x0 + (bar_x1 - bar_x0) * fill_r
-                bar_color = accent if fill_r >= 1.0 or kind == "complete" else (
-                    ACCENT_AMBER if kind == "fail" else accent
-                )
                 draw.rounded_rectangle(
-                    (bar_x0, bar_y0, fx1, bar_y1), radius=4 * S, fill=bar_color
+                    (bar_x0, bar_y0, fx1, bar_y1), radius=4 * S, fill=tier_color
                 )
             if outcome_meta:
                 draw.text(
@@ -705,6 +818,7 @@ def _render_challenge(
                     fill=INK_SOFT,
                 )
         else:
+            pf = _font(primary_size * S, bold=True)
             if line_primary:
                 if terminal and not outcome_meta:
                     draw.text(
@@ -990,6 +1104,47 @@ def _render_leaderboard(
     return buf.getvalue()
 
 
+def _render_event_chip(
+    *,
+    primary: str,
+    secondary: str = "",
+    accent: tuple[int, int, int] | None = None,
+    tier: str | None = None,
+    width: int = 720,
+) -> bytes:
+    """Thin under-banner chip for start/schedule (proto E). Side bar = tier theme."""
+    S = SCALE
+    W, H = width, 88
+    img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    outer = (0, 0, W * S - 1, H * S - 1)
+    draw.rounded_rectangle(outer, radius=14 * S, fill=BG)
+    bar = accent or TIER_COLOR.get((tier or "").lower().strip(), ACCENT_PURPLE)
+    draw.rectangle((0, 0, 5 * S, H * S), fill=bar)
+    draw.text(
+        (18 * S, 18 * S),
+        _truncate(draw, _oneline(primary), _font(20 * S, True), (W - 40) * S),
+        font=_font(20 * S, True),
+        fill=INK,
+    )
+    if secondary:
+        draw.text(
+            (18 * S, 50 * S),
+            _truncate(draw, _oneline(secondary), _font(14 * S), (W - 40) * S),
+            font=_font(14 * S),
+            fill=INK_SOFT,
+        )
+    _clip_round(img, outer, 14 * S, _mix(bar, HAIRLINE, 0.3), S)
+    img = img.resize((W, H), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def render_event_chip(**kwargs) -> bytes:
+    return await asyncio.to_thread(_render_event_chip, **kwargs)
+
+
 async def render_challenge_card(**kwargs) -> bytes:
     return await asyncio.to_thread(_render_challenge, **kwargs)
 
@@ -1061,26 +1216,32 @@ def files_as_image_embeds(
     color: int | None = None,
     tier: str | None = None,
     colors: list[int] | None = None,
+    chrome: bool = False,
 ):
     """One embed per file with set_image(attachment://…) so Discord shows them full-size.
 
-    Prefer explicit colors[], then color, then tier color, then kind color.
+    chrome=False (default): no left color strip — avoids double border with PNG rails.
+    chrome=True: prefer colors[] / color / tier / kind.
     """
     import discord
 
-    fallback = (
-        color
-        if color is not None
-        else (tier_embed_color(tier) if tier else None)
-        or _KIND_EMBED_COLOR.get(kind or "", 0x2F3136)
-    )
+    fallback: int | None = None
+    if chrome:
+        fallback = (
+            color
+            if color is not None
+            else (tier_embed_color(tier) if tier else None)
+            or _KIND_EMBED_COLOR.get(kind or "", 0x2F3136)
+        )
+    elif color is not None:
+        fallback = color
     embeds: list = []
     for i, f in enumerate(files or []):
         name = getattr(f, "filename", None) or "image.png"
         c = fallback
         if colors is not None and i < len(colors) and colors[i] is not None:
             c = colors[i]
-        emb = discord.Embed(color=int(c))
+        emb = discord.Embed(color=int(c)) if c is not None else discord.Embed()
         emb.set_image(url=f"attachment://{name}")
         embeds.append(emb)
     return embeds

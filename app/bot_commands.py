@@ -16,6 +16,7 @@ from app.challenge_card import (
     avatar_bytes,
     files_as_image_embeds,
     render_all_demo_cards,
+    render_event_chip,
     render_leaderboard_card,
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
@@ -35,11 +36,57 @@ from app.services.rewards import (
 
 logger = logging.getLogger(__name__)
 
+
 # Imported lazily-friendly bits from bot to avoid cycles at import time
 def _bot_helpers():
     from app import bot as b
 
     return b
+
+
+async def _layout_e_start_files(
+    *,
+    user: discord.abc.User | None,
+    kind: str,
+    title: str,
+    tier: str,
+    ends_at_ts: int | None = None,
+    starts_at_ts: int | None = None,
+) -> list:
+    """Proto E: new-challenger banner + thin chip (same width). Empty if NC fails."""
+    import io
+
+    from PIL import Image
+
+    from app.services.rewards import _fmt_utc, _ts_line
+
+    av = await avatar_bytes(user)
+    nc = render_new_challenger(av, tier=tier)
+    if not nc:
+        return []
+    files = [as_discord_new_challenger(nc)]
+    try:
+        chip_w = Image.open(io.BytesIO(nc)).size[0]
+        primary = "Good luck" if kind == "start" else "Queued to start"
+        secondary = ""
+        if kind == "start" and ends_at_ts:
+            secondary = _ts_line("Ends", ends_at_ts)
+        elif kind == "scheduled":
+            a, b = _fmt_utc(starts_at_ts), _fmt_utc(ends_at_ts)
+            if a and b:
+                secondary = f"{a.removesuffix(' UTC')} -> {b}"
+            elif a:
+                secondary = f"Starts {a}"
+        chip = await render_event_chip(
+            primary=primary,
+            secondary=secondary or title,
+            tier=tier,
+            width=chip_w,
+        )
+        files.append(as_discord_file(chip, f"{kind}-chip.png"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("layout E chip failed: %s", exc)
+    return files
 
 
 challenge_group = app_commands.Group(
@@ -142,7 +189,7 @@ async def _finalize_start(
     kind = "scheduled" if status == "scheduled" else "start"
     media = ch.get("media_filter")
     focus = (result.get("param") or focus or "").strip() or None
-    png, caption = await build_event_card(
+    _png, caption = await build_event_card(
         kind=kind,
         user=interaction.user,
         title=ch["title"],
@@ -153,19 +200,40 @@ async def _finalize_start(
         starts_at_ts=start_ts if kind == "scheduled" else None,
         ends_at_ts=ends,
         media_filter=media,
+        skip_image=True,
     )
     if kind == "scheduled":
-        # caption already has viewer-local start/end <t:> stamps
         howto = "A new card posts when it goes live. Cancel: `/challenge abandon`."
     else:
         howto = b.confirm_howto(ch)
-    card = as_discord_file(png, f"{kind}-card.png")
-    await interaction.followup.send(
-        content=f"{caption}\n{howto}",
-        file=card,
-        embeds=files_as_image_embeds([card], kind=kind),
-        ephemeral=True,
+    files = await _layout_e_start_files(
+        user=interaction.user,
+        kind=kind,
+        title=ch["title"],
+        tier=ch["tier"],
+        ends_at_ts=ends,
+        starts_at_ts=start_ts if kind == "scheduled" else None,
     )
+    if not files:
+        png, _ = await build_event_card(
+            kind=kind,
+            user=interaction.user,
+            title=ch["title"],
+            tier=ch["tier"],
+            number=int(ch["number"]),
+            param=focus,
+            content=focus,
+            starts_at_ts=start_ts if kind == "scheduled" else None,
+            ends_at_ts=ends,
+            media_filter=media,
+        )
+        if png:
+            files = [as_discord_file(png, f"{kind}-card.png")]
+    kwargs: dict = {"content": f"{caption}\n{howto}", "ephemeral": True}
+    if files:
+        kwargs["files"] = files
+        kwargs["embeds"] = files_as_image_embeds(files, chrome=False)
+    await interaction.followup.send(**kwargs)
     # Channel card immediately (schedule or start); start-at-time is expire_loop
     await announce(
         interaction.client,
@@ -2010,16 +2078,16 @@ async def challenge_testcards(
 
 @challenge_group.command(
     name="testchallenger",
-    description="Admin: preview new-challenger banner with your avatar",
+    description="Admin: preview layout E start (NC banner + chip)",
 )
 @app_commands.describe(
     public="If true, post in this channel (default: only you can see)",
-    with_card="Also attach a sample start card under the banner (default: on)",
+    with_chip="Attach thin start chip under the banner (default: on)",
 )
 async def challenge_testchallenger(
     interaction: discord.Interaction,
     public: bool = False,
-    with_card: bool = True,
+    with_chip: bool = True,
 ) -> None:
     b = _bot_helpers()
     if not b.is_bot_admin(interaction):
@@ -2033,34 +2101,32 @@ async def challenge_testchallenger(
             ephemeral=not public,
         )
         return
-    av = await avatar_bytes(interaction.user)
-    nc = render_new_challenger(av, tier="hard")
-    if not nc:
+    if with_chip:
+        files = await _layout_e_start_files(
+            user=interaction.user,
+            kind="start",
+            title="Challenger preview",
+            tier="hard",
+            ends_at_ts=None,
+        )
+    else:
+        av = await avatar_bytes(interaction.user)
+        nc = render_new_challenger(av, tier="hard")
+        files = [as_discord_new_challenger(nc)] if nc else []
+    if not files:
         await interaction.followup.send(
             "Failed to render new-challenger image (check templates/hole mask).",
             ephemeral=not public,
         )
         return
-    files = [as_discord_new_challenger(nc)]
-    if with_card:
-        png, _cap = await build_event_card(
-            kind="start",
-            user=interaction.user,
-            title="Challenger preview",
-            tier="hard",
-            number=0,
-            content="preview",
-            media_filter="any",
-        )
-        files.append(as_discord_file(png, "start-card.png"))
     await interaction.followup.send(
         content=(
-            f"**New challenger** preview for {interaction.user.mention}\n"
-            f"Templates available: `{len(templates)}` · "
-            "banner on top" + (" · card under" if with_card else "")
+            f"**Layout E** preview for {interaction.user.mention}\n"
+            f"Templates: `{len(templates)}` · NC banner"
+            + (" + chip" if with_chip else " only")
         ),
         files=files,
-        embeds=files_as_image_embeds(files, kind="start", tier="hard"),
+        embeds=files_as_image_embeds(files, chrome=False),
         ephemeral=not public,
     )
 

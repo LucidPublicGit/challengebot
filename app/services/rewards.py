@@ -10,8 +10,8 @@ from app.challenge_card import (
     avatar_bytes,
     files_as_image_embeds,
     render_challenge_card,
+    render_event_chip,
     tier_caption_mark,
-    tier_embed_color,
 )
 from app.config import get_settings, merge_runtime
 from app.congrats import as_discord_framed_congrats, pick_congrats
@@ -158,21 +158,15 @@ async def build_event_card(
     starts_at_ts: int | None = None,
     media_filter: Optional[str] = None,
     poster_bytes: Optional[bytes] = None,
-) -> tuple[bytes, str]:
-    """Return (png_bytes, short_caption). Caption uses <t:> for local TZ."""
+    skip_image: bool = False,
+) -> tuple[Optional[bytes], str]:
+    """Return (png_bytes|None, short_caption). Caption uses <t:> for local TZ."""
     name = (
         getattr(user, "display_name", None)
         or display_name
         or (str(user) if user else "Someone")
     )
     focus = (content or param or "").strip()
-    av = await avatar_bytes(user)
-    poster = poster_bytes
-    if poster is None and focus:
-        try:
-            poster = await fetch_poster(focus, media_filter)
-        except Exception:  # noqa: BLE001
-            poster = None
 
     primary = ""
     secondary = ""
@@ -206,7 +200,7 @@ async def build_event_card(
     elif kind == "expired":
         primary = "Time's up"
         secondary = _ts_line("Ended", ends_at_ts) or "Window closed"
-    elif kind == "active":
+    elif kind in ("active", "status"):
         primary = (line_primary or "In progress").strip() or "In progress"
         if line_secondary:
             secondary = str(line_secondary)[:90]
@@ -218,55 +212,67 @@ async def build_event_card(
         primary = kind.replace("_", " ").title()
         secondary = (detail or "")[:90]
 
-    # Explicit overrides (status milestones, admin previews)
     if line_primary:
         primary = str(line_primary).strip()[:80] or primary
     if line_secondary:
         secondary = str(line_secondary).strip()[:90] or secondary
 
-    png = await render_challenge_card(
-        kind=kind if kind in (
-            "start", "scheduled", "complete", "fail", "abandon", "expired", "active", "status"
-        ) else "status",
-        display_name=name,
-        challenge_title=title,
-        tier=tier,
-        number=int(number or 0),
-        avatar_bytes=av,
-        focus=focus,
-        line_primary=primary,
-        line_secondary=secondary,
-        footer=footer,
-        poster_bytes=poster,
-    )
+    png: Optional[bytes] = None
+    if not skip_image:
+        av = await avatar_bytes(user)
+        poster = poster_bytes
+        if poster is None and focus:
+            try:
+                poster = await fetch_poster(focus, media_filter)
+            except Exception:  # noqa: BLE001
+                poster = None
+        png = await render_challenge_card(
+            kind=kind if kind in (
+                "start", "scheduled", "complete", "fail", "abandon",
+                "expired", "active", "status",
+            ) else "status",
+            display_name=name,
+            challenge_title=title,
+            tier=tier,
+            number=int(number or 0),
+            avatar_bytes=av,
+            focus=focus,
+            line_primary=primary,
+            line_secondary=secondary,
+            footer=footer,
+            poster_bytes=poster,
+        )
 
     mention = user.mention if user is not None else name
+    title_bit = f"**{title}**" if title else "a challenge"
+    num_bit = f" #{int(number)}" if number else ""
+    focus_bit = f" · _{focus}_" if focus else ""
     captions = {
-        "start": f"🏁 {mention} started a challenge",
-        "scheduled": f"📅 {mention} scheduled a challenge",
-        "complete": f"🎉 {mention} completed a challenge",
-        "fail": f"💀 {mention} failed a check",
-        "abandon": f"🏳️ {mention} abandoned a challenge",
-        "expired": f"⏰ {mention} ran out of time",
+        "start": f"🏁 {mention} started {title_bit}{focus_bit}",
+        "scheduled": f"📅 {mention} scheduled {title_bit}{focus_bit}",
+        "complete": f"🎉 {mention} completed {title_bit}",
+        "fail": f"💀 {mention} failed a check · {title_bit}",
+        "abandon": f"🏳️ {mention} abandoned {title_bit}",
+        "expired": f"⏰ {mention} ran out of time · {title_bit}",
         "active": (
-            f"📈 {mention} · {primary}"
+            f"📈 {mention} · {primary} · {title_bit}"
             if line_primary
-            else f"📌 {mention} — active challenge"
+            else f"📌 {mention} — active · {title_bit}"
         ),
+        "status": f"📈 {mention} · **{primary}** · {title_bit}",
     }
     caption = captions.get(kind, f"{mention} · {kind}")
-    # Tier micro-chrome in text (pairs with card rails / embed colors)
+    if kind == "status" and secondary:
+        caption = f"{caption}\n{secondary}"
     tmark = tier_caption_mark(tier)
     if tmark:
-        num_bit = f" #{int(number)}" if number else ""
         caption = f"{tmark}{num_bit} · {caption}"
-    # Viewer-local times under the card (PNG stays absolute UTC)
     when_bits: list[str] = []
     if kind == "scheduled" and starts_at_ts:
         when_bits.append(f"Starts {_discord_when(starts_at_ts)}")
         if ends_at_ts:
             when_bits.append(f"window ends {_discord_when(ends_at_ts, relative=False)}")
-    elif kind in ("start", "active") and ends_at_ts:
+    elif kind in ("start", "active", "status") and ends_at_ts:
         when_bits.append(f"Ends {_discord_when(ends_at_ts)}")
     elif kind == "expired" and ends_at_ts:
         when_bits.append(f"Ended {_discord_when(ends_at_ts, relative=False)}")
@@ -299,6 +305,7 @@ async def announce(
     media_filter: Optional[str] = None,
     line_primary: Optional[str] = None,
     line_secondary: Optional[str] = None,
+    highlights_only: bool = False,
 ) -> bool:
     """Post lifecycle cards to configured announce channels.
 
@@ -309,6 +316,7 @@ async def announce(
         scheduled, start, active/status, complete, fail, abandon, expired, …
 
     New-challenger banner on start/scheduled (wherever those kinds are sent).
+    highlights_only=True skips the log channel (one-off / admin test).
     """
     highlights = await resolve_announce_channel(bot, guild)
     log_ch = await resolve_secondary_announce_channel(bot, guild)
@@ -322,6 +330,10 @@ async def announce(
         except (TypeError, ValueError, discord.HTTPException):
             user = None
 
+    # Status milestones: text only (no log-lookalike card)
+    need_card = kind != "status"
+    png: bytes | None = None
+    caption: str | None = None
     try:
         png, caption = await build_event_card(
             kind=kind,
@@ -339,7 +351,10 @@ async def announce(
             ends_at_ts=ends_at_ts,
             starts_at_ts=starts_at_ts,
             media_filter=media_filter,
+            skip_image=not need_card,
         )
+        if not need_card:
+            png = None
     except Exception as exc:  # noqa: BLE001
         logger.warning("announce card build failed (%s): %s", kind, exc)
         png, caption = None, None
@@ -349,23 +364,50 @@ async def announce(
     extra = f" · _{focus}_" if focus else ""
     text_fallback = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
 
-    # Congrats only on highlights channel for completes
     cong_path = None
-    if kind == "complete" and png is not None:
+    if kind == "complete" and need_card:
         cong_path = pick_congrats(tier=tier, content=focus)
 
-    # New challenger on start/schedule (avatar in cutout)
+    # Start/schedule: proto E — NC banner + thin chip (card only if NC missing)
     nc_png: bytes | None = None
-    if kind in ("start", "scheduled") and png is not None:
+    chip_png: bytes | None = None
+    if kind in ("start", "scheduled"):
         try:
             av = await avatar_bytes(user)
             nc_png = render_new_challenger(av, tier=tier)
         except Exception as exc:  # noqa: BLE001
             logger.warning("new_challenger render failed: %s", exc)
             nc_png = None
+        if nc_png is not None:
+            try:
+                import io as _io
+
+                from PIL import Image as _Image
+
+                chip_w = _Image.open(_io.BytesIO(nc_png)).size[0]
+                chip_primary = (
+                    "Good luck" if kind == "start" else "Queued to start"
+                )
+                chip_secondary = ""
+                if kind == "start" and ends_at_ts:
+                    chip_secondary = _ts_line("Ends", ends_at_ts)
+                elif kind == "scheduled":
+                    a, b = _fmt_utc(starts_at_ts), _fmt_utc(ends_at_ts)
+                    if a and b:
+                        chip_secondary = f"{a.removesuffix(' UTC')} -> {b}"
+                    elif a:
+                        chip_secondary = f"Starts {a}"
+                chip_png = await render_event_chip(
+                    primary=chip_primary,
+                    secondary=chip_secondary or title,
+                    tier=tier,
+                    width=chip_w,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("event chip render failed: %s", exc)
+                chip_png = None
 
     posted = False
-    emb_color = tier_embed_color(tier)
 
     async def _send(
         channel: discord.TextChannel, *,
@@ -373,31 +415,33 @@ async def announce(
     ) -> bool:
         nonlocal posted
         try:
-            if png is None:
-                await channel.send(text_fallback)
-                posted = True
-                return True
-            # Order = embed stack: new challenger on top, card under, congrats last
+            body = caption or text_fallback
             files = []
             if nc_png is not None:
                 files.append(as_discord_new_challenger(nc_png))
-            files.append(as_discord_file(png, f"{kind}-card.png"))
-            if with_congrats and cong_path is not None:
-                try:
-                    files.append(
-                        as_discord_framed_congrats(
-                            cong_path,
-                            tier=tier,
-                            title=title,
-                            number=int(number or 0),
+                if chip_png is not None:
+                    files.append(as_discord_file(chip_png, f"{kind}-chip.png"))
+            elif png is not None:
+                files.append(as_discord_file(png, f"{kind}-card.png"))
+                if with_congrats and cong_path is not None:
+                    try:
+                        files.append(
+                            as_discord_framed_congrats(
+                                cong_path,
+                                tier=tier,
+                                title=title,
+                                number=int(number or 0),
+                            )
                         )
-                    )
-                except OSError as exc:
-                    logger.warning("congrats file open failed: %s", exc)
-            embeds = files_as_image_embeds(
-                files, kind=kind, tier=tier, color=emb_color
-            )
-            await channel.send(content=caption, files=files, embeds=embeds)
+                    except OSError as exc:
+                        logger.warning("congrats file open failed: %s", exc)
+            if not files:
+                await channel.send(body)
+                posted = True
+                return True
+            # No embed color strip — avoids double left border with PNG rails
+            embeds = files_as_image_embeds(files, chrome=False)
+            await channel.send(content=body, files=files, embeds=embeds)
             posted = True
             return True
         except Exception as exc:  # noqa: BLE001
@@ -419,11 +463,16 @@ async def announce(
     if highlights is not None and kind in _HIGHLIGHT_KINDS:
         await _send(highlights, with_congrats=(kind == "complete"))
     # Log channel: everything (no congrats media — keeps feed lighter)
-    if log_ch is not None and (
+    if not highlights_only and log_ch is not None and (
         highlights is None or log_ch.id != highlights.id
     ):
         await _send(log_ch, with_congrats=False)
-    elif log_ch is not None and highlights is not None and log_ch.id == highlights.id:
+    elif (
+        not highlights_only
+        and log_ch is not None
+        and highlights is not None
+        and log_ch.id == highlights.id
+    ):
         # Same channel configured twice: already sent if highlight kind
         if kind not in _HIGHLIGHT_KINDS:
             await _send(log_ch, with_congrats=False)
@@ -458,6 +507,7 @@ async def repost_attempt_announce(
     attempt: dict,
     *,
     with_challenger: bool = False,
+    highlights_only: bool = False,
 ) -> bool:
     """Rebuild current lifecycle announce for an attempt (admin repost)."""
     from app.services.verify import parse_iso
@@ -511,6 +561,7 @@ async def repost_attempt_announce(
         ends_at_ts=ends,
         starts_at_ts=starts if kind == "scheduled" else None,
         media_filter=attempt.get("media_filter"),
+        highlights_only=highlights_only,
     )
 
 

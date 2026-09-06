@@ -509,6 +509,7 @@ def create_app(bot=None) -> FastAPI:
         attempt_id: int,
         request: Request,
         with_challenger: str = Form(""),
+        highlights_only: str = Form(""),
         filter: str = Form("all"),
         _: None = Depends(_auth),
     ):
@@ -525,9 +526,13 @@ def create_app(bot=None) -> FastAPI:
         if not bot.is_ready():
             raise HTTPException(503, "Discord bot not ready yet — try again shortly.")
         force = str(with_challenger or "").strip() in ("1", "on", "true", "yes")
+        ho = str(highlights_only or "").strip() in ("1", "on", "true", "yes")
         # Scheduled → scheduled+challenger; active+flag → start+challenger
         ok = await repost_attempt_announce(
-            bot, att, with_challenger=force or att.get("status") == "scheduled"
+            bot,
+            att,
+            with_challenger=force or att.get("status") == "scheduled",
+            highlights_only=ho,
         )
         if not ok:
             raise HTTPException(

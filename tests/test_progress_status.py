@@ -23,23 +23,31 @@ def _att(**kwargs):
     return base, now
 
 
-def test_time_milestones_fire_once():
-    att, t0 = _att()
+def test_time_milestones_short_window_halfway_only():
+    """Day-scale windows: 50% only (no 25/75)."""
+    att, t0 = _att()  # 8h window
     meta = {"time_hits": [], "goal_hits": []}
-    # just started — nothing
-    ev = ps.check_time_milestones(att, meta, t0 + timedelta(minutes=5))
-    assert ev == []
-    # 25% of 8h = 2h
-    ev = ps.check_time_milestones(att, meta, t0 + timedelta(hours=2, minutes=1))
+    assert ps.check_time_milestones(att, meta, t0 + timedelta(minutes=5)) == []
+    # 25% of 8h = 2h — short window skips
+    assert ps.check_time_milestones(att, meta, t0 + timedelta(hours=2, minutes=1)) == []
+    # halfway
+    ev = ps.check_time_milestones(att, meta, t0 + timedelta(hours=4, minutes=1))
+    assert len(ev) == 1
+    assert "Half" in ev[0].primary
+    assert ev[0].kind == "status"
+    meta2 = ps.apply_event_marks(meta, ev[0])
+    assert ps.check_time_milestones(att, meta2, t0 + timedelta(hours=4, minutes=30)) == []
+    # 75% — still skipped on short window
+    assert ps.check_time_milestones(att, meta2, t0 + timedelta(hours=6, minutes=1)) == []
+
+
+def test_time_milestones_long_window_keeps_quartiles():
+    att, t0 = _att(ends_at=(datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc) + timedelta(days=10)).isoformat())
+    meta = {"time_hits": [], "goal_hits": []}
+    # 25% of 10d = 2.5d
+    ev = ps.check_time_milestones(att, meta, t0 + timedelta(days=2, hours=13))
     assert len(ev) == 1
     assert "25%" in ev[0].primary or "clock" in ev[0].primary.lower()
-    meta2 = ps.apply_event_marks(meta, ev[0])
-    # again — no re-fire
-    ev2 = ps.check_time_milestones(att, meta2, t0 + timedelta(hours=2, minutes=30))
-    assert ev2 == []
-    # halfway
-    ev3 = ps.check_time_milestones(att, meta2, t0 + timedelta(hours=4, minutes=1))
-    assert any("Half" in e.primary for e in ev3)
 
 
 def test_honor_time_copy_no_tadoku_language():
