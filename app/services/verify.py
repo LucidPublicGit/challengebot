@@ -88,6 +88,50 @@ def _description(log: dict) -> str:
     return str(log.get("description") or log.get("title") or "")
 
 
+def parse_content_items(raw: str | None, *, limit: int = 12) -> list[str]:
+    """Split content into one work per entry (newlines preferred, commas OK)."""
+    if not raw or not str(raw).strip():
+        return []
+    text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+    parts: list[str] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line[:1] in "-•*" and len(line) > 1:
+            line = line[1:].strip()
+        if re.match(r"^\d+[.)]\s+", line):
+            line = re.sub(r"^\d+[.)]\s+", "", line).strip()
+        if "," in line:
+            bits = [b.strip() for b in line.split(",") if b.strip()]
+            if len(bits) >= 2 and all(len(b) <= 60 for b in bits):
+                parts.extend(bits)
+                continue
+        parts.append(line)
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        label = p.strip()
+        if len(label) > 80:
+            label = label[:77] + "…"
+        out.append(label)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def format_content_items(raw: str | None) -> str | None:
+    """Canonical multi-work storage: one title per line."""
+    items = parse_content_items(raw)
+    if not items:
+        return None
+    return "\n".join(items)
+
+
 def content_labels_from_logs(
     logs: list[dict[str, Any]],
     matched_ids: list[str] | None = None,
@@ -143,39 +187,35 @@ def resolve_content(
 ) -> Optional[str]:
     """Best-effort content label stored on completion."""
     if content_override and str(content_override).strip():
-        return str(content_override).strip()[:300]
+        return format_content_items(content_override)
     labels = [
         lb
         for lb in content_labels_from_logs(logs or [], matched_ids)
         if not _exclude_hit(lb, exclude)
     ]
     if labels:
-        return ", ".join(labels)
+        return format_content_items("\n".join(labels))
     if param and str(param).strip():
-        return str(param).strip()
+        return format_content_items(str(param).strip())
     if note and str(note).strip():
-        return str(note).strip()[:120]
+        return format_content_items(str(note).strip())
     return None
 
 
 def strip_content_labels(content: str | None, remove: list[str]) -> str:
-    """Drop comma-separated labels that match any remove needle."""
-    raw = (content or "").strip()
-    if not raw:
+    """Drop labels that match any remove needle."""
+    items = parse_content_items(content)
+    if not items:
         return ""
     needles = [r.strip().lower() for r in remove if r and str(r).strip()]
     if not needles:
-        return raw
-    kept: list[str] = []
-    for part in raw.split(","):
-        label = part.strip()
-        if not label:
-            continue
-        low = label.lower()
-        if any(n in low for n in needles):
-            continue
-        kept.append(label)
-    return ", ".join(kept)
+        return format_content_items("\n".join(items)) or ""
+    kept = [
+        label
+        for label in items
+        if not any(n in label.lower() for n in needles)
+    ]
+    return format_content_items("\n".join(kept)) or ""
 
 
 def _media_match(log: dict, media_filter: str) -> bool:

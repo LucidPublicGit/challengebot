@@ -401,6 +401,20 @@ def _wrap_two_lines(
     return [" ".join(line1), _truncate(draw, rest, font, max_w)]
 
 
+def parse_content_items(raw: str | None, *, limit: int = 12) -> list[str]:
+    """Split stored content into one work per entry (newlines and commas)."""
+    from app.services.verify import parse_content_items as _parse
+
+    return _parse(raw, limit=limit)
+
+
+def format_content_items(items: list[str] | None) -> str:
+    """Store multi-work content as one title per line."""
+    from app.services.verify import format_content_items as _fmt
+
+    return _fmt("\n".join(items or [])) or ""
+
+
 def _resolve_hero_style(
     kind: str,
     hero_style: str | None,
@@ -580,7 +594,10 @@ def _render_challenge(
     badge, accent = KIND_STYLE.get(kind, ("EVENT", ACCENT_PURPLE))
     display_name = _oneline(display_name)
     challenge_title = _oneline(challenge_title)
-    focus = _oneline(focus)
+    focus_items = parse_content_items(focus)
+    # Single long string without list separators stays one item
+    if not focus_items and (focus or "").strip():
+        focus_items = [_oneline(focus)]
     line_primary = _oneline(line_primary)
     line_secondary = _oneline(line_secondary)
     footer = _oneline(footer)
@@ -599,7 +616,8 @@ def _render_challenge(
         if poster_bytes
         else None
     )
-    show_focus = bool(focus) and poster is None
+    # Multi-work lists always show as lines; single focus hides when poster covers it
+    show_focus = bool(focus_items) and (poster is None or len(focus_items) > 1)
     progress_ratio, progress_label = _parse_progress(line_secondary)
     if progress_ratio is not None:
         if " · " in progress_label:
@@ -618,47 +636,71 @@ def _render_challenge(
     if kind in ("complete", "status") and line_primary:
         hero_label = line_primary
 
-    # Measure title lines with a scratch draw (for height)
+    # Measure title + works with a scratch draw so H tracks real line counts
     scratch = ImageDraw.Draw(Image.new("RGB", (8, 8)))
     title_font_m = _font(20 * S, bold=True)
-    # content width estimate (avatar 72 + gaps)
+    focus_font_m = _font(15 * S)
+    # content width estimate (avatar 72 + gaps); works indent ~16px for bullet
     content_w = (WIDTH - MARGIN - MARGIN - 72 - 16) * S
+    works_w = content_w - 16 * S
     title_lines = _wrap_two_lines(scratch, challenge_title, title_font_m, content_w)
 
-    av_size = 72
-    H = 22 + 30  # pad + name row
-    H += 26  # tier badge row
-    H += 24 * len(title_lines) + 6
+    # Dynamic works block: each entry can wrap to 2 lines; height = sum of lines
+    focus_header_h = 20  # unscaled px
+    focus_line_h = 22 if len(focus_items) <= 8 else 20
+    focus_pad_after = 10
+    focus_wrapped: list[list[str]] = []
+    focus_block_h = 0
     if show_focus:
-        H += 22
+        focus_block_h = focus_header_h
+        for item in focus_items:
+            lines = _wrap_two_lines(scratch, item, focus_font_m, works_w)
+            focus_wrapped.append(lines)
+            focus_block_h += focus_line_h * len(lines)
+        focus_block_h += focus_pad_after
+
+    _hs = _resolve_hero_style(kind, hero_style, cleared_style)
+    _tall = _hs in (
+        "1_tier_pill",
+        "tier_pill",
+        "pill",
+        "7_stack_kicker",
+        "stack_kicker",
+        "kicker",
+        "2_double_rule",
+        "double_rule",
+        "5_stamp_outline",
+        "stamp_outline",
+        "stamp",
+    )
+    if has_progress:
+        outcome_h = 90 if _tall else 82
+    elif outcome_meta or line_secondary or line_primary:
+        outcome_h = (78 if _tall else 70) if terminal else (72 if _tall else 64)
+    else:
+        outcome_h = 62 if _tall else 54
+
+    # Stack sections (unscaled). Keep draw path in sync with these constants.
+    av_size = 72
+    top_pad = 22
+    name_row_h = 30
+    tier_row_h = 26  # pill + gap into title
+    title_line_h = 24
+    title_after = 6
+    outcome_gap = 10
+    footer_h = 28
+
+    H = top_pad + name_row_h + tier_row_h
+    H += title_line_h * len(title_lines) + title_after
+    H += focus_block_h
     if has_outcome:
-        H += 10
-        _hs = _resolve_hero_style(kind, hero_style, cleared_style)
-        _tall = _hs in (
-            "1_tier_pill",
-            "tier_pill",
-            "pill",
-            "7_stack_kicker",
-            "stack_kicker",
-            "kicker",
-            "2_double_rule",
-            "double_rule",
-            "5_stamp_outline",
-            "stamp_outline",
-            "stamp",
-        )
-        if has_progress:
-            H += 90 if _tall else 82
-        elif outcome_meta or line_secondary or line_primary:
-            H += (78 if _tall else 70) if terminal else (72 if _tall else 64)
-        else:
-            H += 62 if _tall else 54
+        H += outcome_gap + outcome_h + 6
     # Always reserve brand footer
     if not footer:
         footer = BRAND_FOOTER
     elif BRAND_FOOTER.lower() not in footer.lower():
         footer = f"{footer}  ·  {BRAND_FOOTER}"
-    H += 28
+    H += footer_h
     H = max(H, 200)
 
     if poster is not None:
@@ -786,24 +828,29 @@ def _render_challenge(
         draw.text((cx, y + i * 24 * S), ln, font=title_font, fill=INK)
     y += 24 * S * len(title_lines) + 4 * S
 
-    # Focus only when no poster (cover art is the focus)
+    # Works completed — height already reserved via focus_block_h / focus_wrapped
     if show_focus:
-        ff = _font(14 * S)
+        ff = _font(15 * S)
         flab = _font(11 * S, bold=True)
-        lab = "FOCUS  "
-        draw.text((cx, y), lab, font=flab, fill=INK_SOFT)
-        lx = cx + draw.textlength(lab, font=flab)
-        draw.text(
-            (lx, y),
-            _truncate(draw, focus, ff, right - lx),
-            font=ff,
-            fill=INK,
-        )
-        y += 22 * S
+        bullet_f = _font(13 * S, bold=True)
+        header = "WORKS" if len(focus_items) > 1 else "FOCUS"
+        draw.text((cx, y), header, font=flab, fill=INK_SOFT)
+        y += focus_header_h * S
+        for lines in focus_wrapped:
+            draw.text((cx, y + 2 * S), "•", font=bullet_f, fill=accent)
+            for j, ln in enumerate(lines):
+                draw.text(
+                    (cx + 16 * S, y + j * focus_line_h * S),
+                    ln,
+                    font=ff,
+                    fill=INK,
+                )
+            y += focus_line_h * len(lines) * S
+        y += focus_pad_after * S
 
     # Outcome: tier side-tick + hero status (soft-glow, same language as Cleared)
     if has_outcome:
-        y += 8 * S
+        y += outcome_gap * S
         # Build soft meta under the hero (skip if it just repeats the status word)
         meta_bits: list[str] = []
         lp = (line_primary or "").strip()
@@ -825,27 +872,7 @@ def _render_challenge(
             meta_bits.append(line_secondary)
         meta_line = " · ".join(dict.fromkeys(meta_bits))  # stable unique
 
-        # Extra height for pill / kicker / stamp hero treatments
-        hs_pre = _resolve_hero_style(kind, hero_style, cleared_style)
-        tall_hero = hs_pre in (
-            "1_tier_pill",
-            "tier_pill",
-            "pill",
-            "7_stack_kicker",
-            "stack_kicker",
-            "kicker",
-            "2_double_rule",
-            "double_rule",
-            "5_stamp_outline",
-            "stamp_outline",
-            "stamp",
-        )
-        if has_progress:
-            oh_s = (90 if tall_hero else 82) * S
-        elif meta_line:
-            oh_s = (78 if tall_hero else 70) * S
-        else:
-            oh_s = (62 if tall_hero else 54) * S
+        oh_s = outcome_h * S
 
         tick_w = 3 * S
         draw.rectangle(
@@ -1453,8 +1480,10 @@ async def render_all_demo_cards(
         poster = None
         if fetch_covers and payload.get("focus"):
             try:
+                cover_q = parse_content_items(str(payload.get("focus") or ""))
+                cover_q = cover_q[0] if cover_q else str(payload["focus"])
                 poster = await fetch_poster(
-                    str(payload["focus"]), media_by_kind.get(kind, "any")
+                    cover_q, media_by_kind.get(kind, "any")
                 )
             except Exception:  # noqa: BLE001
                 poster = None

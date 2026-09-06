@@ -206,6 +206,9 @@ async def build_event_card(
         or (str(user) if user else "Someone")
     )
     focus = (content or param or "").strip()
+    from app.services.verify import parse_content_items
+
+    focus_items = parse_content_items(focus)
     dur = _duration_from_window(duration_hours, starts_at_ts, ends_at_ts)
 
     primary = ""
@@ -270,9 +273,11 @@ async def build_event_card(
     if not skip_image:
         av = await avatar_bytes(user)
         poster = poster_bytes
-        if poster is None and focus:
+        # Cover search uses first work only — never the whole multi-line blob
+        cover_q = focus_items[0] if focus_items else (focus.split("\n")[0].strip() if focus else "")
+        if poster is None and cover_q:
             try:
-                poster = await fetch_poster(focus, media_filter)
+                poster = await fetch_poster(cover_q, media_filter)
             except Exception:  # noqa: BLE001
                 poster = None
         png = await render_challenge_card(
@@ -295,14 +300,23 @@ async def build_event_card(
     mention = user.mention if user is not None else name
     title_bit = f"**{title}**" if title else "a challenge"
     num_bit = f" #{int(number)}" if number else ""
-    focus_bit = f" · _{focus}_" if focus else ""
+
+    def _focus_caption() -> str:
+        items = focus_items or ([focus] if focus else [])
+        if not items:
+            return ""
+        if len(items) == 1:
+            return f" · _{items[0]}_"
+        return "\n" + "\n".join(f"• {it}" for it in items)
+
+    focus_bit = _focus_caption()
     captions = {
         "start": f"🏁 {mention} started {title_bit}{focus_bit}",
         "scheduled": f"📅 {mention} scheduled {title_bit}{focus_bit}",
-        "complete": f"🎉 {mention} completed {title_bit}",
-        "fail": f"💀 {mention} failed a check · {title_bit}",
-        "abandon": f"🏳️ {mention} abandoned {title_bit}",
-        "expired": f"⏰ {mention} ran out of time · {title_bit}",
+        "complete": f"🎉 {mention} completed {title_bit}{focus_bit}",
+        "fail": f"💀 {mention} failed a check · {title_bit}{focus_bit}",
+        "abandon": f"🏳️ {mention} abandoned {title_bit}{focus_bit}",
+        "expired": f"⏰ {mention} ran out of time · {title_bit}{focus_bit}",
         "active": (
             f"📈 {mention} · {primary} · {title_bit}"
             if line_primary
@@ -413,12 +427,35 @@ async def announce(
 
     who = user.mention if user is not None else (display_name or "Someone")
     focus = (content or param or "").strip()
-    extra = f" · _{focus}_" if focus else ""
+    from app.services.verify import parse_content_items as _pci
+
+    _items = _pci(focus)
+    if len(_items) > 1:
+        extra = "\n" + "\n".join(f"• {it}" for it in _items)
+    elif _items:
+        extra = f" · _{_items[0]}_"
+    elif focus:
+        extra = f" · _{focus.splitlines()[0].strip()}_"
+    else:
+        extra = ""
     text_fallback = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
 
     cong_path = None
-    if kind == "complete" and need_card:
-        cong_path = pick_congrats(tier=tier, content=focus)
+    if kind == "complete":
+        # Congrats match on first work title, not the whole multi-line blob
+        cong_focus = _items[0] if _items else focus
+        try:
+            cong_path = pick_congrats(tier=tier, content=cong_focus)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pick_congrats failed: %s", exc)
+            cong_path = None
+        if cong_path is None:
+            logger.warning(
+                "No congrats image found (tier=%s content=%r). "
+                "Check completion_pictures/ mounts.",
+                tier,
+                (cong_focus or "")[:80],
+            )
 
     # Start/schedule: NC banner + full challenge card (not the thin "Good luck" chip)
     nc_png: bytes | None = None
@@ -432,62 +469,98 @@ async def announce(
 
     posted = False
 
+    def _build_files(*, with_congrats: bool) -> list:
+        """Fresh discord.File objects (single-use streams)."""
+        files = []
+        if nc_png is not None:
+            # Same pattern as start: PNG bytes + short name + embed set_image
+            files.append(as_discord_new_challenger(nc_png))
+        if png is not None:
+            files.append(as_discord_file(png, f"{kind}-card.png"))
+        if with_congrats and cong_path is not None:
+            try:
+                # congrats.png / congrats.gif — embed via attachment:// like new-challenger
+                files.append(
+                    as_discord_framed_congrats(
+                        cong_path,
+                        tier=tier,
+                        title=title,
+                        number=int(number or 0),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("congrats attach failed (%s): %s", cong_path, exc)
+        return files
+
     async def _send(
         channel: discord.TextChannel, *,
         with_congrats: bool,
     ) -> bool:
         nonlocal posted
-        try:
-            body = caption or text_fallback
-            files = []
-            if nc_png is not None:
-                files.append(as_discord_new_challenger(nc_png))
-            if png is not None:
-                files.append(as_discord_file(png, f"{kind}-card.png"))
-                if with_congrats and cong_path is not None:
-                    try:
-                        files.append(
-                            as_discord_framed_congrats(
-                                cong_path,
-                                tier=tier,
-                                title=title,
-                                number=int(number or 0),
-                            )
-                        )
-                    except OSError as exc:
-                        logger.warning("congrats file open failed: %s", exc)
+        body = caption or text_fallback
+
+        async def _try_send(files: list, *, content: str | None) -> bool:
+            """Match new-challenger: every file gets an image embed (incl. GIF)."""
+            if not files and not content:
+                return False
             if not files:
-                await channel.send(body)
+                await channel.send(content)
+                return True
+            embeds = files_as_image_embeds(files, chrome=False)
+            kw: dict = {"files": files, "embeds": embeds}
+            if content:
+                kw["content"] = content
+            await channel.send(**kw)
+            return True
+
+        # 1) card + congrats together (full-size embeds like new-challenger)
+        try:
+            if await _try_send(_build_files(with_congrats=with_congrats), content=body):
                 posted = True
                 return True
-            # No embed color strip — avoids double left border with PNG rails
-            embeds = files_as_image_embeds(files, chrome=False)
-            await channel.send(content=body, files=files, embeds=embeds)
-            posted = True
-            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "announce to #%s failed (%s): %s",
+                "announce multi-file failed #%s (%s): %s — splitting",
                 getattr(channel, "id", "?"),
                 kind,
                 exc,
             )
-            try:
-                await channel.send(text_fallback)
-                posted = True
-                return True
-            except discord.HTTPException as exc2:
-                logger.warning("announce text fallback failed: %s", exc2)
-                return False
 
-    # Highlights: start + complete/fail only (congrats on complete)
+        # 2) card, then congrats as its own embedded message
+        try:
+            await _try_send(_build_files(with_congrats=False), content=body)
+            if with_congrats and cong_path is not None:
+                await _try_send(_build_files(with_congrats=True)[-1:], content=None)
+            posted = True
+            return True
+        except Exception as exc2:  # noqa: BLE001
+            logger.warning(
+                "announce split failed #%s: %s",
+                getattr(channel, "id", "?"),
+                exc2,
+            )
+
+        try:
+            await channel.send(text_fallback)
+            if with_congrats and cong_path is not None:
+                try:
+                    await _try_send(_build_files(with_congrats=True)[-1:], content=None)
+                except Exception as exc3:  # noqa: BLE001
+                    logger.warning("congrats-only send failed: %s", exc3)
+            posted = True
+            return True
+        except discord.HTTPException as exc4:
+            logger.warning("announce text fallback failed: %s", exc4)
+            return False
+
+    # Highlights: start + complete/fail (congrats on complete)
     if highlights is not None and kind in _HIGHLIGHT_KINDS:
         await _send(highlights, with_congrats=(kind == "complete"))
-    # Log channel: everything (no congrats media — keeps feed lighter)
+    # Log channel: everything; also attach congrats on complete so it isn't missed
     if not highlights_only and log_ch is not None and (
         highlights is None or log_ch.id != highlights.id
     ):
-        await _send(log_ch, with_congrats=False)
+        await _send(log_ch, with_congrats=(kind == "complete"))
     elif (
         not highlights_only
         and log_ch is not None
@@ -496,7 +569,7 @@ async def announce(
     ):
         # Same channel configured twice: already sent if highlight kind
         if kind not in _HIGHLIGHT_KINDS:
-            await _send(log_ch, with_congrats=False)
+            await _send(log_ch, with_congrats=(kind == "complete"))
 
     return posted
 

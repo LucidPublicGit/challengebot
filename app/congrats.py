@@ -327,10 +327,17 @@ def pick_congrats(
 
 
 def as_discord_congrats(path: Path):
-    """discord.File for a local congrats image (raw file)."""
+    """discord.File for a local congrats image (BytesIO + stable name for embeds)."""
+    import io
+
     import discord
 
-    return discord.File(str(path), filename=path.name)
+    data = path.read_bytes()
+    ext = (path.suffix or ".png").lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        ext = ".png"
+    # Simple name so attachment://congrats.gif matches embed (same pattern as new-challenger.png)
+    return discord.File(io.BytesIO(data), filename=f"congrats{ext}")
 
 
 def _is_animated(path: Path) -> bool:
@@ -490,13 +497,15 @@ def as_discord_framed_congrats(
     title: str = "",
     number: int = 0,
 ):
-    """Framed PNG when possible; otherwise raw file (animated)."""
+    """Framed PNG when possible; otherwise raw animated file.
+
+    Always BytesIO + short filename so Discord embeds match new-challenger style.
+    """
+    import io
+
     import discord
 
     framed = frame_congrats(path, tier=tier, title=title, number=number)
     if framed:
-        return discord.File(
-            __import__("io").BytesIO(framed),
-            filename=f"congrats-{path.stem}.png",
-        )
+        return discord.File(io.BytesIO(framed), filename="congrats.png")
     return as_discord_congrats(path)

@@ -1416,12 +1416,14 @@ class FailOverrideModal(discord.ui.Modal, title="Fail override (honor)"):
     ) -> None:
         super().__init__()
         self.attempt_id = int(attempt_id)
+        _hint = (content_hint or "").replace(", ", "\n")
         self.content_in = discord.ui.TextInput(
-            label="What you completed (required)",
-            placeholder="Series / URL / works — recorded on the clear",
-            default=(content_hint or "")[:100],
+            label="Works completed (one per line)",
+            placeholder="Required — one title/URL per line",
+            default=_hint[:1800],
             required=True,
-            max_length=200,
+            max_length=1800,
+            style=discord.TextStyle.paragraph,
         )
         self.note_in = discord.ui.TextInput(
             label="Why override? (optional)",
@@ -1455,12 +1457,15 @@ class ConfirmDetailsModal(discord.ui.Modal, title="Confirm challenge"):
     ) -> None:
         super().__init__()
         self.attempt_id = attempt_id
+        # Prefer newlines in stored content; show first lines in the box
+        _cdefault = (content or param or "").replace(", ", "\n")
         self.content_in = discord.ui.TextInput(
-            label="Content completed (series / URL / works)",
-            placeholder="What you finished — required for honor override",
-            default=(content or param or "")[:100],
+            label="Works completed (one per line)",
+            placeholder="One Piece\nSand Land\n— or a single title / URL",
+            default=_cdefault[:1800],
             required=False,
-            max_length=200,
+            max_length=1800,
+            style=discord.TextStyle.paragraph,
         )
         self.filter_in = discord.ui.TextInput(
             label="Filter: blank keep · all · honor · name",

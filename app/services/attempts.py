@@ -26,7 +26,31 @@ def display_content(attempt: dict | None) -> str:
     """Content shown on completed/recent lists (stored content, else param)."""
     if not attempt:
         return ""
-    return (attempt.get("content") or attempt.get("param") or "").strip()
+    from app.services.verify import format_content_items, parse_content_items
+
+    # Prefer whichever field holds the fuller works list (content was often
+    # truncated by old modal limits while note kept the full paste).
+    candidates = [
+        attempt.get("content") or "",
+        attempt.get("note") or "",
+        attempt.get("param") or "",
+    ]
+    best = ""
+    best_n = 0
+    for raw in candidates:
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        items = parse_content_items(raw)
+        n = len(items) if items else (1 if raw else 0)
+        if n > best_n or (n == best_n and len(raw) > len(best)):
+            best, best_n = raw, n
+    if not best:
+        return ""
+    items = parse_content_items(best)
+    if len(items) > 1:
+        return format_content_items(best) or best
+    return items[0] if items else best
 from app.tadoku.client import resolve_logs_for_user
 
 
@@ -775,10 +799,19 @@ async def confirm_attempt(
         }
 
     def _honor_content() -> str | None:
+        # Merge content + note so a long paste in either field is not lost
+        from app.services.verify import format_content_items, parse_content_items
+
+        merged_parts: list[str] = []
+        for blob in (user_content, note, att.get("content"), att.get("note")):
+            for it in parse_content_items(blob):
+                if it not in merged_parts:
+                    merged_parts.append(it)
+        merged = format_content_items("\n".join(merged_parts)) if merged_parts else None
         return resolve_content(
             param=att.get("param"),
             note=note,
-            content_override=user_content,
+            content_override=merged or user_content,
             exclude=exclude_list,
         )
 
@@ -1178,6 +1211,15 @@ def _complete(
         matched_ids=matched,
         note=note,
     )
+    # Prefer fuller works list if note still has more lines than content_val
+    from app.services.verify import format_content_items, parse_content_items
+
+    note_items = parse_content_items(note)
+    content_items = parse_content_items(content_val)
+    if len(note_items) > len(content_items):
+        content_val = format_content_items(note) or content_val
+    elif content_val:
+        content_val = format_content_items(content_val) or content_val
     evidence = {**evidence, "content": content_val}
     with db_session() as conn:
         conn.execute(

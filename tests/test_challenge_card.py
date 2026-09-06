@@ -45,6 +45,54 @@ def test_print_every_card_format():
     assert len(written) == 9
 
 
+def test_multi_works_grows_card_height():
+    """Card height scales with works count (dynamic per entry)."""
+    from PIL import Image
+    import io
+
+    def _h(n: int) -> int:
+        focus = "\n".join(f"Work title number {i}" for i in range(n))
+        png = asyncio.run(
+            render_challenge_card(
+                kind="complete",
+                display_name="Monty",
+                challenge_title="Manga Mini-Marathon",
+                tier="easy",
+                number=1,
+                avatar_bytes=None,
+                focus=focus,
+                line_primary="Cleared",
+                line_secondary="Tadoku",
+                footer="ChallengeTracker",
+            )
+        )
+        return Image.open(io.BytesIO(png)).size[1]
+
+    h1, h4, h6 = _h(1), _h(4), _h(6)
+    assert h4 > h1
+    assert h6 > h4
+    # roughly linear: each extra entry adds ~20px
+    assert (h6 - h4) >= 30
+    multi = asyncio.run(
+        render_challenge_card(
+            kind="complete",
+            display_name="Monty",
+            challenge_title="Manga Mini-Marathon",
+            tier="easy",
+            number=1,
+            avatar_bytes=None,
+            focus="One Piece\nSand Land\nDr. Slump\nDragon Ball",
+            line_primary="Cleared",
+            line_secondary="Tadoku",
+            footer="ChallengeTracker",
+        )
+    )
+    path = OUT_DIR / "card_multi_works.png"
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(multi)
+    print(f"CARD multi_works → {path} (1={h1} 4={h4} 6={h6}px)")
+
+
 def test_poster_on_card():
     """Synthetic cover art appears on the right without breaking layout."""
     from PIL import Image, ImageDraw
