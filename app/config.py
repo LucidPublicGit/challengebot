@@ -53,13 +53,18 @@ class Settings:
     challenge_catalog: str = "./challenges/2026.yaml"
     tadoku_api_base: str = "https://tadoku.app/api/internal/immersion"
     tadoku_contest_id: str = "90e6509e-bc32-49d4-936d-ea0776eee602"
-    announce_channel_id: str = ""
-    # Cards only (start/finish/fail/…); no congrats gifs
-    announce_secondary_channel_id: str = ""
+    # Highlights: start + complete/fail (+ congrats on complete)
+    announce_channel_id: str = "1187153489156124732"
+    # Log: schedule, start, status, complete/fail, abandon, expired, …
+    announce_secondary_channel_id: str = "1523503572652916786"
     reward_roles: str = ""
     allow_reattempt: bool = True
     pages_per_volume: float = 180.0
     episode_minutes: float = 24.0
+    # Automatic active-challenge status posts (time + Tadoku goal milestones)
+    status_updates_enabled: bool = True
+    status_poll_minutes: float = 10.0  # Tadoku poll cadence
+    status_min_interval_minutes: float = 12.0  # min gap between posts per attempt
     ui_host: str = "0.0.0.0"
     ui_port: int = 8090
     ui_username: str = "admin"
@@ -98,7 +103,9 @@ def get_settings() -> Settings:
         tadoku_contest_id=_env(
             "TADOKU_CONTEST_ID", "90e6509e-bc32-49d4-936d-ea0776eee602"
         ),
-        announce_channel_id=_env("ANNOUNCE_CHANNEL_ID"),
+        announce_channel_id=_env(
+            "ANNOUNCE_CHANNEL_ID", "1187153489156124732"
+        ),
         announce_secondary_channel_id=_env(
             "ANNOUNCE_SECONDARY_CHANNEL_ID", "1523503572652916786"
         ),
@@ -106,6 +113,9 @@ def get_settings() -> Settings:
         allow_reattempt=_env_bool("ALLOW_REATTEMPT", True),
         pages_per_volume=_env_float("PAGES_PER_VOLUME", 180.0),
         episode_minutes=_env_float("EPISODE_MINUTES", 24.0),
+        status_updates_enabled=_env_bool("STATUS_UPDATES_ENABLED", True),
+        status_poll_minutes=_env_float("STATUS_POLL_MINUTES", 10.0),
+        status_min_interval_minutes=_env_float("STATUS_MIN_INTERVAL_MINUTES", 12.0),
         ui_host=_env("UI_HOST", "0.0.0.0"),
         ui_port=int(_env("UI_PORT", "8090") or "8090"),
         ui_username=_env("UI_USERNAME", "admin"),
@@ -145,10 +155,12 @@ def merge_runtime(settings: Settings, db_map: dict[str, str]) -> dict[str, Any]:
         out["tadoku_contest_id"] = db_map["tadoku_contest_id"]
     if db_map.get("tadoku_api_base"):
         out["tadoku_api_base"] = db_map["tadoku_api_base"]
-    if "announce_channel_id" in db_map:
-        out["announce_channel_id"] = db_map["announce_channel_id"]
-    if "announce_secondary_channel_id" in db_map:
-        out["announce_secondary_channel_id"] = db_map["announce_secondary_channel_id"]
+    if (db_map.get("announce_channel_id") or "").strip():
+        out["announce_channel_id"] = db_map["announce_channel_id"].strip()
+    if (db_map.get("announce_secondary_channel_id") or "").strip():
+        out["announce_secondary_channel_id"] = db_map[
+            "announce_secondary_channel_id"
+        ].strip()
     if "allow_reattempt" in db_map:
         out["allow_reattempt"] = db_map["allow_reattempt"].lower() in (
             "1",

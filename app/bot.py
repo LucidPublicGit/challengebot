@@ -10,6 +10,7 @@ from app.bot_commands import challenge_group
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings
 from app.services import attempts as att_svc
+from app.services import progress_status as prog_svc
 from app.services.rewards import announce
 from app.services.verify import parse_iso
 
@@ -180,6 +181,70 @@ class ChallengeBot(commands.Bot):
             except Exception:  # noqa: BLE001
                 pass
             await _post("expired", att, ends_at_ts=ends_ts)
+
+        # Automatic mid-run status (time milestones all; goal milestones Tadoku-only)
+        if get_settings().status_updates_enabled:
+            try:
+                n = await self._run_status_updates()
+                if n:
+                    logger.info("Posted %s active status update(s)", n)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("status updates failed: %s", exc)
+
+    async def _run_status_updates(self) -> int:
+        """Time + Tadoku goal milestone cards for active attempts."""
+        posted = 0
+        actives = prog_svc.list_active_attempts()
+        for att in actives:
+            try:
+                events, meta = await prog_svc.collect_status_events_for_attempt(att)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "status collect failed attempt=%s: %s", att.get("id"), exc
+                )
+                continue
+            if not events:
+                continue
+            for ev in events:
+                ends_ts = None
+                try:
+                    ends_ts = _ts(att["ends_at"])
+                except Exception:  # noqa: BLE001
+                    pass
+                user = None
+                try:
+                    uid = int(att["discord_id"])
+                    user = self.get_user(uid) or await self.fetch_user(uid)
+                except (TypeError, ValueError, discord.HTTPException):
+                    user = None
+                guild = None
+                gid = att.get("guild_id") or _runtime().get("guild_id")
+                if gid and str(gid).isdigit():
+                    guild = self.get_guild(int(gid))
+                try:
+                    await announce(
+                        self,
+                        kind=ev.kind,
+                        guild=guild,
+                        user=user,
+                        display_name=att.get("display_name") or att.get("discord_id"),
+                        title=att.get("title") or "?",
+                        tier=att.get("tier") or "?",
+                        number=int(att.get("number") or 0),
+                        param=att.get("param"),
+                        content=att_svc.display_content(att),
+                        line_primary=ev.primary,
+                        line_secondary=ev.secondary,
+                        ends_at_ts=ends_ts,
+                        media_filter=att.get("media_filter"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("status announce failed: %s", exc)
+                    continue
+                meta = prog_svc.apply_event_marks(meta, ev)
+                prog_svc.save_status_meta(int(att["id"]), meta)
+                posted += 1
+        return posted
 
     @expire_loop.before_loop
     async def before_expire(self) -> None:

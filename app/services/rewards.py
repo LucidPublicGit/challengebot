@@ -10,12 +10,15 @@ from app.challenge_card import (
     avatar_bytes,
     files_as_image_embeds,
     render_challenge_card,
+    tier_caption_mark,
+    tier_embed_color,
 )
 from app.config import get_settings, merge_runtime
-from app.congrats import as_discord_congrats, pick_congrats
+from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session, get_all_settings
+from app.new_challenger import as_discord_new_challenger, render_new_challenger
 from app.poster import fetch_poster
-from app.services.attempts import completion_counts
+from app.services.attempts import completion_counts, display_content
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +92,7 @@ async def resolve_announce_channel(
     bot: discord.Client,
     guild: discord.Guild | None = None,
 ) -> discord.TextChannel | None:
-    """Main announce channel (cards + congrats on complete)."""
+    """Highlights channel: START + COMPLETE/FAIL (congrats on complete)."""
     rt = _runtime()
     return await _resolve_text_channel(bot, rt.get("announce_channel_id") or "", guild)
 
@@ -98,11 +101,16 @@ async def resolve_secondary_announce_channel(
     bot: discord.Client,
     guild: discord.Guild | None = None,
 ) -> discord.TextChannel | None:
-    """Secondary channel — lifecycle cards only (no congrats)."""
+    """Log channel: schedule, start, status, complete/fail, and everything else."""
     rt = _runtime()
     return await _resolve_text_channel(
         bot, rt.get("announce_secondary_channel_id") or "", guild
     )
+
+
+# Which kinds go to the highlights (main) channel
+_HIGHLIGHT_KINDS = frozenset({"start", "complete", "fail"})
+# Log channel gets every kind we announce
 
 
 def _fmt_utc(ts: int | None) -> str:
@@ -143,6 +151,8 @@ async def build_event_card(
     content: Optional[str] = None,
     method: Optional[str] = None,
     detail: Optional[str] = None,
+    line_primary: Optional[str] = None,
+    line_secondary: Optional[str] = None,
     ends_at_ts: int | None = None,
     starts_at_ts: int | None = None,
     media_filter: Optional[str] = None,
@@ -196,11 +206,22 @@ async def build_event_card(
         primary = "Time's up"
         secondary = _ts_line("Ended", ends_at_ts) or "Window closed"
     elif kind == "active":
-        primary = "In progress"
-        secondary = _ts_line("Ends", ends_at_ts) or "Window open"
+        primary = (line_primary or "In progress").strip() or "In progress"
+        if line_secondary:
+            secondary = str(line_secondary)[:90]
+        elif detail:
+            secondary = str(detail)[:90]
+        else:
+            secondary = _ts_line("Ends", ends_at_ts) or "Window open"
     else:
         primary = kind.replace("_", " ").title()
         secondary = (detail or "")[:90]
+
+    # Explicit overrides (status milestones, admin previews)
+    if line_primary:
+        primary = str(line_primary).strip()[:80] or primary
+    if line_secondary:
+        secondary = str(line_secondary).strip()[:90] or secondary
 
     png = await render_challenge_card(
         kind=kind if kind in (
@@ -226,9 +247,18 @@ async def build_event_card(
         "fail": f"💀 {mention} failed a check",
         "abandon": f"🏳️ {mention} abandoned a challenge",
         "expired": f"⏰ {mention} ran out of time",
-        "active": f"📌 {mention} — active challenge",
+        "active": (
+            f"📈 {mention} · {primary}"
+            if line_primary
+            else f"📌 {mention} — active challenge"
+        ),
     }
     caption = captions.get(kind, f"{mention} · {kind}")
+    # Tier micro-chrome in text (pairs with card rails / embed colors)
+    tmark = tier_caption_mark(tier)
+    if tmark:
+        num_bit = f" #{int(number)}" if number else ""
+        caption = f"{tmark}{num_bit} · {caption}"
     # Viewer-local times under the card (PNG stays absolute UTC)
     when_bits: list[str] = []
     if kind == "scheduled" and starts_at_ts:
@@ -261,14 +291,22 @@ async def announce(
     ends_at_ts: int | None = None,
     starts_at_ts: int | None = None,
     media_filter: Optional[str] = None,
+    line_primary: Optional[str] = None,
+    line_secondary: Optional[str] = None,
 ) -> bool:
-    """Post lifecycle card to main + secondary announce channels.
+    """Post lifecycle cards to configured announce channels.
 
-    Congrats media is attached on **main only** (complete events).
+    Channel routing (defaults / env):
+      ANNOUNCE_CHANNEL_ID (highlights):
+        start, complete, fail — congrats gif/frame on complete only here
+      ANNOUNCE_SECONDARY_CHANNEL_ID (log):
+        scheduled, start, active/status, complete, fail, abandon, expired, …
+
+    New-challenger banner on start/scheduled (wherever those kinds are sent).
     """
-    main = await resolve_announce_channel(bot, guild)
-    secondary = await resolve_secondary_announce_channel(bot, guild)
-    if main is None and secondary is None:
+    highlights = await resolve_announce_channel(bot, guild)
+    log_ch = await resolve_secondary_announce_channel(bot, guild)
+    if highlights is None and log_ch is None:
         return False
 
     # Resolve user object if we only have an id-ish display path
@@ -290,6 +328,8 @@ async def announce(
             content=content,
             method=method,
             detail=detail,
+            line_primary=line_primary,
+            line_secondary=line_secondary,
             ends_at_ts=ends_at_ts,
             starts_at_ts=starts_at_ts,
             media_filter=media_filter,
@@ -303,12 +343,23 @@ async def announce(
     extra = f" · _{focus}_" if focus else ""
     text_fallback = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
 
-    # Congrats path resolved once; only attached on main
+    # Congrats only on highlights channel for completes
     cong_path = None
     if kind == "complete" and png is not None:
         cong_path = pick_congrats(tier=tier, content=focus)
 
+    # New challenger on start/schedule (avatar in cutout)
+    nc_png: bytes | None = None
+    if kind in ("start", "scheduled") and png is not None:
+        try:
+            av = await avatar_bytes(user)
+            nc_png = render_new_challenger(av, tier=tier)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("new_challenger render failed: %s", exc)
+            nc_png = None
+
     posted = False
+    emb_color = tier_embed_color(tier)
 
     async def _send(
         channel: discord.TextChannel, *,
@@ -320,13 +371,26 @@ async def announce(
                 await channel.send(text_fallback)
                 posted = True
                 return True
-            files = [as_discord_file(png, f"{kind}-card.png")]
+            # Order = embed stack: new challenger on top, card under, congrats last
+            files = []
+            if nc_png is not None:
+                files.append(as_discord_new_challenger(nc_png))
+            files.append(as_discord_file(png, f"{kind}-card.png"))
             if with_congrats and cong_path is not None:
                 try:
-                    files.append(as_discord_congrats(cong_path))
+                    files.append(
+                        as_discord_framed_congrats(
+                            cong_path,
+                            tier=tier,
+                            title=title,
+                            number=int(number or 0),
+                        )
+                    )
                 except OSError as exc:
                     logger.warning("congrats file open failed: %s", exc)
-            embeds = files_as_image_embeds(files, kind=kind)
+            embeds = files_as_image_embeds(
+                files, kind=kind, tier=tier, color=emb_color
+            )
             await channel.send(content=caption, files=files, embeds=embeds)
             posted = True
             return True
@@ -345,12 +409,103 @@ async def announce(
                 logger.warning("announce text fallback failed: %s", exc2)
                 return False
 
-    if main is not None:
-        await _send(main, with_congrats=True)
-    if secondary is not None and (main is None or secondary.id != main.id):
-        await _send(secondary, with_congrats=False)
+    # Highlights: start + complete/fail only (congrats on complete)
+    if highlights is not None and kind in _HIGHLIGHT_KINDS:
+        await _send(highlights, with_congrats=(kind == "complete"))
+    # Log channel: everything (no congrats media — keeps feed lighter)
+    if log_ch is not None and (
+        highlights is None or log_ch.id != highlights.id
+    ):
+        await _send(log_ch, with_congrats=False)
+    elif log_ch is not None and highlights is not None and log_ch.id == highlights.id:
+        # Same channel configured twice: already sent if highlight kind
+        if kind not in _HIGHLIGHT_KINDS:
+            await _send(log_ch, with_congrats=False)
 
     return posted
+
+
+def announce_kind_for_status(status: str, *, with_challenger: bool = False) -> str:
+    """Map attempt.status → announce kind.
+
+    with_challenger=True forces start (new-challenger banner + start card)
+    useful for re-skinning an active attempt with the new design pair.
+    """
+    st = (status or "").lower().strip()
+    if with_challenger and st in ("active", "scheduled"):
+        # scheduled keeps scheduled card + challenger; active uses start pair
+        if st == "scheduled":
+            return "scheduled"
+        return "start"
+    return {
+        "scheduled": "scheduled",
+        "active": "active",
+        "completed": "complete",
+        "expired": "expired",
+        "abandoned": "abandon",
+        "void": "abandon",
+    }.get(st, "status")
+
+
+async def repost_attempt_announce(
+    bot: discord.Client,
+    attempt: dict,
+    *,
+    with_challenger: bool = False,
+) -> bool:
+    """Rebuild current lifecycle announce for an attempt (admin repost)."""
+    from app.services.verify import parse_iso
+
+    kind = announce_kind_for_status(
+        str(attempt.get("status") or ""), with_challenger=with_challenger
+    )
+    user = None
+    did = attempt.get("discord_id")
+    try:
+        if did and str(did).isdigit():
+            user = bot.get_user(int(did)) or await bot.fetch_user(int(did))
+    except (TypeError, ValueError, discord.HTTPException):
+        user = None
+
+    guild = None
+    gid = attempt.get("guild_id")
+    if not gid:
+        rt = _runtime()
+        gid = rt.get("guild_id") or ""
+    if gid and str(gid).isdigit():
+        guild = bot.get_guild(int(gid))
+
+    def _ts(iso: str | None) -> int | None:
+        if not iso:
+            return None
+        try:
+            dt = parse_iso(str(iso))
+            if dt.tzinfo is None:
+                from datetime import timezone
+
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
+        except Exception:  # noqa: BLE001
+            return None
+
+    starts = _ts(attempt.get("started_at"))
+    ends = _ts(attempt.get("ends_at"))
+    return await announce(
+        bot,
+        kind=kind,
+        guild=guild,
+        user=user,
+        display_name=attempt.get("display_name") or str(did or ""),
+        title=attempt.get("title") or "?",
+        tier=attempt.get("tier") or "?",
+        number=int(attempt.get("number") or 0),
+        param=attempt.get("param"),
+        content=display_content(attempt),
+        method=attempt.get("verify_method"),
+        ends_at_ts=ends,
+        starts_at_ts=starts if kind == "scheduled" else None,
+        media_filter=attempt.get("media_filter"),
+    )
 
 
 async def announce_completion(

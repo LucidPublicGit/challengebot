@@ -1,4 +1,4 @@
-"""Dark challenge cards styled after TadokuBot (Pillow PNG)."""
+"""Challenge lifecycle cards (Pillow PNG) — distinct from Tadoku log cards."""
 
 from __future__ import annotations
 
@@ -15,17 +15,23 @@ MARGIN = 28
 POSTER_GAP = 20
 POSTER_MARGIN = 20
 
-BG = (30, 31, 38)
+# Warmer ink base (Tadoku logs are cooler gray-purple)
+BG = (26, 24, 30)
 INK = (236, 237, 242)
 INK_SOFT = (150, 152, 166)
-HAIRLINE = (56, 58, 68)
-PANEL_BG = (40, 42, 51)
-PLACEHOLDER_BG = (58, 60, 72)
+HAIRLINE = (58, 54, 64)
+PANEL_BG = (38, 36, 46)
+PLACEHOLDER_BG = (58, 56, 68)
 ACCENT_PURPLE = (150, 128, 226)
 ACCENT_GREEN = (61, 214, 140)
 ACCENT_RED = (240, 113, 120)
 ACCENT_AMBER = (230, 192, 123)
 ACCENT_BLUE = (91, 156, 250)
+ACCENT_CYAN = (56, 189, 248)  # medium — distinct from kind purple/blue
+ACCENT_GOLD = (234, 196, 96)  # ota prestige
+ACCENT_VIOLET = (186, 140, 255)  # ota primary (brighter than log purple)
+
+BRAND_FOOTER = "ChallengeTracker"
 
 KIND_STYLE = {
     "start": ("STARTED", ACCENT_PURPLE),
@@ -48,9 +54,74 @@ TIER_LABEL = {
 
 TIER_COLOR = {
     "easy": ACCENT_GREEN,
-    "medium": ACCENT_BLUE,
+    "medium": ACCENT_CYAN,
     "hard": ACCENT_RED,
-    "ota_master": ACCENT_PURPLE,
+    "ota_master": ACCENT_VIOLET,
+}
+
+# Escalating flair: higher tier = stronger wash, thicker rail, more ornaments
+# wash: max tier mix at left edge; rail_tier/kind in CSS-ish px before SCALE
+TIER_FLAIR: dict[str, dict] = {
+    "easy": {
+        "wash": 0.08,
+        "wash_width": 0.40,
+        "rail_tier": 4,
+        "rail_kind": 5,
+        "ring": 2,
+        "ring_outer": 0,  # extra outer ring width (0 = none)
+        "ring_outer_color": None,
+        "edge": 0.28,
+        "top_rule": False,
+        "corners": False,
+        "tier_pill_pad": 0,
+        "spark": False,
+        "secondary": None,
+    },
+    "medium": {
+        "wash": 0.14,
+        "wash_width": 0.48,
+        "rail_tier": 6,
+        "rail_kind": 5,
+        "ring": 2,
+        "ring_outer": 2,
+        "ring_outer_color": "secondary",  # cyan glow ring
+        "edge": 0.40,
+        "top_rule": False,
+        "corners": False,
+        "tier_pill_pad": 1,
+        "spark": False,
+        "secondary": ACCENT_BLUE,  # deeper blue accent line in rail
+    },
+    "hard": {
+        "wash": 0.17,
+        "wash_width": 0.52,
+        "rail_tier": 7,
+        "rail_kind": 5,
+        "ring": 3,
+        "ring_outer": 2,
+        "ring_outer_color": "amber",
+        "edge": 0.48,
+        "top_rule": True,  # thin heat line under top edge
+        "corners": False,
+        "tier_pill_pad": 2,
+        "spark": False,
+        "secondary": ACCENT_AMBER,
+    },
+    "ota_master": {
+        "wash": 0.20,
+        "wash_width": 0.58,
+        "rail_tier": 8,
+        "rail_kind": 5,
+        "ring": 3,
+        "ring_outer": 3,
+        "ring_outer_color": "gold",
+        "edge": 0.55,
+        "top_rule": True,
+        "corners": True,  # gold corner brackets
+        "tier_pill_pad": 3,
+        "spark": True,  # small gold marks by tier pill
+        "secondary": ACCENT_GOLD,
+    },
 }
 
 # Outcome is the hero on these kinds
@@ -124,7 +195,86 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, m
 
 
 def _mix(c: tuple[int, int, int], bg: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    """Blend color c onto bg by t (0=bg, 1=c)."""
     return tuple(int(a + (b - a) * t) for a, b in zip(bg, c))  # type: ignore[return-value]
+
+
+def _tier_flair(tier_key: str) -> dict:
+    return TIER_FLAIR.get(tier_key) or TIER_FLAIR["easy"]
+
+
+def _flair_secondary(flair: dict) -> tuple[int, int, int] | None:
+    sec = flair.get("secondary")
+    return sec if isinstance(sec, tuple) else None
+
+
+def _ring_outer_color(
+    flair: dict, tier_color: tuple[int, int, int]
+) -> tuple[int, int, int] | None:
+    key = flair.get("ring_outer_color")
+    if key == "gold":
+        return ACCENT_GOLD
+    if key == "amber":
+        return ACCENT_AMBER
+    if key == "secondary":
+        return _flair_secondary(flair) or tier_color
+    if isinstance(key, tuple):
+        return key
+    return None
+
+
+def _draw_tier_wash(
+    draw: ImageDraw.ImageDraw,
+    *,
+    card_w_px: int,
+    card_h_px: int,
+    tier_color: tuple[int, int, int],
+    strength: float = 0.10,
+    width_frac: float = 0.45,
+) -> None:
+    """Soft left-weighted tier mist; strength/width escalate by difficulty."""
+    wash_w = max(1, int(card_w_px * max(0.25, min(0.7, width_frac))))
+    steps = 12
+    step_w = max(1, wash_w // steps)
+    peak = max(0.04, min(0.28, float(strength)))
+    for i in range(steps):
+        t = peak * (1.0 - i / max(steps - 1, 1))
+        if t < 0.006:
+            break
+        col = _mix(tier_color, BG, t)
+        x0 = i * step_w
+        x1 = wash_w if i == steps - 1 else (i + 1) * step_w
+        draw.rectangle((x0, 0, x1, card_h_px - 1), fill=col)
+
+
+def _draw_corner_brackets(
+    draw: ImageDraw.ImageDraw,
+    outer: tuple[int, int, int, int],
+    *,
+    color: tuple[int, int, int],
+    S: int,
+    length: int | None = None,
+    width: int | None = None,
+) -> None:
+    """Gold L-brackets on the four corners (Ota prestige)."""
+    x0, y0, x1, y1 = outer
+    L = length if length is not None else 18 * S
+    W = width if width is not None else max(2, 2 * S)
+    # inset so brackets sit inside the rounded edge
+    pad = 10 * S
+    x0, y0, x1, y1 = x0 + pad, y0 + pad, x1 - pad, y1 - pad
+    # TL
+    draw.rectangle((x0, y0, x0 + L, y0 + W), fill=color)
+    draw.rectangle((x0, y0, x0 + W, y0 + L), fill=color)
+    # TR
+    draw.rectangle((x1 - L, y0, x1, y0 + W), fill=color)
+    draw.rectangle((x1 - W, y0, x1, y0 + L), fill=color)
+    # BL
+    draw.rectangle((x0, y1 - W, x0 + L, y1), fill=color)
+    draw.rectangle((x0, y1 - L, x0 + W, y1), fill=color)
+    # BR
+    draw.rectangle((x1 - L, y1 - W, x1, y1), fill=color)
+    draw.rectangle((x1 - W, y1 - L, x1, y1), fill=color)
 
 
 def _parse_progress(text: str) -> tuple[Optional[float], str]:
@@ -270,6 +420,8 @@ def _render_challenge(
     tier_key = (tier or "").lower()
     tier_pretty = TIER_LABEL.get(tier_key, (tier or "?").replace("_", " ").title())
     tier_color = TIER_COLOR.get(tier_key, INK_SOFT)
+    flair = _tier_flair(tier_key)
+    sec_color = _flair_secondary(flair)
     terminal = kind in TERMINAL_KINDS
 
     # Decode poster early (affects focus row + width)
@@ -315,7 +467,12 @@ def _render_challenge(
             H += 70 if terminal else 64
         else:
             H += 54
-    H += 28 if footer else 18
+    # Always reserve brand footer
+    if not footer:
+        footer = BRAND_FOOTER
+    elif BRAND_FOOTER.lower() not in footer.lower():
+        footer = f"{footer}  ·  {BRAND_FOOTER}"
+    H += 28
     H = max(H, 200)
 
     if poster is not None:
@@ -335,21 +492,62 @@ def _render_challenge(
     outer = (0, 0, card_w * S - 1, H * S - 1)
     radius = 22 * S
     draw.rounded_rectangle(outer, radius=radius, fill=BG)
-    draw.rounded_rectangle((0, 0, 8 * S, H * S - 1), radius=8 * S, fill=accent)
-    draw.rectangle((4 * S, 0, 9 * S, H * S - 1), fill=accent)
+    _draw_tier_wash(
+        draw,
+        card_w_px=card_w * S,
+        card_h_px=H * S,
+        tier_color=tier_color,
+        strength=float(flair.get("wash") or 0.1),
+        width_frac=float(flair.get("wash_width") or 0.45),
+    )
+    # Dual left rail: outer = tier (wider on higher tiers), inner = kind
+    rail_tier = int(flair.get("rail_tier") or 5) * S
+    rail_kind = int(flair.get("rail_kind") or 5) * S
+    rail_w = rail_tier + rail_kind
+    draw.rounded_rectangle(
+        (0, 0, rail_w, H * S - 1), radius=8 * S, fill=tier_color
+    )
+    draw.rectangle((rail_tier, 0, rail_w, H * S - 1), fill=accent)
+    # Secondary stripe between tier/kind (medium+) or gold hairline (ota)
+    if sec_color is not None and rail_tier >= 2 * S:
+        stripe_x = rail_tier - max(1, S)
+        draw.rectangle(
+            (stripe_x, 0, rail_tier, H * S - 1), fill=sec_color
+        )
+
+    # Prestige / heat rule under top edge
+    if flair.get("top_rule"):
+        rule_c = sec_color or tier_color
+        draw.rectangle(
+            (rail_w, 0, card_w * S - 1, max(2, 2 * S)),
+            fill=_mix(rule_c, BG, 0.65),
+        )
 
     av = av_size * S
     avatar = _circular_avatar(avatar_bytes, av)
     ax = MARGIN * S
     ay = 22 * S
     img.paste(avatar, (ax, ay), avatar)
-    draw.ellipse((ax, ay, ax + av, ay + av), outline=accent, width=2 * S)
+    # Avatar rings escalate: outer flair ring then tier ring
+    outer_w = int(flair.get("ring_outer") or 0) * S
+    ring_w = max(1, int(flair.get("ring") or 2) * S)
+    oc = _ring_outer_color(flair, tier_color)
+    if outer_w > 0 and oc is not None:
+        pad = outer_w + S
+        draw.ellipse(
+            (ax - pad, ay - pad, ax + av + pad, ay + av + pad),
+            outline=_mix(oc, BG, 0.75),
+            width=outer_w,
+        )
+    draw.ellipse(
+        (ax, ay, ax + av, ay + av), outline=tier_color, width=ring_w
+    )
 
     cx = ax + av + 16 * S
     right = (WIDTH - MARGIN) * S
     y = 20 * S
 
-    # Status pill (right) + name
+    # Status pill (right) + name — kind-colored
     pill_font = _font(11 * S, bold=True)
     pill_pad_x, pill_pad_y = 12 * S, 5 * S
     pill_h = pill_font.size + pill_pad_y * 2
@@ -359,7 +557,9 @@ def _render_challenge(
     draw.rounded_rectangle(
         (pill_x, pill_y, pill_x + pill_w, pill_y + pill_h),
         radius=pill_h / 2,
-        fill=_mix(accent, BG, 0.22),
+        fill=_mix(accent, BG, 0.30),
+        outline=_mix(accent, BG, 0.55),
+        width=max(1, S // 2),
     )
     draw.text(
         (pill_x + pill_w / 2, pill_y + pill_h / 2),
@@ -379,33 +579,47 @@ def _render_challenge(
     )
     y += 34 * S
 
-    # Tier badge + #N, then title (1–2 lines)
+    # Tier badge + #N, then title (1–2 lines) — flair pads/outline escalate
     title_font = _font(20 * S, bold=True)
     tlabel = tier_pretty.upper()
-    tpad_x, tpad_y = 10 * S, 4 * S
+    if tier_key == "ota_master":
+        tlabel = "★  OTA-MASTER"
+    extra_pad = int(flair.get("tier_pill_pad") or 0) * S
+    tpad_x, tpad_y = 10 * S + extra_pad, 4 * S + max(0, extra_pad // 2)
     th = pill_font.size + tpad_y * 2
     tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
+    tier_outline = sec_color if tier_key in ("hard", "ota_master") and sec_color else _mix(
+        tier_color, BG, 0.55
+    )
     draw.rounded_rectangle(
         (cx, y, cx + tw, y + th),
         radius=th / 2,
-        fill=_mix(tier_color, BG, 0.22),
-        outline=_mix(tier_color, BG, 0.55),
-        width=max(1, S // 2),
+        fill=_mix(tier_color, BG, 0.28 if tier_key != "easy" else 0.22),
+        outline=tier_outline,
+        width=max(1, (1 + (1 if tier_key in ("hard", "ota_master") else 0)) * max(1, S // 2)),
     )
     draw.text(
         (cx + tw / 2, y + th / 2),
         tlabel,
         font=pill_font,
-        fill=tier_color,
+        fill=ACCENT_GOLD if tier_key == "ota_master" else tier_color,
         anchor="mm",
     )
+    # Tiny prestige sparks beside Ota pill
+    if flair.get("spark"):
+        spark = ACCENT_GOLD
+        sy = int(y + th / 2)
+        for dx, dy in ((-6 * S, 0), (tw + 6 * S, 0)):
+            sx = int(cx + dx)
+            draw.ellipse((sx - S, sy - S, sx + S, sy + S), fill=spark)
     if number:
         num_font = _font(13 * S, bold=True)
+        num_x = cx + tw + 10 * S + (8 * S if flair.get("spark") else 0)
         draw.text(
-            (cx + tw + 10 * S, y + th / 2),
+            (num_x, y + th / 2),
             f"#{int(number)}",
             font=num_font,
-            fill=INK_SOFT,
+            fill=ACCENT_GOLD if tier_key == "ota_master" else INK_SOFT,
             anchor="lm",
         )
     y += th + 10 * S
@@ -439,8 +653,12 @@ def _render_challenge(
             oh_s = 54 * S
 
         box = (cx, y, right, y + oh_s)
-        draw.rounded_rectangle(box, radius=12 * S, fill=PANEL_BG, outline=HAIRLINE, width=S)
-        # Single accent bar on outcome only
+        panel_fill = _mix(accent, PANEL_BG, 0.10)
+        panel_line = _mix(accent, HAIRLINE, 0.25)
+        draw.rounded_rectangle(
+            box, radius=12 * S, fill=panel_fill, outline=panel_line, width=S
+        )
+        # Kind accent bar on outcome
         draw.rounded_rectangle(
             (cx, y, cx + 5 * S, y + oh_s), radius=3 * S, fill=accent
         )
@@ -528,11 +746,17 @@ def _render_challenge(
         draw.rounded_rectangle(
             (px0, py0, px0 + poster_w * S - 1, py0 + poster_h * S - 1),
             radius=12 * S,
-            outline=HAIRLINE,
+            outline=_mix(tier_color, HAIRLINE, 0.35),
             width=S,
         )
 
-    _clip_round(img, outer, radius, HAIRLINE, S)
+    if flair.get("corners"):
+        _draw_corner_brackets(
+            draw, outer, color=ACCENT_GOLD, S=S
+        )
+    edge_t = float(flair.get("edge") or 0.30)
+    edge = _mix(sec_color or tier_color, HAIRLINE, edge_t)
+    _clip_round(img, outer, radius, edge, max(S, 2 * S if tier_key == "ota_master" else S))
     img = img.resize((card_w, H), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -545,19 +769,26 @@ def _render_leaderboard(
     entries: list[dict],
     footer: str = "",
 ) -> bytes:
-    """entries: {rank, name, score, avatar?}"""
+    """entries: {rank, name, score, avatar?, best_tier?}.
+
+    best_tier = highest challenge tier the user has cleared (themes row border/ring).
+    """
     S = SCALE
     accent = ACCENT_PURPLE
     W = 560
-    row_h = 40
-    top_h = 48
+    row_h = 44
+    top_h = 52
     margin = 28
     header = 72
     body = 0
     for e in entries:
         body += top_h if int(e.get("rank") or 99) <= 3 else row_h
         body += 2
-    foot = 28 if footer else 16
+    if not footer:
+        footer = f"{BRAND_FOOTER}  ·  row color = best tier cleared"
+    elif BRAND_FOOTER.lower() not in footer.lower():
+        footer = f"{footer}  ·  {BRAND_FOOTER}"
+    foot = 28
     H = header + body + foot
 
     img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
@@ -565,6 +796,14 @@ def _render_leaderboard(
     outer = (0, 0, W * S - 1, H * S - 1)
     radius = 22 * S
     draw.rounded_rectangle(outer, radius=radius, fill=BG)
+    _draw_tier_wash(
+        draw,
+        card_w_px=W * S,
+        card_h_px=H * S,
+        tier_color=ACCENT_PURPLE,
+        strength=0.08,
+        width_frac=0.35,
+    )
     draw.rounded_rectangle((0, 0, 8 * S, H * S - 1), radius=8 * S, fill=accent)
     draw.rectangle((4 * S, 0, 9 * S, H * S - 1), fill=accent)
 
@@ -574,12 +813,10 @@ def _render_leaderboard(
         font=_font(22 * S, bold=True),
         fill=INK,
     )
-    # unit hint
-    unit = "clears"
     uf = _font(12 * S, bold=True)
     draw.text(
         ((W - margin) * S, 28 * S),
-        unit.upper(),
+        "CLEARS",
         font=uf,
         fill=INK_SOFT,
         anchor="rt",
@@ -601,16 +838,60 @@ def _render_leaderboard(
         mid = (y + rh / 2) * S
         name = _oneline(str(e.get("name") or "?"))
         score = str(e.get("score") or "0")
+        best = (e.get("best_tier") or "").lower().strip()
+        tier_c = TIER_COLOR.get(best) if best else None
+        flair = _tier_flair(best) if best else None
+        sec = _flair_secondary(flair) if flair else None
+
+        # Row plate + left tier border
+        row_box = (
+            (margin - 6) * S,
+            y * S + 2 * S,
+            (W - margin + 6) * S,
+            (y + rh) * S - 2 * S,
+        )
+        if tier_c:
+            plate = _mix(tier_c, BG, 0.10 if is_top else 0.07)
+            draw.rounded_rectangle(
+                row_box,
+                radius=10 * S,
+                fill=plate,
+                outline=_mix(sec or tier_c, BG, 0.45 if best == "ota_master" else 0.35),
+                width=max(1, (2 if best in ("hard", "ota_master") else 1) * S),
+            )
+            # Left accent bar inside row
+            bx0 = row_box[0]
+            draw.rounded_rectangle(
+                (bx0, row_box[1], bx0 + 5 * S, row_box[3]),
+                radius=3 * S,
+                fill=tier_c,
+            )
+            if sec and best in ("medium", "hard", "ota_master"):
+                draw.rectangle(
+                    (bx0 + 5 * S, row_box[1], bx0 + 7 * S, row_box[3]),
+                    fill=sec,
+                )
+        elif is_top:
+            draw.rounded_rectangle(
+                row_box,
+                radius=10 * S,
+                fill=_mix(medals.get(rank, accent), BG, 0.08),
+            )
 
         # Rank column
         if is_top:
             r = 14 * S
-            rcx = (margin + 16) * S
-            draw.ellipse((rcx - r, mid - r, rcx + r, mid + r), fill=medals.get(rank, accent))
-            draw.text((rcx, mid), str(rank), font=_font(14 * S, bold=True), fill=BG, anchor="mm")
+            rcx = (margin + 18) * S
+            draw.ellipse(
+                (rcx - r, mid - r, rcx + r, mid + r),
+                fill=medals.get(rank, accent),
+            )
+            draw.text(
+                (rcx, mid), str(rank), font=_font(14 * S, bold=True), fill=BG, anchor="mm"
+            )
         else:
             draw.text(
-                ((margin + 16) * S, mid),
+                ((margin + 18) * S, mid),
                 str(rank),
                 font=_font(14 * S, bold=True),
                 fill=INK_SOFT,
@@ -619,20 +900,61 @@ def _render_leaderboard(
 
         d = (32 if is_top else 26) * S
         av = _circular_avatar(e.get("avatar"), d)
-        ax = (margin + 36) * S
+        ax = (margin + 40) * S
         ay = int(mid - d / 2)
         img.paste(av, (int(ax), ay), av)
-        draw.ellipse((ax, ay, ax + d, ay + d), outline=HAIRLINE, width=S)
+        ring = tier_c or HAIRLINE
+        ring_w = max(S, (2 if best in ("hard", "ota_master") else 1) * S)
+        if best == "ota_master":
+            # gold outer + violet inner
+            pad = 2 * S
+            draw.ellipse(
+                (ax - pad, ay - pad, ax + d + pad, ay + d + pad),
+                outline=ACCENT_GOLD,
+                width=2 * S,
+            )
+            draw.ellipse((ax, ay, ax + d, ay + d), outline=tier_c, width=ring_w)
+        else:
+            draw.ellipse((ax, ay, ax + d, ay + d), outline=ring, width=ring_w)
 
         sf = score_font_top if is_top else score_font
-        draw.text(((W - margin) * S, mid), score, font=sf, fill=INK, anchor="rm")
+        score_fill = ACCENT_GOLD if best == "ota_master" else INK
+        draw.text(((W - margin) * S, mid), score, font=sf, fill=score_fill, anchor="rm")
         sw = draw.textlength(score, font=sf)
 
-        name_x = margin + 36 + 32 + 10
+        # Mini tier pill after name area
+        name_x = margin + 40 + 32 + 12
         nf = _font(17 * S if is_top else 15 * S, bold=is_top)
-        name_max = (W - margin) * S - name_x * S - sw - 20 * S
+        tier_pill_w = 0
+        if best and tier_c:
+            tlab = TIER_LABEL.get(best, best)[:3].upper()
+            if best == "ota_master":
+                tlab = "OTA"
+            tf = _font(10 * S, bold=True)
+            tw = draw.textlength(tlab, font=tf) + 12 * S
+            th = tf.size + 6 * S
+            tpx = name_x * S
+            tpy = mid - th / 2
+            draw.rounded_rectangle(
+                (tpx, tpy, tpx + tw, tpy + th),
+                radius=th / 2,
+                fill=_mix(tier_c, BG, 0.28),
+                outline=sec if best in ("hard", "ota_master") and sec else _mix(tier_c, BG, 0.55),
+                width=max(1, S // 2),
+            )
+            draw.text(
+                (tpx + tw / 2, mid),
+                tlab,
+                font=tf,
+                fill=ACCENT_GOLD if best == "ota_master" else tier_c,
+                anchor="mm",
+            )
+            tier_pill_w = tw + 8 * S
+
+        name_x_px = name_x * S + tier_pill_w
+        name_max = (W - margin) * S - name_x_px - sw - 20 * S
         draw.text(
-            (name_x * S, mid),
+            (name_x_px, mid),
             _truncate(draw, name, nf, name_max),
             font=nf,
             fill=INK,
@@ -640,13 +962,15 @@ def _render_leaderboard(
         )
 
         # subtle leader dots between name and score
-        dots_x0 = name_x * S + draw.textlength(_truncate(draw, name, nf, name_max), font=nf) + 10 * S
+        trunc = _truncate(draw, name, nf, name_max)
+        dots_x0 = name_x_px + draw.textlength(trunc, font=nf) + 10 * S
         dots_x1 = (W - margin) * S - sw - 12 * S
         if dots_x1 - dots_x0 > 24 * S:
             dy = mid
             x = dots_x0
+            dot_c = _mix(tier_c, HAIRLINE, 0.35) if tier_c else HAIRLINE
             while x < dots_x1:
-                draw.ellipse((x, dy - S, x + 2 * S, dy + S), fill=HAIRLINE)
+                draw.ellipse((x, dy - S, x + 2 * S, dy + S), fill=dot_c)
                 x += 6 * S
 
         y += rh + 2
@@ -659,7 +983,7 @@ def _render_leaderboard(
             fill=INK_SOFT,
         )
 
-    _clip_round(img, outer, radius, HAIRLINE, S)
+    _clip_round(img, outer, radius, _mix(ACCENT_PURPLE, HAIRLINE, 0.35), S)
     img = img.resize((W, H), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -700,7 +1024,34 @@ _KIND_EMBED_COLOR = {
     "expired": 0xF07178,
     "status": 0x9680E2,
     "leaderboard": 0x9680E2,
+    "new_challenger": 0x5B9CFA,
 }
+
+_TIER_EMBED_COLOR = {
+    "easy": 0x3DD68C,
+    "medium": 0x38BDF8,
+    "hard": 0xF07178,
+    "ota_master": 0xE4C460,  # gold prestige strip
+}
+
+_TIER_CAPTION = {
+    "easy": "🟢 **Easy**",
+    "medium": "🔵 **Medium**",
+    "hard": "🔴 **Hard**",
+    "ota_master": "★ **Ota-Master**",
+}
+
+
+def tier_embed_color(tier: str | None) -> int | None:
+    if not tier:
+        return None
+    return _TIER_EMBED_COLOR.get((tier or "").lower().strip())
+
+
+def tier_caption_mark(tier: str | None) -> str:
+    if not tier:
+        return ""
+    return _TIER_CAPTION.get((tier or "").lower().strip(), "")
 
 
 def files_as_image_embeds(
@@ -708,15 +1059,28 @@ def files_as_image_embeds(
     *,
     kind: str | None = None,
     color: int | None = None,
+    tier: str | None = None,
+    colors: list[int] | None = None,
 ):
-    """One embed per file with set_image(attachment://…) so Discord shows them full-size."""
+    """One embed per file with set_image(attachment://…) so Discord shows them full-size.
+
+    Prefer explicit colors[], then color, then tier color, then kind color.
+    """
     import discord
 
-    c = color if color is not None else _KIND_EMBED_COLOR.get(kind or "", 0x2F3136)
+    fallback = (
+        color
+        if color is not None
+        else (tier_embed_color(tier) if tier else None)
+        or _KIND_EMBED_COLOR.get(kind or "", 0x2F3136)
+    )
     embeds: list = []
-    for f in files or []:
+    for i, f in enumerate(files or []):
         name = getattr(f, "filename", None) or "image.png"
-        emb = discord.Embed(color=c)
+        c = fallback
+        if colors is not None and i < len(colors) and colors[i] is not None:
+            c = colors[i]
+        emb = discord.Embed(color=int(c))
         emb.set_image(url=f"attachment://{name}")
         embeds.append(emb)
     return embeds
@@ -859,11 +1223,29 @@ async def render_all_demo_cards(
     lb = await render_leaderboard_card(
         title="Challenge clears",
         entries=[
-            {"rank": 1, "name": "Alice", "score": 12, "avatar": demo_avatar_png((214, 175, 84))},
-            {"rank": 2, "name": "Bob", "score": 7, "avatar": demo_avatar_png((183, 189, 201))},
-            {"rank": 3, "name": "Cara", "score": 3, "avatar": demo_avatar_png((200, 143, 92))},
-            {"rank": 4, "name": "Dan", "score": 1, "avatar": None},
-            {"rank": 5, "name": "Eve", "score": 1, "avatar": None},
+            {
+                "rank": 1,
+                "name": "Alice",
+                "score": 12,
+                "avatar": demo_avatar_png((214, 175, 84)),
+                "best_tier": "ota_master",
+            },
+            {
+                "rank": 2,
+                "name": "Bob",
+                "score": 7,
+                "avatar": demo_avatar_png((183, 189, 201)),
+                "best_tier": "hard",
+            },
+            {
+                "rank": 3,
+                "name": "Cara",
+                "score": 5,
+                "avatar": demo_avatar_png((200, 143, 92)),
+                "best_tier": "medium",
+            },
+            {"rank": 4, "name": "Dan", "score": 3, "avatar": None, "best_tier": "easy"},
+            {"rank": 5, "name": "Eve", "score": 1, "avatar": None, "best_tier": None},
         ],
         footer="5 ranked · clears",
     )

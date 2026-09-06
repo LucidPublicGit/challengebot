@@ -20,6 +20,7 @@ MODULES = (
     "tests.test_attempts",
     "tests.test_challenge_card",
     "tests.test_congrats",
+    "tests.test_progress_status",
 )
 
 

@@ -327,7 +327,176 @@ def pick_congrats(
 
 
 def as_discord_congrats(path: Path):
-    """discord.File for a local congrats image."""
+    """discord.File for a local congrats image (raw file)."""
     import discord
 
     return discord.File(str(path), filename=path.name)
+
+
+def _is_animated(path: Path) -> bool:
+    suf = path.suffix.lower()
+    if suf == ".gif":
+        return True
+    if suf == ".webp":
+        try:
+            from PIL import Image
+
+            with Image.open(path) as im:
+                return bool(getattr(im, "is_animated", False) and im.n_frames > 1)
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
+def frame_congrats(
+    path: Path,
+    *,
+    tier: str = "",
+    title: str = "",
+    number: int = 0,
+) -> bytes | None:
+    """Wrap a static congrats image in tier chrome (border + matte).
+
+    Animated GIF/WebP: returns None so caller can attach the raw file instead.
+    """
+    if not path or not path.is_file():
+        return None
+    if _is_animated(path):
+        return None
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        from app.challenge_card import (
+            ACCENT_GOLD,
+            BG,
+            BRAND_FOOTER,
+            INK,
+            INK_SOFT,
+            TIER_COLOR,
+            TIER_LABEL,
+            _draw_corner_brackets,
+            _mix,
+            _tier_flair,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("frame_congrats imports failed: %s", exc)
+        return None
+
+    try:
+        src = Image.open(path).convert("RGBA")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("frame_congrats open failed (%s): %s", path, exc)
+        return None
+
+    # Cap huge assets for Discord (8MB soft target via reasonable px)
+    max_side = 900
+    w, h = src.size
+    if max(w, h) > max_side:
+        scale = max_side / max(w, h)
+        src = src.resize(
+            (max(1, int(w * scale)), max(1, int(h * scale))),
+            Image.Resampling.LANCZOS,
+        )
+        w, h = src.size
+
+    tier_key = (tier or "").lower().strip()
+    tier_color = TIER_COLOR.get(tier_key, (150, 128, 226))
+    flair = _tier_flair(tier_key)
+    sec = flair.get("secondary")
+    if not isinstance(sec, tuple):
+        sec = ACCENT_GOLD if tier_key == "ota_master" else tier_color
+
+    border = 14 if tier_key in ("hard", "ota_master") else (12 if tier_key == "medium" else 10)
+    matte_h = 44
+    canvas_w = w + border * 2
+    canvas_h = h + border * 2 + matte_h
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (*BG, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    # Outer tier edge
+    draw.rectangle((0, 0, canvas_w - 1, canvas_h - 1), outline=tier_color, width=3)
+    if tier_key in ("hard", "ota_master"):
+        draw.rectangle(
+            (3, 3, canvas_w - 4, canvas_h - 4),
+            outline=_mix(sec, BG, 0.7),
+            width=2,
+        )
+    # Soft wash strip on left of frame
+    for i in range(8):
+        t = 0.14 * (1 - i / 7)
+        col = _mix(tier_color, BG, t)
+        draw.rectangle((0, 0, border + i * 2, canvas_h), fill=(*col, 255))
+
+    canvas.paste(src, (border, border), src if src.mode == "RGBA" else None)
+
+    # Inner hairline around art
+    draw.rectangle(
+        (border - 1, border - 1, border + w, border + h),
+        outline=_mix(tier_color, BG, 0.45),
+        width=1,
+    )
+
+    if flair.get("corners") or tier_key == "ota_master":
+        _draw_corner_brackets(
+            draw,
+            (0, 0, canvas_w - 1, canvas_h - 1),
+            color=ACCENT_GOLD,
+            S=1,
+            length=28,
+            width=3,
+        )
+
+    # Bottom matte
+    my0 = border + h
+    draw.rectangle((0, my0, canvas_w, canvas_h), fill=_mix(tier_color, BG, 0.12))
+    draw.line((border, my0, canvas_w - border, my0), fill=_mix(tier_color, BG, 0.5), width=2)
+
+    label = TIER_LABEL.get(tier_key, (tier or "Challenge").replace("_", " ").title())
+    if tier_key == "ota_master":
+        label = "★ Ota-Master"
+    bits = [label]
+    if number:
+        bits.append(f"#{int(number)}")
+    if title:
+        bits.append(title[:40])
+    bits.append(BRAND_FOOTER)
+    text = "  ·  ".join(bits)
+
+    try:
+        font = ImageFont.truetype("C:/Windows/Fonts/segoeui.ttf", 18)
+    except OSError:
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16
+            )
+        except OSError:
+            font = ImageFont.load_default()
+
+    fill = ACCENT_GOLD if tier_key == "ota_master" else tier_color
+    draw.text((border + 4, my0 + 12), text, font=font, fill=fill)
+
+    import io
+
+    buf = io.BytesIO()
+    canvas.convert("RGB").save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def as_discord_framed_congrats(
+    path: Path,
+    *,
+    tier: str = "",
+    title: str = "",
+    number: int = 0,
+):
+    """Framed PNG when possible; otherwise raw file (animated)."""
+    import discord
+
+    framed = frame_congrats(path, tier=tier, title=title, number=number)
+    if framed:
+        return discord.File(
+            __import__("io").BytesIO(framed),
+            filename=f"congrats-{path.stem}.png",
+        )
+    return as_discord_congrats(path)

@@ -33,7 +33,11 @@ async def run() -> None:
     if expired:
         logger.info("Startup expired %s attempt(s)", len(expired))
 
-    app = create_app()
+    bot = None
+    if settings.discord_token:
+        bot = build_bot()
+
+    app = create_app(bot=bot)
     config = uvicorn.Config(
         app,
         host=settings.ui_host,
@@ -44,10 +48,8 @@ async def run() -> None:
     server = uvicorn.Server(config)
     web_task = asyncio.create_task(server.serve(), name="admin-web")
 
-    bot = None
     bot_task = None
-    if settings.discord_token:
-        bot = build_bot()
+    if bot is not None:
 
         async def run_bot() -> None:
             async with bot:

@@ -124,6 +124,13 @@ button.danger,.btn.danger{background:transparent;color:var(--bad);border-color:#
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.8rem}
 .truncate{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 td .sub{display:block;color:var(--muted);font-size:.75rem;margin-top:.1rem}
+td .row-actions{display:flex;flex-wrap:wrap;gap:.3rem;align-items:center}
+td .row-actions form{display:inline;margin:0}
+td .row-actions button{
+  margin:0;padding:.28rem .55rem;font-size:.75rem;font-weight:700;
+  background:transparent;color:var(--accent);border:1px solid var(--line);
+}
+td .row-actions button:hover{border-color:var(--accent2);color:var(--ink)}
 .stat-row{display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.65rem}
 .filters{display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.65rem}
 .filters a{
@@ -311,11 +318,16 @@ def _content_cell(a: dict) -> str:
     return _esc(c) if c else "—"
 
 
-def create_app() -> FastAPI:
+def create_app(bot=None) -> FastAPI:
     app = FastAPI(title="ChallengeTracker Admin", docs_url=None, redoc_url=None)
+    app.state.bot = bot
 
     @app.get("/", response_class=HTMLResponse)
-    def home(filter: str = "all", _: None = Depends(_auth)):
+    def home(
+        filter: str = "all",
+        reposted: int = 0,
+        _: None = Depends(_auth),
+    ):
         # Tabs: all | active (active+scheduled) | completed | voided
         filt = (filter or "all").strip().lower()
         if filt not in ("all", "active", "completed", "voided"):
@@ -344,6 +356,20 @@ def create_app() -> FastAPI:
         tr = []
         for a in rows:
             content = _content_cell(a)
+            st = (a.get("status") or "").lower()
+            # Challenger banner for schedule/start pair; actives get start+banner
+            chal = (
+                '<input type="hidden" name="with_challenger" value="1"/>'
+                if st in ("scheduled", "active")
+                else ""
+            )
+            repost_btn = (
+                f"<form method='post' action='/attempts/{a['id']}/repost'>"
+                f"{chal}"
+                f"<input type='hidden' name='filter' value='{_esc(filt)}'/>"
+                f"<button type='submit' title='Repost card to announce channels'>Repost</button>"
+                f"</form>"
+            )
             tr.append(
                 f"<tr>"
                 f"<td class='mono'>{a['id']}</td>"
@@ -354,7 +380,10 @@ def create_app() -> FastAPI:
                 f"<td class='truncate' title='{_esc(att_svc.display_content(a))}'>{content}</td>"
                 f"<td><span class='badge {_esc(a['status'])}'>{_esc(a['status'])}</span></td>"
                 f"<td class='muted'>{_attempt_when_cell(a)}</td>"
-                f"<td><a href='/attempts/{a['id']}'>Edit</a></td>"
+                f"<td><div class='row-actions'>"
+                f"<a class='btn secondary' href='/attempts/{a['id']}' "
+                f"style='padding:.28rem .55rem;font-size:.75rem;margin:0'>Edit</a>"
+                f"{repost_btn}</div></td>"
                 f"</tr>"
             )
         empty = {
@@ -363,7 +392,14 @@ def create_app() -> FastAPI:
             "completed": "No completed attempts",
             "voided": "No voided attempts",
         }[filt]
+        flash = ""
+        if reposted:
+            flash = (
+                f'<p class="msg">Reposted attempt <b>#{int(reposted)}</b> '
+                "to announce channels.</p>"
+            )
         body = f"""
+        {flash}
         <div class="filters">
           {tab("all", "All", n_total)}
           {tab("active", "Active", n_active)}
@@ -373,12 +409,13 @@ def create_app() -> FastAPI:
         <div class="stat-row">
           <span class="pill">Showing <b>{len(rows)}</b></span>
           <span class="pill">Filter <b>{_esc(filt)}</b></span>
+          <span class="pill muted">Repost = new card design to channels</span>
         </div>
         <div class="card" style="padding:0;overflow:auto">
           <table>
             <thead><tr>
               <th>ID</th><th>User</th><th>Challenge</th><th>Content</th>
-              <th>Status</th><th>When</th><th></th>
+              <th>Status</th><th>When</th><th>Actions</th>
             </tr></thead>
             <tbody>{''.join(tr) or f'<tr><td colspan=7 class="muted">{empty}</td></tr>'}</tbody>
           </table>
@@ -387,9 +424,11 @@ def create_app() -> FastAPI:
         return _page("Attempts", body, "/")
 
     @app.get("/attempts/{attempt_id}", response_class=HTMLResponse)
-    def attempt_edit(attempt_id: int, _: None = Depends(_auth)):
-        rows = att_svc.list_attempts(limit=500)
-        a = next((x for x in rows if x["id"] == attempt_id), None)
+    def attempt_edit(
+        attempt_id: int,
+        _: None = Depends(_auth),
+    ):
+        a = att_svc.get_attempt(attempt_id)
         if not a:
             raise HTTPException(404)
         sd, st = _iso_to_date_time(a.get("started_at"))
@@ -461,8 +500,47 @@ def create_app() -> FastAPI:
             </div>
           </form>
         </div>
+        <p class="muted">To repost the card to Discord, use <b>Repost</b> on the Attempts list.</p>
         """
         return _page(f"Attempt #{attempt_id}", body, "/")
+
+    @app.post("/attempts/{attempt_id}/repost")
+    async def attempt_repost(
+        attempt_id: int,
+        request: Request,
+        with_challenger: str = Form(""),
+        filter: str = Form("all"),
+        _: None = Depends(_auth),
+    ):
+        from app.services.rewards import repost_attempt_announce
+
+        att = att_svc.get_attempt(attempt_id)
+        if not att:
+            raise HTTPException(404, "Attempt not found")
+        bot = getattr(request.app.state, "bot", None)
+        if bot is None:
+            raise HTTPException(
+                503, "Discord bot not running (DISCORD_TOKEN empty?)."
+            )
+        if not bot.is_ready():
+            raise HTTPException(503, "Discord bot not ready yet — try again shortly.")
+        force = str(with_challenger or "").strip() in ("1", "on", "true", "yes")
+        # Scheduled → scheduled+challenger; active+flag → start+challenger
+        ok = await repost_attempt_announce(
+            bot, att, with_challenger=force or att.get("status") == "scheduled"
+        )
+        if not ok:
+            raise HTTPException(
+                502,
+                "Announce failed — check ANNOUNCE_CHANNEL_ID / bot permissions.",
+            )
+        filt = (filter or "all").strip().lower()
+        if filt not in ("all", "active", "completed", "voided"):
+            filt = "all"
+        q = f"?reposted={attempt_id}"
+        if filt != "all":
+            q += f"&filter={filt}"
+        return RedirectResponse(f"/{q}", status_code=303)
 
     @app.post("/attempts/{attempt_id}")
     def attempt_save(
@@ -795,11 +873,13 @@ def create_app() -> FastAPI:
                 <input name="tadoku_contest_id" value="{_esc(rt['tadoku_contest_id'])}"/></div>
               <div><label>Tadoku API base</label>
                 <input name="tadoku_api_base" value="{_esc(rt['tadoku_api_base'])}"/></div>
-              <div><label>Announce channel id (main — cards + congrats)</label>
-                <input name="announce_channel_id" value="{_esc(rt['announce_channel_id'])}"/></div>
-              <div><label>Secondary announce channel (cards only)</label>
+              <div><label>Highlights channel (start + complete/fail + congrats)</label>
+                <input name="announce_channel_id" value="{_esc(rt['announce_channel_id'])}"
+                  placeholder="1187153489156124732"/></div>
+              <div><label>Log channel (schedule, start, status, complete/fail, all)</label>
                 <input name="announce_secondary_channel_id"
-                  value="{_esc(rt.get('announce_secondary_channel_id') or '')}"/></div>
+                  value="{_esc(rt.get('announce_secondary_channel_id') or '')}"
+                  placeholder="1523503572652916786"/></div>
               <div><label>Guild id</label>
                 <input name="guild_id" value="{_esc(rt['guild_id'])}"/></div>
               <div class="span-2"><label>Admin role ids</label>

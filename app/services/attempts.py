@@ -160,6 +160,22 @@ def parse_schedule_local(
     return local_dt.astimezone(timezone.utc).replace(microsecond=0)
 
 
+def get_attempt(attempt_id: int) -> dict | None:
+    """Single attempt with challenge + user fields (for admin repost, etc.)."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
+            "c.goal_amount, c.media_filter, c.param_label, c.time_limit_hours, "
+            "u.display_name, u.tadoku_user_id "
+            "FROM attempts a "
+            "JOIN challenge_defs c ON c.id = a.challenge_id "
+            "LEFT JOIN users u ON u.discord_id = a.discord_id "
+            "WHERE a.id=?",
+            (int(attempt_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def list_attempts(
     discord_id: str | None = None,
     status: str | None = None,
@@ -836,3 +852,45 @@ def completion_counts(discord_id: str) -> dict[str, int]:
         total = sum(by_tier.values())
         by_tier["total"] = total
         return by_tier
+
+
+# Difficulty ladder for leaderboard row theming
+_TIER_RANK = {
+    "easy": 1,
+    "medium": 2,
+    "hard": 3,
+    "ota_master": 4,
+}
+_RANK_TO_TIER = {v: k for k, v in _TIER_RANK.items()}
+
+
+def highest_completed_tier(discord_id: str) -> str | None:
+    """Best tier the user has ever cleared, or None."""
+    m = highest_completed_tiers([discord_id])
+    return m.get(discord_id)
+
+
+def highest_completed_tiers(discord_ids: list[str]) -> dict[str, str | None]:
+    """Map discord_id → highest completed tier (easy < medium < hard < ota_master)."""
+    out: dict[str, str | None] = {str(i): None for i in discord_ids}
+    ids = [str(i) for i in discord_ids if i]
+    if not ids:
+        return out
+    ph = ",".join("?" * len(ids))
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT a.discord_id AS did, c.tier AS tier "
+            "FROM attempts a "
+            "JOIN challenge_defs c ON c.id = a.challenge_id "
+            f"WHERE a.status='completed' AND a.discord_id IN ({ph})",
+            ids,
+        ).fetchall()
+    best: dict[str, int] = {}
+    for r in rows:
+        did = str(r["did"])
+        rank = _TIER_RANK.get((r["tier"] or "").lower(), 0)
+        if rank > best.get(did, 0):
+            best[did] = rank
+    for did, rank in best.items():
+        out[did] = _RANK_TO_TIER.get(rank)
+    return out

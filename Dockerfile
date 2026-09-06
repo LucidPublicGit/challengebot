@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY challenges ./challenges
 COPY completion_pictures ./completion_pictures
+COPY new_challenger ./new_challenger
 
 RUN mkdir -p /app/data
 

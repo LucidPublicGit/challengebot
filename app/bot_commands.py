@@ -18,8 +18,13 @@ from app.challenge_card import (
     render_all_demo_cards,
     render_leaderboard_card,
 )
-from app.congrats import as_discord_congrats, pick_congrats
+from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
+from app.new_challenger import (
+    as_discord_new_challenger,
+    list_templates,
+    render_new_challenger,
+)
 from app.services import attempts as att_svc
 from app.services.rewards import (
     announce,
@@ -1873,12 +1878,14 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
     if not rows:
         await interaction.followup.send("No completions yet.")
         return
+    uids = [str(r["discord_id"]) for r in rows]
+    best_map = att_svc.highest_completed_tiers(uids)
     entries = []
     for i, r in enumerate(rows):
         av = None
-        uid = r["discord_id"]
+        uid = str(r["discord_id"])
         name = r["display_name"] or uid
-        if str(uid).isdigit():
+        if uid.isdigit():
             try:
                 u = interaction.client.get_user(int(uid))
                 if u is None:
@@ -1889,7 +1896,13 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
             except (discord.HTTPException, ValueError):
                 pass
         entries.append(
-            {"rank": i + 1, "name": name, "score": int(r["n"]), "avatar": av}
+            {
+                "rank": i + 1,
+                "name": name,
+                "score": int(r["n"]),
+                "avatar": av,
+                "best_tier": best_map.get(uid),
+            }
         )
     png = await render_leaderboard_card(
         title="Challenge clears",
@@ -2002,6 +2015,63 @@ async def challenge_testcards(
 
 
 @challenge_group.command(
+    name="testchallenger",
+    description="Admin: preview new-challenger banner with your avatar",
+)
+@app_commands.describe(
+    public="If true, post in this channel (default: only you can see)",
+    with_card="Also attach a sample start card under the banner (default: on)",
+)
+async def challenge_testchallenger(
+    interaction: discord.Interaction,
+    public: bool = False,
+    with_card: bool = True,
+) -> None:
+    b = _bot_helpers()
+    if not b.is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=not public)
+    templates = list_templates()
+    if not templates:
+        await interaction.followup.send(
+            "No templates in `new_challenger/`.",
+            ephemeral=not public,
+        )
+        return
+    av = await avatar_bytes(interaction.user)
+    nc = render_new_challenger(av, tier="hard")
+    if not nc:
+        await interaction.followup.send(
+            "Failed to render new-challenger image (check templates/hole mask).",
+            ephemeral=not public,
+        )
+        return
+    files = [as_discord_new_challenger(nc)]
+    if with_card:
+        png, _cap = await build_event_card(
+            kind="start",
+            user=interaction.user,
+            title="Challenger preview",
+            tier="hard",
+            number=0,
+            content="preview",
+            media_filter="any",
+        )
+        files.append(as_discord_file(png, "start-card.png"))
+    await interaction.followup.send(
+        content=(
+            f"**New challenger** preview for {interaction.user.mention}\n"
+            f"Templates available: `{len(templates)}` · "
+            "banner on top" + (" · card under" if with_card else "")
+        ),
+        files=files,
+        embeds=files_as_image_embeds(files, kind="start", tier="hard"),
+        ephemeral=not public,
+    )
+
+
+@challenge_group.command(
     name="testcongrats",
     description="Admin: preview a completion congrats image (private)",
 )
@@ -2050,7 +2120,9 @@ async def challenge_testcongrats(
     )
     files = [
         as_discord_file(png, "complete-card.png"),
-        as_discord_congrats(path),
+        as_discord_framed_congrats(
+            path, tier=tier, title="Congrats preview", number=0
+        ),
     ]
     await interaction.followup.send(
         content=(
@@ -2059,6 +2131,6 @@ async def challenge_testcongrats(
             f"tier=`{tier}` content=`{content or '—'}` mark=`{mark}`"
         ),
         files=files,
-        embeds=files_as_image_embeds(files, kind="complete"),
+        embeds=files_as_image_embeds(files, kind="complete", tier=tier),
         ephemeral=True,
     )

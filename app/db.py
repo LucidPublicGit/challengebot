@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS congrats_usage (
 # Additive columns for DBs created before content / tz existed.
 _ATTEMPT_MIGRATIONS = (
     ("content", "ALTER TABLE attempts ADD COLUMN content TEXT"),
+    # Milestone flags for automatic channel status posts
+    ("status_json", "ALTER TABLE attempts ADD COLUMN status_json TEXT"),
 )
 _USER_MIGRATIONS = (
     ("tz_offset", "ALTER TABLE users ADD COLUMN tz_offset TEXT"),
