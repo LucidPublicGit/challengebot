@@ -105,14 +105,30 @@ async def resolve_secondary_announce_channel(
     )
 
 
-def _ts_line(label: str, ts: int | None) -> str:
-    """Human time for PNG cards (Discord <t:> tokens don't render in images)."""
+def _fmt_utc(ts: int | None) -> str:
+    """Absolute UTC stamp for PNG cards (ASCII only — card fonts vary)."""
     if not ts:
         return ""
     from datetime import datetime, timezone
 
     dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
-    return f"{label} {dt.strftime('%a %H:%M UTC')}"
+    # Wed 26 Mar 18:00 UTC — full date, no fancy unicode (· → breaks some fonts)
+    return f"{dt.strftime('%a')} {dt.day} {dt.strftime('%b')} {dt.strftime('%H:%M')} UTC"
+
+
+def _ts_line(label: str, ts: int | None) -> str:
+    stamp = _fmt_utc(ts)
+    return f"{label} {stamp}" if stamp else ""
+
+
+def _discord_when(ts: int | None, *, relative: bool = True) -> str:
+    """Viewer-local Discord timestamp (each client renders their own TZ)."""
+    if not ts:
+        return ""
+    t = int(ts)
+    if relative:
+        return f"<t:{t}:F> (<t:{t}:R>)"
+    return f"<t:{t}:F>"
 
 
 async def build_event_card(
@@ -132,7 +148,7 @@ async def build_event_card(
     media_filter: Optional[str] = None,
     poster_bytes: Optional[bytes] = None,
 ) -> tuple[bytes, str]:
-    """Return (png_bytes, short_caption)."""
+    """Return (png_bytes, short_caption). Caption uses <t:> for local TZ."""
     name = (
         getattr(user, "display_name", None)
         or display_name
@@ -155,8 +171,13 @@ async def build_event_card(
         secondary = _ts_line("Ends", ends_at_ts) or "Window open"
     elif kind == "scheduled":
         primary = "Queued to start"
-        bits = [b for b in (_ts_line("Starts", starts_at_ts), _ts_line("Ends", ends_at_ts)) if b]
-        secondary = " → ".join(bits) if bits else ""
+        a, b = _fmt_utc(starts_at_ts), _fmt_utc(ends_at_ts)
+        if a and b:
+            secondary = f"{a.removesuffix(' UTC')} -> {b}"
+        elif a:
+            secondary = f"Starts {a}"
+        elif b:
+            secondary = f"Ends {b}"
     elif kind == "complete":
         primary = "Cleared"
         if detail:
@@ -172,7 +193,7 @@ async def build_event_card(
         primary = "Abandoned"
         secondary = ""
     elif kind == "expired":
-        primary = "Time’s up"
+        primary = "Time's up"
         secondary = _ts_line("Ended", ends_at_ts) or "Window closed"
     elif kind == "active":
         primary = "In progress"
@@ -207,7 +228,20 @@ async def build_event_card(
         "expired": f"⏰ {mention} ran out of time",
         "active": f"📌 {mention} — active challenge",
     }
-    return png, captions.get(kind, f"{mention} · {kind}")
+    caption = captions.get(kind, f"{mention} · {kind}")
+    # Viewer-local times under the card (PNG stays absolute UTC)
+    when_bits: list[str] = []
+    if kind == "scheduled" and starts_at_ts:
+        when_bits.append(f"Starts {_discord_when(starts_at_ts)}")
+        if ends_at_ts:
+            when_bits.append(f"window ends {_discord_when(ends_at_ts, relative=False)}")
+    elif kind in ("start", "active") and ends_at_ts:
+        when_bits.append(f"Ends {_discord_when(ends_at_ts)}")
+    elif kind == "expired" and ends_at_ts:
+        when_bits.append(f"Ended {_discord_when(ends_at_ts, relative=False)}")
+    if when_bits:
+        caption = f"{caption}\n" + " | ".join(when_bits)
+    return png, caption
 
 
 async def announce(

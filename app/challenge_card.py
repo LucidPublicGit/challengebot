@@ -56,8 +56,13 @@ TIER_COLOR = {
 # Outcome is the hero on these kinds
 TERMINAL_KINDS = frozenset({"complete", "fail", "abandon", "expired"})
 
-_FONT_FILES = {
+# CJK-capable first (immersion titles often Japanese). TTC = (path, index).
+_FONT_FILES: dict[bool, list[str | tuple[str, int]]] = {
     False: [
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/arial.ttf",
@@ -65,6 +70,10 @@ _FONT_FILES = {
         "arial.ttf",
     ],
     True: [
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 0),
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/meiryob.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "C:/Windows/Fonts/segoeuib.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
@@ -80,9 +89,12 @@ _PROGRESS_RE = re.compile(
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    for path in _FONT_FILES[bold]:
+    for entry in _FONT_FILES[bold]:
         try:
-            return ImageFont.truetype(path, size)
+            if isinstance(entry, tuple):
+                path, idx = entry
+                return ImageFont.truetype(path, size, index=idx)
+            return ImageFont.truetype(entry, size)
         except OSError:
             continue
     return ImageFont.load_default()
@@ -97,7 +109,7 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, m
     max_w = max(8.0, float(max_w))
     if draw.textlength(text, font=font) <= max_w:
         return text
-    ell = "…"
+    ell = "..."
     lo, hi = 0, len(text)
     best = ell
     while lo <= hi:
@@ -719,7 +731,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 1,
         "focus": "One Piece",
         "line_primary": "Good luck",
-        "line_secondary": "Ends Sat 18:00 UTC",
+        "line_secondary": "Ends Sat 28 Mar 18:00 UTC",
         "footer": "",
     },
     "scheduled": {
@@ -729,7 +741,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 2,
         "focus": "Frieren",
         "line_primary": "Queued to start",
-        "line_secondary": "Sun 09:00 → Mon 09:00 UTC",
+        "line_secondary": "Sun 29 Mar 09:00 -> Mon 30 Mar 09:00 UTC",
         "footer": "",
     },
     "active": {
@@ -739,7 +751,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 4,
         "focus": "Steins;Gate",
         "line_primary": "In progress",
-        "line_secondary": "Ends Sat 18:00 UTC",
+        "line_secondary": "Ends Sat 28 Mar 18:00 UTC",
         "footer": "",
     },
     "complete": {
@@ -778,7 +790,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "tier": "medium",
         "number": 2,
         "focus": "Dungeon Meshi",
-        "line_primary": "Time’s up",
+        "line_primary": "Time's up",
         "line_secondary": "Window closed",
         "footer": "",
     },

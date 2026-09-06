@@ -56,16 +56,16 @@ TIER_CHOICES = [
     app_commands.Choice(name="Ota-Master", value="ota_master"),
 ]
 
-# Common offsets for schedule picker (label, value for parse_schedule_local)
+# Fixed offsets only (no DST). Pick the one that matches your clock *right now*.
 OFFSET_OPTIONS = [
-    ("UTC", "+00:00"),
-    ("UTC−5 (US East)", "-05:00"),
-    ("UTC−6 (US Central)", "-06:00"),
-    ("UTC−7 (US Mountain)", "-07:00"),
-    ("UTC−8 (US Pacific)", "-08:00"),
-    ("UTC+0 / London", "+00:00"),
-    ("UTC+1 (CET)", "+01:00"),
-    ("UTC+2", "+02:00"),
+    ("UTC+0", "+00:00"),
+    ("UTC+1 (UK summer / CET)", "+01:00"),
+    ("UTC+2 (CEST)", "+02:00"),
+    ("UTC-4 (US East summer)", "-04:00"),
+    ("UTC-5 (US East winter)", "-05:00"),
+    ("UTC-6 (US Central winter)", "-06:00"),
+    ("UTC-7 (US Mountain winter)", "-07:00"),
+    ("UTC-8 (US Pacific winter)", "-08:00"),
     ("UTC+8", "+08:00"),
     ("UTC+9 (Japan/Korea)", "+09:00"),
     ("UTC+10", "+10:00"),
@@ -146,10 +146,8 @@ async def _finalize_start(
         media_filter=media,
     )
     if kind == "scheduled":
-        howto = (
-            f"Starts <t:{start_ts}:F> · ends <t:{ends}:R> after start.\n"
-            "A new card posts when it goes live. Cancel: `/challenge abandon`."
-        )
+        # caption already has viewer-local start/end <t:> stamps
+        howto = "A new card posts when it goes live. Cancel: `/challenge abandon`."
     else:
         howto = b.confirm_howto(ch)
     card = as_discord_file(png, f"{kind}-card.png")
@@ -350,7 +348,7 @@ class FocusModal(discord.ui.Modal):
                 description=(
                     f"**{self.ch['tier']} #{self.ch['number']}: {self.ch['title']}**\n"
                     f"Focus: **{focus}**\n\n"
-                    "Start **now**, or **schedule** with the day/time menus."
+                    "**Now** · **Schedule day** (rough time) · **Exact time**"
                 ),
                 ch=self.ch,
             ),
@@ -360,10 +358,7 @@ class FocusModal(discord.ui.Modal):
         view.message = await interaction.original_response()
 
 
-def _resolve_schedule_from_picks(
-    offset: str, day_rel: int, hhmm: str
-) -> datetime:
-    """day_rel=0 today in that offset, 1=tomorrow… + HH:MM local → UTC."""
+def _offset_to_tz(offset: str) -> timezone:
     m = re.match(
         r"^(?:UTC)?\s*(?P<sign>[+-])\s*(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?$",
         (offset or "+00:00").strip().replace(" ", ""),
@@ -375,7 +370,14 @@ def _resolve_schedule_from_picks(
     delta = timedelta(hours=oh, minutes=om)
     if sign == "-":
         delta = -delta
-    local_tz = timezone(delta)
+    return timezone(delta)
+
+
+def _resolve_schedule_from_picks(
+    offset: str, day_rel: int, hhmm: str
+) -> datetime:
+    """day_rel=0 today in that offset, 1=tomorrow… + HH:MM local → UTC."""
+    local_tz = _offset_to_tz(offset)
     local_now = datetime.now(timezone.utc).astimezone(local_tz)
     target_date = (local_now + timedelta(days=int(day_rel))).date()
     parts = hhmm.split(":")
@@ -391,7 +393,222 @@ def _resolve_schedule_from_picks(
     return local_dt.astimezone(timezone.utc).replace(microsecond=0)
 
 
-class SchedulePickView(_OwnerView):
+def _day_select_options(
+    offset: str, selected_rel: int = 0
+) -> list[discord.SelectOption]:
+    """Today/Tomorrow + weekday calendar date in the chosen offset."""
+    local_tz = _offset_to_tz(offset)
+    base = datetime.now(timezone.utc).astimezone(local_tz)
+    opts: list[discord.SelectOption] = []
+    for i in range(14):
+        d = (base + timedelta(days=i)).date()
+        cal = f"{d.strftime('%a')} {d.day} {d.strftime('%b')}"
+        if i == 0:
+            lab = f"Today - {cal}"
+        elif i == 1:
+            lab = f"Tomorrow - {cal}"
+        else:
+            lab = cal
+        opts.append(
+            discord.SelectOption(
+                label=lab[:100],
+                value=str(i),
+                default=i == int(selected_rel),
+            )
+        )
+    return opts
+
+
+def _hour_label(h: int) -> str:
+    """24h clock label so midnight..5am are obvious (not buried)."""
+    return f"{h:02d}:00"
+
+
+# Rough time-of-day when the user only cares about the calendar day
+DAY_TIME_PRESETS = [
+    ("Start of day (00:00)", "00:00"),
+    ("Morning (09:00)", "09:00"),
+    ("Noon (12:00)", "12:00"),
+    ("Afternoon (15:00)", "15:00"),
+    ("Evening (18:00)", "18:00"),
+    ("Night (21:00)", "21:00"),
+]
+
+
+def _schedule_when_text(offset: str, day_rel: int, hhmm: str) -> str:
+    try:
+        starts = _resolve_schedule_from_picks(offset, day_rel, hhmm)
+    except ValueError:
+        return "Could not parse that offset."
+    ts = int(starts.timestamp())
+    now = datetime.now(timezone.utc)
+    if starts <= now:
+        return f"That is in the past: <t:{ts}:F>\nPick a later day/time."
+    return (
+        f"**Discord will show:** <t:{ts}:F> (<t:{ts}:R>)\n"
+        f"Your pick: **{hhmm}** wall time at `{offset}`"
+    )
+
+
+async def _commit_scheduled_start(
+    interaction: discord.Interaction,
+    *,
+    view: discord.ui.View,
+    ch: dict,
+    focus: str | None,
+    guild_id: str | None,
+    offset: str,
+    day_rel: int,
+    hhmm: str,
+    dry_run: bool = False,
+) -> None:
+    try:
+        starts = _resolve_schedule_from_picks(offset, day_rel, hhmm)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+    if starts <= datetime.now(timezone.utc):
+        await interaction.response.send_message(
+            "That time is already past - pick a later day/time.",
+            ephemeral=True,
+        )
+        return
+    for child in view.children:
+        child.disabled = True  # type: ignore[attr-defined]
+    ts = int(starts.timestamp())
+    if dry_run:
+        await interaction.response.edit_message(
+            embed=_start_embed(
+                title="TEST schedule — nothing saved",
+                description=(
+                    f"**{ch['title']}**\n"
+                    f"Would start <t:{ts}:F> (<t:{ts}:R>)\n"
+                    f"Wall pick `{hhmm}` at offset `{offset}` (day+{day_rel})\n\n"
+                    "No attempt was created. Run `/challenge start` for real."
+                ),
+                ch=ch,
+            ),
+            view=None,
+        )
+        return
+    await interaction.response.edit_message(
+        embed=_start_embed(
+            title="Scheduling...",
+            description=f"**{ch['title']}**\n<t:{ts}:F>",
+            ch=ch,
+        ),
+        view=view,
+    )
+    await _finalize_start(
+        interaction,
+        challenge_id=ch["id"],
+        focus=focus,
+        guild_id=guild_id,
+        starts_at=starts,
+    )
+
+
+def _offset_select_for(
+    owner: "_ScheduleFields",
+    *,
+    row: int = 0,
+) -> discord.ui.Select:
+    seen: set[str] = set()
+    opts: list[discord.SelectOption] = []
+    for label, val in OFFSET_OPTIONS:
+        if val in seen:
+            continue
+        seen.add(val)
+        opts.append(
+            discord.SelectOption(
+                label=label[:100], value=val, default=val == owner.offset
+            )
+        )
+    sel = discord.ui.Select(
+        placeholder="Offset matching your clock now",
+        options=opts[:25],
+        row=row,
+    )
+
+    async def cb(interaction: discord.Interaction) -> None:
+        owner.offset = sel.values[0]
+        await owner._refresh(interaction)
+
+    sel.callback = cb  # type: ignore[method-assign]
+    return sel
+
+
+def _day_select_for(
+    owner: "_ScheduleFields",
+    *,
+    row: int = 1,
+) -> discord.ui.Select:
+    sel = discord.ui.Select(
+        placeholder="Day",
+        options=_day_select_options(owner.offset, owner.day_rel),
+        row=row,
+    )
+
+    async def cb(interaction: discord.Interaction) -> None:
+        owner.day_rel = int(sel.values[0])
+        await owner._refresh(interaction)
+
+    sel.callback = cb  # type: ignore[method-assign]
+    return sel
+
+
+class _ScheduleFields(_OwnerView):
+    """Shared offset/day state for day-only and exact-time schedule UIs."""
+
+    ch: dict
+    focus: str | None
+    guild_id: str | None
+    year: int
+    tier: str
+    offset: str
+    day_rel: int
+    day_sel: discord.ui.Select
+    dry_run: bool
+
+    def _hhmm(self) -> str:
+        raise NotImplementedError
+
+    def _schedule_embed(self, *, title: str) -> discord.Embed:
+        raise NotImplementedError
+
+    def _dry_banner(self) -> str:
+        return (
+            "**TEST MODE — nothing will be saved.**\n"
+            if getattr(self, "dry_run", False)
+            else ""
+        )
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        self.day_sel.options = _day_select_options(self.offset, self.day_rel)
+        await interaction.response.edit_message(
+            embed=self._schedule_embed(), view=self
+        )
+
+    async def _back_to_when(self, interaction: discord.Interaction) -> None:
+        view = WhenPickView(
+            self.owner_id,
+            ch=self.ch,
+            focus=self.focus,
+            year=self.year,
+            guild_id=self.guild_id,
+            tier=self.tier,
+            dry_run=bool(getattr(self, "dry_run", False)),
+        )
+        await interaction.response.edit_message(
+            embed=view._when_embed(),
+            view=view,
+        )
+        view.message = interaction.message
+
+
+class ScheduleDayView(_ScheduleFields):
+    """Pick a calendar day; only a rough time-of-day, not an exact minute."""
+
     def __init__(
         self,
         owner_id: int,
@@ -401,6 +618,10 @@ class SchedulePickView(_OwnerView):
         guild_id: str | None,
         year: int,
         tier: str,
+        offset: str = "+00:00",
+        day_rel: int = 0,
+        hhmm: str = "09:00",
+        dry_run: bool = False,
     ) -> None:
         super().__init__(owner_id)
         self.ch = ch
@@ -408,148 +629,234 @@ class SchedulePickView(_OwnerView):
         self.guild_id = guild_id
         self.year = year
         self.tier = tier
-        self.offset = "+00:00"
-        self.day_rel = 0
-        self.hhmm = "18:00"
-        self.add_item(self._offset_select())
-        self.add_item(self._day_select())
-        self.add_item(self._time_select())
+        self.dry_run = dry_run
+        self.offset = offset or "+00:00"
+        self.day_rel = int(day_rel)
+        self.hhmm = hhmm if hhmm in {v for _, v in DAY_TIME_PRESETS} else "09:00"
+        self.add_item(_offset_select_for(self, row=0))
+        self.day_sel = _day_select_for(self, row=1)
+        self.add_item(self.day_sel)
+        self.add_item(self._preset_select())
 
-    def _offset_select(self) -> discord.ui.Select:
-        seen = set()
-        opts = []
-        for label, val in OFFSET_OPTIONS:
-            if val in seen:
-                continue
-            seen.add(val)
-            opts.append(discord.SelectOption(label=label[:100], value=val, default=val == "+00:00"))
-        sel = discord.ui.Select(
-            placeholder="Your timezone (UTC offset)",
-            options=opts[:25],
-            row=0,
+    def _hhmm(self) -> str:
+        return self.hhmm
+
+    def _schedule_embed(self, *, title: str = "Pick a day") -> discord.Embed:
+        when = _schedule_when_text(self.offset, self.day_rel, self._hhmm())
+        return _start_embed(
+            title=("TEST · " if self.dry_run else "") + title,
+            description=(
+                f"{self._dry_banner()}"
+                f"**{self.ch['title']}**\n{when}\n\n"
+                "Day-only mode: choose the **date** and a rough **time of day**.\n"
+                "Need a precise minute? **Exact time**."
+            ),
+            ch=self.ch,
         )
 
-        async def cb(interaction: discord.Interaction) -> None:
-            self.offset = sel.values[0]
-            await interaction.response.defer()
-
-        sel.callback = cb  # type: ignore[method-assign]
-        return sel
-
-    def _day_select(self) -> discord.ui.Select:
-        opts = []
-        for i in range(0, 14):
-            if i == 0:
-                lab = "Today"
-            elif i == 1:
-                lab = "Tomorrow"
-            else:
-                lab = f"In {i} days"
-            opts.append(
-                discord.SelectOption(label=lab, value=str(i), default=i == 0)
+    def _preset_select(self) -> discord.ui.Select:
+        opts = [
+            discord.SelectOption(
+                label=lab,
+                value=val,
+                default=val == self.hhmm,
             )
-        sel = discord.ui.Select(placeholder="Day", options=opts, row=1)
-
-        async def cb(interaction: discord.Interaction) -> None:
-            self.day_rel = int(sel.values[0])
-            await interaction.response.defer()
-
-        sel.callback = cb  # type: ignore[method-assign]
-        return sel
-
-    def _time_select(self) -> discord.ui.Select:
-        opts = []
-        for h in range(0, 24):
-            for m in (0, 30):
-                hhmm = f"{h:02d}:{m:02d}"
-                opts.append(
-                    discord.SelectOption(
-                        label=hhmm,
-                        value=hhmm,
-                        default=hhmm == "18:00",
-                    )
-                )
-        # Discord max 25 options — keep morning/evening spread
-        # Prefer every hour + half for common window: use 25 slots from 6:00
-        opts = []
-        for h in range(6, 24):
-            for m in (0, 30):
-                hhmm = f"{h:02d}:{m:02d}"
-                opts.append(
-                    discord.SelectOption(
-                        label=hhmm,
-                        value=hhmm,
-                        default=hhmm == "18:00",
-                    )
-                )
-                if len(opts) >= 25:
-                    break
-            if len(opts) >= 25:
-                break
-        # ensure late-night covered: replace last with 00:00/03:00 if needed — 6-18 covers day
-        sel = discord.ui.Select(placeholder="Local time", options=opts, row=2)
+            for lab, val in DAY_TIME_PRESETS
+        ]
+        sel = discord.ui.Select(
+            placeholder="Rough time that day",
+            options=opts,
+            row=2,
+        )
 
         async def cb(interaction: discord.Interaction) -> None:
             self.hhmm = sel.values[0]
-            await interaction.response.defer()
+            await self._refresh(interaction)
 
         sel.callback = cb  # type: ignore[method-assign]
         return sel
 
-    @discord.ui.button(label="Confirm schedule", style=discord.ButtonStyle.success, row=3)
-    async def confirm_sched(
+    @discord.ui.button(label="Confirm day", style=discord.ButtonStyle.success, row=3)
+    async def confirm_day(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        try:
-            starts = _resolve_schedule_from_picks(self.offset, self.day_rel, self.hhmm)
-        except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        if starts <= datetime.now(timezone.utc):
-            await interaction.response.send_message(
-                "That time is already past — pick a later day/time.",
-                ephemeral=True,
-            )
-            return
-        for child in self.children:
-            child.disabled = True  # type: ignore[attr-defined]
-        await interaction.response.edit_message(
-            embed=_start_embed(
-                title="Scheduling…",
-                description=f"**{self.ch['title']}** · <t:{int(starts.timestamp())}:F>",
-                ch=self.ch,
-            ),
-            view=self,
-        )
-        await _finalize_start(
+        await _commit_scheduled_start(
             interaction,
-            challenge_id=self.ch["id"],
+            view=self,
+            ch=self.ch,
             focus=self.focus,
             guild_id=self.guild_id,
-            starts_at=starts,
+            offset=self.offset,
+            day_rel=self.day_rel,
+            hhmm=self._hhmm(),
+            dry_run=self.dry_run,
         )
+
+    @discord.ui.button(label="Exact time…", style=discord.ButtonStyle.primary, row=3)
+    async def to_exact(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        hour, minute = (int(x) for x in self.hhmm.split(":"))
+        view = SchedulePickView(
+            self.owner_id,
+            ch=self.ch,
+            focus=self.focus,
+            guild_id=self.guild_id,
+            year=self.year,
+            tier=self.tier,
+            offset=self.offset,
+            day_rel=self.day_rel,
+            hour=hour,
+            minute=minute,
+            dry_run=self.dry_run,
+        )
+        await interaction.response.edit_message(
+            embed=view._schedule_embed(), view=view
+        )
+        view.message = interaction.message
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=3)
     async def back(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        view = WhenPickView(
+        await self._back_to_when(interaction)
+
+
+class SchedulePickView(_ScheduleFields):
+    """Exact local hour + minute on a chosen day."""
+
+    def __init__(
+        self,
+        owner_id: int,
+        *,
+        ch: dict,
+        focus: str | None,
+        guild_id: str | None,
+        year: int,
+        tier: str,
+        offset: str = "+00:00",
+        day_rel: int = 0,
+        hour: int = 18,
+        minute: int = 0,
+        dry_run: bool = False,
+    ) -> None:
+        super().__init__(owner_id)
+        self.ch = ch
+        self.focus = focus
+        self.guild_id = guild_id
+        self.year = year
+        self.tier = tier
+        self.dry_run = dry_run
+        self.offset = offset or "+00:00"
+        self.day_rel = int(day_rel)
+        self.hour = int(hour)
+        self.minute = int(minute)
+        self.add_item(_offset_select_for(self, row=0))
+        self.day_sel = _day_select_for(self, row=1)
+        self.add_item(self.day_sel)
+        self.add_item(self._hour_select())
+        self.add_item(self._minute_select())
+
+    def _hhmm(self) -> str:
+        return f"{self.hour:02d}:{self.minute:02d}"
+
+    def _schedule_embed(self, *, title: str = "Pick day & exact time") -> discord.Embed:
+        when = _schedule_when_text(self.offset, self.day_rel, self._hhmm())
+        return _start_embed(
+            title=("TEST · " if self.dry_run else "") + title,
+            description=(
+                f"{self._dry_banner()}"
+                f"**{self.ch['title']}**\n{when}\n\n"
+                "Offset must match your clock **right now** "
+                "(UK summer = UTC+1, not UTC+0).\n"
+                "Hour list is **00:00-23:00** full day."
+            ),
+            ch=self.ch,
+        )
+
+    def _hour_select(self) -> discord.ui.Select:
+        opts = [
+            discord.SelectOption(
+                label=_hour_label(h),
+                value=str(h),
+                default=h == self.hour,
+            )
+            for h in range(24)
+        ]
+        sel = discord.ui.Select(
+            placeholder="Hour 00-23 (local)",
+            options=opts,
+            row=2,
+        )
+
+        async def cb(interaction: discord.Interaction) -> None:
+            self.hour = int(sel.values[0])
+            await self._refresh(interaction)
+
+        sel.callback = cb  # type: ignore[method-assign]
+        return sel
+
+    def _minute_select(self) -> discord.ui.Select:
+        opts = [
+            discord.SelectOption(
+                label=f":{m:02d}",
+                value=str(m),
+                default=m == self.minute,
+            )
+            for m in (0, 15, 30, 45)
+        ]
+        sel = discord.ui.Select(placeholder="Minute", options=opts, row=3)
+
+        async def cb(interaction: discord.Interaction) -> None:
+            self.minute = int(sel.values[0])
+            await self._refresh(interaction)
+
+        sel.callback = cb  # type: ignore[method-assign]
+        return sel
+
+    @discord.ui.button(label="Confirm schedule", style=discord.ButtonStyle.success, row=4)
+    async def confirm_sched(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await _commit_scheduled_start(
+            interaction,
+            view=self,
+            ch=self.ch,
+            focus=self.focus,
+            guild_id=self.guild_id,
+            offset=self.offset,
+            day_rel=self.day_rel,
+            hhmm=self._hhmm(),
+            dry_run=self.dry_run,
+        )
+
+    @discord.ui.button(label="Day only…", style=discord.ButtonStyle.primary, row=4)
+    async def to_day(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        snapped = f"{self.hour:02d}:00"
+        view = ScheduleDayView(
             self.owner_id,
             ch=self.ch,
             focus=self.focus,
-            year=self.year,
             guild_id=self.guild_id,
+            year=self.year,
             tier=self.tier,
+            offset=self.offset,
+            day_rel=self.day_rel,
+            hhmm=snapped,
+            dry_run=self.dry_run,
         )
         await interaction.response.edit_message(
-            embed=_start_embed(
-                title="When do you want to start?",
-                description=f"**{self.ch['tier']} #{self.ch['number']}: {self.ch['title']}**",
-                ch=self.ch,
-            ),
-            view=view,
+            embed=view._schedule_embed(), view=view
         )
         view.message = interaction.message
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=4)
+    async def back(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._back_to_when(interaction)
 
 
 class WhenPickView(_OwnerView):
@@ -562,6 +869,7 @@ class WhenPickView(_OwnerView):
         year: int,
         guild_id: str | None,
         tier: str,
+        dry_run: bool = False,
     ) -> None:
         super().__init__(owner_id)
         self.ch = ch
@@ -569,6 +877,23 @@ class WhenPickView(_OwnerView):
         self.year = year
         self.guild_id = guild_id
         self.tier = tier
+        self.dry_run = dry_run
+
+    def _when_embed(self) -> discord.Embed:
+        banner = (
+            "**TEST MODE — nothing will be saved.**\n\n"
+            if self.dry_run
+            else ""
+        )
+        return _start_embed(
+            title=("TEST · " if self.dry_run else "") + "When do you want to start?",
+            description=(
+                f"{banner}"
+                f"**{self.ch['tier']} #{self.ch['number']}: {self.ch['title']}**\n\n"
+                "**Now** · **Schedule day** (rough time) · **Exact time**"
+            ),
+            ch=self.ch,
+        )
 
     @discord.ui.button(label="Start now", style=discord.ButtonStyle.success, row=0)
     async def start_now(
@@ -576,6 +901,20 @@ class WhenPickView(_OwnerView):
     ) -> None:
         for child in self.children:
             child.disabled = True  # type: ignore[attr-defined]
+        if self.dry_run:
+            await interaction.response.edit_message(
+                embed=_start_embed(
+                    title="TEST start — nothing saved",
+                    description=(
+                        f"**{self.ch['tier']} #{self.ch['number']}: {self.ch['title']}**\n"
+                        "Would **start now**. No attempt was created.\n"
+                        "Run `/challenge start` for real."
+                    ),
+                    ch=self.ch,
+                ),
+                view=None,
+            )
+            return
         await interaction.response.edit_message(
             embed=_start_embed(
                 title="Starting…",
@@ -592,8 +931,27 @@ class WhenPickView(_OwnerView):
             starts_at=None,
         )
 
-    @discord.ui.button(label="Schedule…", style=discord.ButtonStyle.primary, row=0)
-    async def schedule(
+    @discord.ui.button(label="Schedule day…", style=discord.ButtonStyle.primary, row=0)
+    async def schedule_day(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = ScheduleDayView(
+            self.owner_id,
+            ch=self.ch,
+            focus=self.focus,
+            guild_id=self.guild_id,
+            year=self.year,
+            tier=self.tier,
+            dry_run=self.dry_run,
+        )
+        await interaction.response.edit_message(
+            embed=view._schedule_embed(),
+            view=view,
+        )
+        view.message = interaction.message
+
+    @discord.ui.button(label="Exact time…", style=discord.ButtonStyle.secondary, row=0)
+    async def schedule_exact(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         view = SchedulePickView(
@@ -603,16 +961,10 @@ class WhenPickView(_OwnerView):
             guild_id=self.guild_id,
             year=self.year,
             tier=self.tier,
+            dry_run=self.dry_run,
         )
         await interaction.response.edit_message(
-            embed=_start_embed(
-                title="Pick day & time",
-                description=(
-                    f"**{self.ch['title']}**\n"
-                    "1) Timezone offset  2) Day  3) Local time  4) **Confirm schedule**"
-                ),
-                ch=self.ch,
-            ),
+            embed=view._schedule_embed(),
             view=view,
         )
         view.message = interaction.message
@@ -621,6 +973,16 @@ class WhenPickView(_OwnerView):
     async def back(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        if self.dry_run:
+            self.stop()
+            await interaction.response.edit_message(
+                embed=_start_embed(
+                    title="Test closed",
+                    description="Schedule UI test ended — nothing was saved.",
+                ),
+                view=None,
+            )
+            return
         items = list_challenges(year=self.year, tier=self.tier)
         pick = ChallengePickView(
             self.owner_id,
@@ -648,8 +1010,16 @@ class WhenPickView(_OwnerView):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self.stop()
+        msg = (
+            "Schedule UI test ended — nothing was saved."
+            if self.dry_run
+            else "No challenge started."
+        )
         await interaction.response.edit_message(
-            embed=_start_embed(title="Cancelled", description="No challenge started."),
+            embed=_start_embed(
+                title="Test closed" if self.dry_run else "Cancelled",
+                description=msg,
+            ),
             view=None,
         )
 
@@ -708,7 +1078,7 @@ class ChallengeSelect(discord.ui.Select):
                 title="When do you want to start?",
                 description=(
                     f"**{ch['tier']} #{ch['number']}: {ch['title']}**\n\n"
-                    "Start **now**, or **schedule** a future day/time."
+                    "**Now** · **Schedule day** (rough time) · **Exact time**"
                 ),
                 ch=ch,
             ),
@@ -1170,7 +1540,7 @@ async def challenge_start(interaction: discord.Interaction) -> None:
             description=(
                 f"**{year}** catalog\n"
                 "1️⃣ Difficulty → 2️⃣ Challenge → 3️⃣ Focus if needed → "
-                "4️⃣ **Now** or **Schedule**"
+                "4️⃣ **Now** / **Day** / **Exact time**"
             ),
         ),
         view=view,
@@ -1236,7 +1606,10 @@ async def challenge_status(
         )
         files.append(as_discord_file(png, "active-card.png"))
         card_kind = "active"
-        lines.append(caption if not self_view else b.confirm_howto(active))
+        if self_view:
+            lines.append(f"{caption}\n{b.confirm_howto(active)}")
+        else:
+            lines.append(caption)
     elif scheduled:
         when = b._ts(scheduled["started_at"])
         ends = b._ts(scheduled["ends_at"])
@@ -1254,9 +1627,11 @@ async def challenge_status(
         )
         files.append(as_discord_file(png, "scheduled-card.png"))
         card_kind = "scheduled"
-        lines.append(
-            caption if not self_view else f"Starts <t:{when}:R> · `/challenge abandon` to cancel."
-        )
+        # caption already has viewer-local <t:F> / <t:R>
+        if self_view:
+            lines.append(f"{caption}\n`/challenge abandon` to cancel.")
+        else:
+            lines.append(caption)
     else:
         if self_view:
             lines.append("**No open challenge.** Use `/challenge start`.")
@@ -1414,6 +1789,46 @@ async def challenge_admin(
     await interaction.response.send_message(
         f"Admin tools for {target.mention}\n"
         "Use the buttons — dry-run first, APPLY only when sure.",
+        view=view,
+        ephemeral=True,
+    )
+    view.message = await interaction.original_response()
+
+
+@challenge_group.command(
+    name="testsched",
+    description="Admin: try the schedule UI without creating an attempt",
+)
+async def challenge_testsched(interaction: discord.Interaction) -> None:
+    """Walk Now / Day / Exact time flows; confirm is a dry-run only."""
+    b = _bot_helpers()
+    if not b.is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    year = _catalog_year()
+    # Prefer a no-param challenge so focus modal is skipped
+    items = list_challenges(year=year)
+    ch = next((c for c in items if not c.get("param_label")), None)
+    if ch is None and items:
+        ch = items[0]
+    if not ch:
+        await interaction.response.send_message(
+            "No challenges in catalog to preview.", ephemeral=True
+        )
+        return
+    guild_id = str(interaction.guild_id) if interaction.guild_id else None
+    focus = f"(test focus)" if ch.get("param_label") else None
+    view = WhenPickView(
+        interaction.user.id,
+        ch=ch,
+        focus=focus,
+        year=year,
+        guild_id=guild_id,
+        tier=str(ch.get("tier") or "easy"),
+        dry_run=True,
+    )
+    await interaction.response.send_message(
+        embed=view._when_embed(),
         view=view,
         ephemeral=True,
     )

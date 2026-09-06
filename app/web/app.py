@@ -140,18 +140,88 @@ def _esc(v: object) -> str:
     return html.escape("" if v is None else str(v), quote=True)
 
 
-def _iso_to_date_time(iso: str | None) -> tuple[str, str]:
-    """Split stored ISO UTC into HTML date + time values."""
+def _parse_iso_dt(iso: str | None) -> datetime | None:
     if not iso:
-        return "", ""
+        return None
     s = str(iso).strip().replace("Z", "+00:00")
     try:
         dt = datetime.fromisoformat(s)
     except ValueError:
-        return "", ""
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _rel_phrase(dt: datetime, *, now: datetime | None = None) -> str:
+    """'2h ago' / 'in 3d' / 'just now'."""
+    now = now or datetime.now(timezone.utc)
+    secs = (dt - now).total_seconds()  # + future, - past
+    future = secs > 0
+    s = abs(secs)
+    if s < 45:
+        return "just now"
+    if s < 3600:
+        n = max(1, int(s // 60))
+        unit = "m"
+    elif s < 86400:
+        n = max(1, int(s // 3600))
+        unit = "h"
+    elif s < 86400 * 14:
+        n = max(1, int(s // 86400))
+        unit = "d"
+    else:
+        return ""
+    return f"in {n}{unit}" if future else f"{n}{unit} ago"
+
+
+def _human_when(iso: str | None, *, now: datetime | None = None) -> str:
+    """Plain text: 'Sat 28 Mar 2026 18:00 UTC · 2h ago'."""
+    dt = _parse_iso_dt(iso)
+    if not dt:
+        return "—"
+    abs_s = f"{dt.strftime('%a')} {dt.day} {dt.strftime('%b %Y %H:%M')} UTC"
+    rel = _rel_phrase(dt, now=now)
+    return f"{abs_s} · {rel}" if rel else abs_s
+
+
+def _when_cell(iso: str | None, *, label: str = "") -> str:
+    """HTML table cell body: human absolute + relative subline."""
+    dt = _parse_iso_dt(iso)
+    if not dt:
+        return "—"
+    # Shorter in tables: drop year if current year
+    now = datetime.now(timezone.utc)
+    if dt.year == now.year:
+        abs_s = f"{dt.strftime('%a')} {dt.day} {dt.strftime('%b')} {dt.strftime('%H:%M')}"
+    else:
+        abs_s = f"{dt.strftime('%a')} {dt.day} {dt.strftime('%b %Y')} {dt.strftime('%H:%M')}"
+    rel = _rel_phrase(dt, now=now)
+    head = f"{_esc(label)} {_esc(abs_s)}".strip() if label else _esc(abs_s)
+    sub = _esc(rel) if rel else _esc("UTC")
+    title = _esc(_human_when(iso, now=now))
+    return f"<span title='{title}'>{head}</span><span class='sub'>{sub}</span>"
+
+
+def _attempt_when_cell(a: dict) -> str:
+    """Status-aware When column for attempt lists."""
+    st = (a.get("status") or "").lower()
+    if st == "scheduled":
+        return _when_cell(a.get("started_at"), label="Starts")
+    if st == "active":
+        return _when_cell(a.get("ends_at"), label="Ends")
+    if st == "completed":
+        return _when_cell(a.get("completed_at") or a.get("started_at"), label="Done")
+    if st == "expired":
+        return _when_cell(a.get("ends_at") or a.get("completed_at"), label="Ended")
+    return _when_cell(a.get("completed_at") or a.get("started_at"))
+
+
+def _iso_to_date_time(iso: str | None) -> tuple[str, str]:
+    """Split stored ISO UTC into HTML date + time values."""
+    dt = _parse_iso_dt(iso)
+    if not dt:
+        return "", ""
     return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
 
 
@@ -283,7 +353,7 @@ def create_app() -> FastAPI:
                 f"<span class='sub'>{_esc(a['title'])}</span></td>"
                 f"<td class='truncate' title='{_esc(att_svc.display_content(a))}'>{content}</td>"
                 f"<td><span class='badge {_esc(a['status'])}'>{_esc(a['status'])}</span></td>"
-                f"<td class='muted mono'>{_esc(a.get('completed_at') or a['started_at'])}</td>"
+                f"<td class='muted'>{_attempt_when_cell(a)}</td>"
                 f"<td><a href='/attempts/{a['id']}'>Edit</a></td>"
                 f"</tr>"
             )
@@ -369,6 +439,13 @@ def create_app() -> FastAPI:
               <div>
                 <label>End time (UTC)</label>
                 <input type="time" name="ends_time" value="{_esc(et)}" step="60"/>
+              </div>
+              <div class="span-2">
+                <p class="muted" style="margin:0">
+                  Starts <b>{_esc(_human_when(a.get('started_at')))}</b><br/>
+                  Ends <b>{_esc(_human_when(a.get('ends_at')))}</b>
+                  {(' · Completed <b>' + _esc(_human_when(a.get('completed_at'))) + '</b>') if a.get('completed_at') else ''}
+                </p>
               </div>
             </div>
             <p class="muted" style="margin:.65rem 0 .2rem">
@@ -650,6 +727,7 @@ def create_app() -> FastAPI:
                 f"<td>{_esc(a['tier'])} #{a['number']} {_esc(a['title'])}</td>"
                 f"<td>{content}</td>"
                 f"<td><span class='badge {_esc(a['status'])}'>{_esc(a['status'])}</span></td>"
+                f"<td class='muted'>{_attempt_when_cell(a)}</td>"
                 f"<td><a href='/attempts/{a['id']}'>Edit</a></td>"
                 f"</tr>"
             )
@@ -673,8 +751,8 @@ def create_app() -> FastAPI:
         <div class="card" style="padding:0;overflow:auto">
           <div style="padding:.65rem .85rem .2rem"><h2>Recent attempts</h2></div>
           <table>
-            <thead><tr><th>ID</th><th>Challenge</th><th>Content</th><th>Status</th><th></th></tr></thead>
-            <tbody>{''.join(tr) or '<tr><td colspan=5 class="muted">None</td></tr>'}</tbody>
+            <thead><tr><th>ID</th><th>Challenge</th><th>Content</th><th>Status</th><th>When</th><th></th></tr></thead>
+            <tbody>{''.join(tr) or '<tr><td colspan=6 class="muted">None</td></tr>'}</tbody>
           </table>
         </div>
         """
