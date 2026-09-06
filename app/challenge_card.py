@@ -401,6 +401,156 @@ def _wrap_two_lines(
     return [" ".join(line1), _truncate(draw, rest, font, max_w)]
 
 
+def _resolve_hero_style(
+    kind: str,
+    hero_style: str | None,
+    cleared_style: str = "",
+) -> str:
+    """Stamp outline only for complete/abandon. Started/Scheduled/… stay soft-glow."""
+    kind = (kind or "").lower().strip()
+    # Normal statuses never get terminal flair
+    if kind not in ("complete", "abandon"):
+        return "glow"
+    # Explicit override (protos / tests)
+    if hero_style is not None and str(hero_style).strip() != "":
+        return str(hero_style).lower().strip()
+    if cleared_style and str(cleared_style).strip():
+        cs = str(cleared_style).lower().strip()
+        if cs not in ("d_soft_glow", "glow", ""):
+            return cs
+    return "stamp_outline"
+
+
+def _draw_hero_status(
+    draw: ImageDraw.ImageDraw,
+    *,
+    style: str,
+    label: str,
+    tier_color: tuple[int, int, int],
+    tx: float,
+    y: float,
+    tw: float,
+    S: int,
+    kind: str,
+    has_progress: bool,
+) -> None:
+    """In-card status hero. style=glow is default; extras for complete/abandon protos."""
+    label = _oneline(label)
+    style = (style or "glow").lower().strip()
+    max_w = tw * (0.55 if has_progress else 1.0)
+
+    def _glow_text(text: str, font, fill, x: float, yy: float) -> None:
+        for dx, dy in ((-S, 0), (S, 0), (0, -S), (0, S)):
+            draw.text((x + dx, yy + dy), text, font=font, fill=_mix(fill, BG, 0.45))
+        draw.text((x, yy), text, font=font, fill=fill)
+
+    if style in ("glow", "0_current_glow", "d_soft_glow", ""):
+        pf = _font(26 * S, bold=True)
+        lab = _truncate(draw, label, pf, max_w)
+        _glow_text(lab, pf, tier_color, tx, y + 10 * S)
+        return
+
+    if style in ("1_tier_pill", "tier_pill", "pill"):
+        pf = _font(22 * S, bold=True)
+        lab = _truncate(draw, label.upper(), pf, max_w - 28 * S)
+        pw = draw.textlength(lab, font=pf) + 28 * S
+        ph = pf.size + 14 * S
+        py = y + 10 * S
+        draw.rounded_rectangle(
+            (tx, py, tx + pw, py + ph),
+            radius=ph / 2,
+            fill=_mix(tier_color, BG, 0.22),
+            outline=_mix(tier_color, BG, 0.55),
+            width=max(1, S),
+        )
+        draw.text((tx + pw / 2, py + ph / 2), lab, font=pf, fill=tier_color, anchor="mm")
+        return
+
+    if style in ("2_double_rule", "double_rule"):
+        pf = _font(26 * S, bold=True)
+        lab = _truncate(draw, label, pf, max_w)
+        _glow_text(lab, pf, tier_color, tx, y + 8 * S)
+        lw = draw.textlength(lab, font=pf)
+        uy = y + 8 * S + pf.size + 6 * S
+        draw.line((tx, uy, tx + lw, uy), fill=tier_color, width=max(2, 2 * S))
+        draw.line(
+            (tx, uy + 4 * S, tx + lw * 0.55, uy + 4 * S),
+            fill=_mix(tier_color, BG, 0.5),
+            width=max(1, S),
+        )
+        return
+
+    if style in ("3_symbol_lead", "symbol_lead", "symbol"):
+        pf = _font(24 * S, bold=True)
+        sym = "✓  " if kind == "complete" else ("✕  " if kind == "abandon" else "")
+        lab = _truncate(draw, f"{sym}{label.upper()}", pf, max_w)
+        _glow_text(lab, pf, tier_color, tx, y + 10 * S)
+        return
+
+    if style in ("4_tracked", "tracked"):
+        pf = _font(20 * S, bold=True)
+        spaced = " ".join(list(_oneline(label).upper()))
+        lab = _truncate(draw, spaced, pf, max_w)
+        draw.text((tx, y + 14 * S), lab, font=pf, fill=tier_color)
+        lw = draw.textlength(lab, font=pf)
+        draw.line(
+            (tx, y + 14 * S + pf.size + 5 * S, tx + lw, y + 14 * S + pf.size + 5 * S),
+            fill=tier_color,
+            width=max(1, S),
+        )
+        return
+
+    if style in ("5_stamp_outline", "stamp_outline", "stamp"):
+        pf = _font(28 * S, bold=True)
+        lab = _truncate(draw, label.upper(), pf, max_w)
+        oc = _mix(tier_color, BG, 0.2)
+        for dx in range(-2 * S, 2 * S + 1, max(1, S)):
+            for dy in range(-2 * S, 2 * S + 1, max(1, S)):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((tx + dx, y + 8 * S + dy), lab, font=pf, fill=oc)
+        draw.text((tx, y + 8 * S), lab, font=pf, fill=_mix(tier_color, INK, 0.4))
+        return
+
+    if style in ("6_spark_ends", "spark_ends", "spark"):
+        pf = _font(26 * S, bold=True)
+        lab = _truncate(draw, label, pf, max_w - 24 * S)
+        x0 = tx + 12 * S
+        _glow_text(lab, pf, tier_color, x0, y + 10 * S)
+        lw = draw.textlength(lab, font=pf)
+        spark = ACCENT_GOLD if kind == "complete" else tier_color
+        cy = y + 10 * S + pf.size / 2
+        for sx in (tx + 2 * S, x0 + lw + 8 * S):
+            r = max(2, 2 * S)
+            draw.ellipse((sx - r, cy - r, sx + r, cy + r), fill=spark)
+            draw.line((sx - 4 * S, cy, sx + 4 * S, cy), fill=spark, width=max(1, S // 2))
+            draw.line((sx, cy - 4 * S, sx, cy + 4 * S), fill=spark, width=max(1, S // 2))
+        return
+
+    if style in ("7_stack_kicker", "stack_kicker", "kicker"):
+        kick = {
+            "complete": "CLEAR",
+            "abandon": "WALK AWAY",
+            "fail": "FAILED RUN",
+            "expired": "TIME UP",
+        }.get(kind, "STATUS")
+        draw.text(
+            (tx, y + 4 * S),
+            kick,
+            font=_font(11 * S, bold=True),
+            fill=_mix(tier_color, INK_SOFT, 0.45),
+        )
+        pf = _font(28 * S, bold=True)
+        lab = _truncate(draw, label, pf, max_w)
+        _glow_text(lab, pf, tier_color, tx, y + 22 * S)
+        return
+
+    # unknown → glow
+    pf = _font(26 * S, bold=True)
+    lab = _truncate(draw, label, pf, max_w)
+    _glow_text(lab, pf, tier_color, tx, y + 10 * S)
+
+
 def _render_challenge(
     *,
     kind: str,
@@ -414,14 +564,16 @@ def _render_challenge(
     line_secondary: str,
     footer: str,
     poster_bytes: Optional[bytes] = None,
-    cleared_style: str = "D_soft_glow",
+    cleared_style: str = "",
+    # None = auto: stamp_outline for complete/abandon only; glow for all other kinds
+    hero_style: str | None = None,
 ) -> bytes:
     """
     Layout:
-      [av]  NAME                 [STATUS PILL]
+      [av]  NAME
             [TIER PILL] #N
             title · focus (if no poster)
-      [ outcome block — primary + optional progress + secondary ]
+      [ outcome: hero status + meta / progress ]
       optional cover on the right
     """
     S = SCALE
@@ -480,12 +632,26 @@ def _render_challenge(
         H += 22
     if has_outcome:
         H += 10
+        _hs = _resolve_hero_style(kind, hero_style, cleared_style)
+        _tall = _hs in (
+            "1_tier_pill",
+            "tier_pill",
+            "pill",
+            "7_stack_kicker",
+            "stack_kicker",
+            "kicker",
+            "2_double_rule",
+            "double_rule",
+            "5_stamp_outline",
+            "stamp_outline",
+            "stamp",
+        )
         if has_progress:
-            H += 82
-        elif outcome_meta or line_secondary:
-            H += 70 if terminal else 64
+            H += 90 if _tall else 82
+        elif outcome_meta or line_secondary or line_primary:
+            H += (78 if _tall else 70) if terminal else (72 if _tall else 64)
         else:
-            H += 54
+            H += 62 if _tall else 54
     # Always reserve brand footer
     if not footer:
         footer = BRAND_FOOTER
@@ -658,12 +824,27 @@ def _render_challenge(
             meta_bits.append(line_secondary)
         meta_line = " · ".join(dict.fromkeys(meta_bits))  # stable unique
 
+        # Extra height for pill / kicker / stamp hero treatments
+        hs_pre = _resolve_hero_style(kind, hero_style, cleared_style)
+        tall_hero = hs_pre in (
+            "1_tier_pill",
+            "tier_pill",
+            "pill",
+            "7_stack_kicker",
+            "stack_kicker",
+            "kicker",
+            "2_double_rule",
+            "double_rule",
+            "5_stamp_outline",
+            "stamp_outline",
+            "stamp",
+        )
         if has_progress:
-            oh_s = 82 * S
+            oh_s = (90 if tall_hero else 82) * S
         elif meta_line:
-            oh_s = 70 * S
+            oh_s = (78 if tall_hero else 70) * S
         else:
-            oh_s = 54 * S
+            oh_s = (62 if tall_hero else 54) * S
 
         tick_w = 3 * S
         draw.rectangle(
@@ -673,17 +854,20 @@ def _render_challenge(
         tx = cx + tick_w + pad
         tw = right - tx - 12 * S
 
-        # D_soft_glow hero status (Started / Scheduled / Cleared / …)
-        pf = _font(26 * S, bold=True)
-        lab = _truncate(draw, hero_label, pf, tw * (0.55 if has_progress else 1.0))
-        for dx, dy in ((-S, 0), (S, 0), (0, -S), (0, S)):
-            draw.text(
-                (tx + dx, y + 10 * S + dy),
-                lab,
-                font=pf,
-                fill=_mix(tier_color, BG, 0.45),
-            )
-        draw.text((tx, y + 10 * S), lab, font=pf, fill=tier_color)
+        # complete/abandon → stamp outline; Started/Scheduled/… always plain glow
+        hs = _resolve_hero_style(kind, hero_style, cleared_style)
+        _draw_hero_status(
+            draw,
+            style=hs,
+            label=hero_label,
+            tier_color=tier_color,
+            tx=tx,
+            y=y,
+            tw=tw,
+            S=S,
+            kind=kind,
+            has_progress=has_progress,
+        )
 
         if has_progress:
             sf = _font(15 * S, bold=True)
@@ -1140,7 +1324,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 1,
         "focus": "One Piece",
         "line_primary": "Good luck",
-        "line_secondary": "Ends Sat 28 Mar 18:00 UTC",
+        "line_secondary": "24 hours · Ends Sat 28 Mar 18:00 UTC",
         "footer": "",
     },
     "scheduled": {
@@ -1150,7 +1334,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 2,
         "focus": "Frieren",
         "line_primary": "Queued to start",
-        "line_secondary": "Sun 29 Mar 09:00 -> Mon 30 Mar 09:00 UTC",
+        "line_secondary": "24 hours · Sun 29 Mar 09:00 -> Mon 30 Mar 09:00 UTC",
         "footer": "",
     },
     "active": {
@@ -1160,7 +1344,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 4,
         "focus": "Steins;Gate",
         "line_primary": "In progress",
-        "line_secondary": "Ends Sat 28 Mar 18:00 UTC",
+        "line_secondary": "24 hours · Ends Sat 28 Mar 18:00 UTC",
         "footer": "",
     },
     "complete": {

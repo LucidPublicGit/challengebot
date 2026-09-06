@@ -152,6 +152,10 @@ class ChallengeBot(commands.Bot):
             gid = att.get("guild_id") or _runtime().get("guild_id")
             if gid and str(gid).isdigit():
                 guild = self.get_guild(int(gid))
+            try:
+                dur_h = float(att.get("time_limit_hours") or 0) or None
+            except (TypeError, ValueError):
+                dur_h = None
             kwargs = dict(
                 kind=kind,
                 guild=guild,
@@ -163,18 +167,23 @@ class ChallengeBot(commands.Bot):
                 param=att.get("param"),
                 content=att_svc.display_content(att),
                 media_filter=att.get("media_filter"),
+                duration_hours=dur_h,
             )
             kwargs.update(extra)
             await announce(self, **kwargs)  # type: ignore[arg-type]
 
         # Scheduled → live: post a fresh START card (schedule card already went out earlier)
         for att in activated:
-            ends_ts = None
+            ends_ts = starts_ts = None
             try:
                 ends_ts = _ts(att["ends_at"])
             except Exception:  # noqa: BLE001
                 pass
-            await _post("start", att, ends_at_ts=ends_ts)
+            try:
+                starts_ts = _ts(att["started_at"])
+            except Exception:  # noqa: BLE001
+                pass
+            await _post("start", att, ends_at_ts=ends_ts, starts_at_ts=starts_ts)
         # Window closed without a clear → FAILED/EXPIRED card (no congrats)
         for att in expired:
             ends_ts = None
@@ -224,6 +233,10 @@ class ChallengeBot(commands.Bot):
                 if gid and str(gid).isdigit():
                     guild = self.get_guild(int(gid))
                 try:
+                    try:
+                        dur_h = float(att.get("time_limit_hours") or 0) or None
+                    except (TypeError, ValueError):
+                        dur_h = None
                     await announce(
                         self,
                         kind=ev.kind,
@@ -239,6 +252,7 @@ class ChallengeBot(commands.Bot):
                         line_secondary=ev.secondary,
                         ends_at_ts=ends_ts,
                         media_filter=att.get("media_filter"),
+                        duration_hours=dur_h,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("status announce failed: %s", exc)

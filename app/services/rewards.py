@@ -10,7 +10,6 @@ from app.challenge_card import (
     avatar_bytes,
     files_as_image_embeds,
     render_challenge_card,
-    render_event_chip,
     tier_caption_mark,
 )
 from app.config import get_settings, merge_runtime
@@ -130,6 +129,45 @@ def _ts_line(label: str, ts: int | None) -> str:
     return f"{label} {stamp}" if stamp else ""
 
 
+def _fmt_duration_hours(hours: float | None) -> str:
+    """Human window length for cards/captions (e.g. 24 hours, 3 days)."""
+    if hours is None:
+        return ""
+    try:
+        h = float(hours)
+    except (TypeError, ValueError):
+        return ""
+    if h <= 0:
+        return ""
+    if abs(h - round(h)) < 1e-6:
+        hi = int(round(h))
+        if hi >= 48 and hi % 24 == 0:
+            d = hi // 24
+            return "1 day" if d == 1 else f"{d} days"
+        if hi == 1:
+            return "1 hour"
+        return f"{hi} hours"
+    if h < 1:
+        m = max(1, int(round(h * 60)))
+        return f"{m} min"
+    # one decimal if needed
+    return f"{h:.1f}".rstrip("0").rstrip(".") + " hours"
+
+
+def _duration_from_window(
+    duration_hours: float | None,
+    starts_at_ts: int | None,
+    ends_at_ts: int | None,
+) -> str:
+    hours = duration_hours
+    if hours is None and starts_at_ts and ends_at_ts:
+        try:
+            hours = (int(ends_at_ts) - int(starts_at_ts)) / 3600.0
+        except (TypeError, ValueError):
+            hours = None
+    return _fmt_duration_hours(hours)
+
+
 def _discord_when(ts: int | None, *, relative: bool = True) -> str:
     """Viewer-local Discord timestamp (each client renders their own TZ)."""
     if not ts:
@@ -159,6 +197,7 @@ async def build_event_card(
     media_filter: Optional[str] = None,
     poster_bytes: Optional[bytes] = None,
     skip_image: bool = False,
+    duration_hours: float | None = None,
 ) -> tuple[Optional[bytes], str]:
     """Return (png_bytes|None, short_caption). Caption uses <t:> for local TZ."""
     name = (
@@ -167,22 +206,28 @@ async def build_event_card(
         or (str(user) if user else "Someone")
     )
     focus = (content or param or "").strip()
+    dur = _duration_from_window(duration_hours, starts_at_ts, ends_at_ts)
 
     primary = ""
     secondary = ""
     footer = ""
     if kind == "start":
         primary = "Good luck"
-        secondary = _ts_line("Ends", ends_at_ts) or "Window open"
+        bits = [b for b in (dur, _ts_line("Ends", ends_at_ts) or "Window open") if b]
+        secondary = " · ".join(bits)
     elif kind == "scheduled":
         primary = "Queued to start"
         a, b = _fmt_utc(starts_at_ts), _fmt_utc(ends_at_ts)
         if a and b:
-            secondary = f"{a.removesuffix(' UTC')} -> {b}"
+            window = f"{a.removesuffix(' UTC')} -> {b}"
         elif a:
-            secondary = f"Starts {a}"
+            window = f"Starts {a}"
         elif b:
-            secondary = f"Ends {b}"
+            window = f"Ends {b}"
+        else:
+            window = ""
+        bits = [b for b in (dur, window) if b]
+        secondary = " · ".join(bits)
     elif kind == "complete":
         primary = "Cleared"
         if detail:
@@ -207,7 +252,8 @@ async def build_event_card(
         elif detail:
             secondary = str(detail)[:90]
         else:
-            secondary = _ts_line("Ends", ends_at_ts) or "Window open"
+            bits = [b for b in (dur, _ts_line("Ends", ends_at_ts) or "Window open") if b]
+            secondary = " · ".join(bits)
     else:
         primary = kind.replace("_", " ").title()
         secondary = (detail or "")[:90]
@@ -216,6 +262,9 @@ async def build_event_card(
         primary = str(line_primary).strip()[:80] or primary
     if line_secondary:
         secondary = str(line_secondary).strip()[:90] or secondary
+        # If caller overrode secondary but we have duration, keep duration visible
+        if dur and kind in ("start", "scheduled", "active") and dur not in secondary:
+            secondary = f"{dur} · {secondary}"
 
     png: Optional[bytes] = None
     if not skip_image:
@@ -268,6 +317,8 @@ async def build_event_card(
     if tmark:
         caption = f"{tmark}{num_bit} · {caption}"
     when_bits: list[str] = []
+    if dur and kind in ("start", "scheduled", "active", "status"):
+        when_bits.append(dur)
     if kind == "scheduled" and starts_at_ts:
         when_bits.append(f"Starts {_discord_when(starts_at_ts)}")
         if ends_at_ts:
@@ -305,6 +356,7 @@ async def announce(
     media_filter: Optional[str] = None,
     line_primary: Optional[str] = None,
     line_secondary: Optional[str] = None,
+    duration_hours: float | None = None,
     highlights_only: bool = False,
 ) -> bool:
     """Post lifecycle cards to configured announce channels.
@@ -352,6 +404,7 @@ async def announce(
             starts_at_ts=starts_at_ts,
             media_filter=media_filter,
             skip_image=not need_card,
+            duration_hours=duration_hours,
         )
         if not need_card:
             png = None
@@ -368,9 +421,8 @@ async def announce(
     if kind == "complete" and need_card:
         cong_path = pick_congrats(tier=tier, content=focus)
 
-    # Start/schedule: proto E — NC banner + thin chip (card only if NC missing)
+    # Start/schedule: NC banner + full challenge card (not the thin "Good luck" chip)
     nc_png: bytes | None = None
-    chip_png: bytes | None = None
     if kind in ("start", "scheduled"):
         try:
             av = await avatar_bytes(user)
@@ -378,34 +430,6 @@ async def announce(
         except Exception as exc:  # noqa: BLE001
             logger.warning("new_challenger render failed: %s", exc)
             nc_png = None
-        if nc_png is not None:
-            try:
-                import io as _io
-
-                from PIL import Image as _Image
-
-                chip_w = _Image.open(_io.BytesIO(nc_png)).size[0]
-                chip_primary = (
-                    "Good luck" if kind == "start" else "Queued to start"
-                )
-                chip_secondary = ""
-                if kind == "start" and ends_at_ts:
-                    chip_secondary = _ts_line("Ends", ends_at_ts)
-                elif kind == "scheduled":
-                    a, b = _fmt_utc(starts_at_ts), _fmt_utc(ends_at_ts)
-                    if a and b:
-                        chip_secondary = f"{a.removesuffix(' UTC')} -> {b}"
-                    elif a:
-                        chip_secondary = f"Starts {a}"
-                chip_png = await render_event_chip(
-                    primary=chip_primary,
-                    secondary=chip_secondary or title,
-                    tier=tier,
-                    width=chip_w,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("event chip render failed: %s", exc)
-                chip_png = None
 
     posted = False
 
@@ -419,9 +443,7 @@ async def announce(
             files = []
             if nc_png is not None:
                 files.append(as_discord_new_challenger(nc_png))
-                if chip_png is not None:
-                    files.append(as_discord_file(chip_png, f"{kind}-chip.png"))
-            elif png is not None:
+            if png is not None:
                 files.append(as_discord_file(png, f"{kind}-card.png"))
                 if with_congrats and cong_path is not None:
                     try:
@@ -546,6 +568,10 @@ async def repost_attempt_announce(
 
     starts = _ts(attempt.get("started_at"))
     ends = _ts(attempt.get("ends_at"))
+    try:
+        dur_h = float(attempt.get("time_limit_hours") or 0) or None
+    except (TypeError, ValueError):
+        dur_h = None
     return await announce(
         bot,
         kind=kind,
@@ -559,8 +585,9 @@ async def repost_attempt_announce(
         content=display_content(attempt),
         method=attempt.get("verify_method"),
         ends_at_ts=ends,
-        starts_at_ts=starts if kind == "scheduled" else None,
+        starts_at_ts=starts if kind in ("scheduled", "start", "active") else None,
         media_filter=attempt.get("media_filter"),
+        duration_hours=dur_h,
         highlights_only=highlights_only,
     )
 

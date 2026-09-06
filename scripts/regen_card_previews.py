@@ -14,7 +14,6 @@ from app.challenge_card import (
     demo_avatar_png,
     render_all_demo_cards,
     render_challenge_card,
-    render_event_chip,
 )
 from app.new_challenger import list_templates, render_new_challenger
 
@@ -95,6 +94,12 @@ async def main() -> None:
         (OUT / f"tier_preview_{tier}.png").write_bytes(png)
         print(f"tier_preview_{tier}.png", len(png))
 
+    def _save(path: Path, img: Image.Image) -> None:
+        """Atomic-ish write (avoids Windows lock on open preview files)."""
+        tmp = path.with_name(path.stem + ".tmp.png")
+        img.save(tmp)
+        tmp.replace(path)
+
     def _stack_v(*imgs: Image.Image, gap: int = 12, pad: int = 16) -> Image.Image:
         """Vertical stack, center-aligned, dark mock background."""
         w = max(im.size[0] for im in imgs)
@@ -120,26 +125,8 @@ async def main() -> None:
             (OUT / name).write_bytes(nc)
             print(name, len(nc))
             if i == 0 and tier == "easy":
-                nc_easy = nc
                 (OUT / "new_challenger_example.png").write_bytes(nc)
-                w = Image.open(io.BytesIO(nc)).size[0]
-                chip = await render_event_chip(
-                    primary="Good luck",
-                    secondary="Ends Sat 28 Mar 18:00 UTC",
-                    tier="easy",
-                    width=w,
-                )
-                (OUT / "start_chip_example.png").write_bytes(chip)
-                print("start_chip_example.png", len(chip))
-
-                # Full start pair as Discord shows it (layout E: NC + chip)
                 nc_im = Image.open(io.BytesIO(nc)).convert("RGBA")
-                chip_im = Image.open(io.BytesIO(chip)).convert("RGBA")
-                pair_chip = _stack_v(nc_im, chip_im)
-                pair_chip.save(OUT / "preview_start_pair.png")
-                print("preview_start_pair.png", pair_chip.size)
-
-                # Same pair but bottom = full Started card (design reference)
                 start_png = await render_challenge_card(
                     kind="start",
                     display_name="Monty",
@@ -149,11 +136,10 @@ async def main() -> None:
                     avatar_bytes=AV,
                     focus="One Piece",
                     line_primary="Good luck",
-                    line_secondary="Ends Sat 28 Mar 18:00 UTC",
+                    line_secondary="24 hours · Ends Sat 28 Mar 18:00 UTC",
                     footer="",
                 )
                 start_im = Image.open(io.BytesIO(start_png)).convert("RGBA")
-                # Match widths: scale start card to NC width
                 if start_im.size[0] != nc_im.size[0]:
                     nh = max(
                         1, int(start_im.size[1] * nc_im.size[0] / start_im.size[0])
@@ -161,17 +147,24 @@ async def main() -> None:
                     start_im = start_im.resize(
                         (nc_im.size[0], nh), Image.Resampling.LANCZOS
                     )
-                pair_card = _stack_v(nc_im, start_im)
-                pair_card.save(OUT / "preview_challenger_plus_card.png")
-                print("preview_challenger_plus_card.png", pair_card.size)
+                # Prod start pair: NC + full Started card
+                pair = _stack_v(nc_im, start_im)
+                _save(OUT / "preview_start_pair.png", pair)
+                _save(OUT / "preview_challenger_plus_card.png", pair)
+                print("preview_start_pair.png", pair.size)
+                # Drop old chip-only preview if present
+                for stale in ("start_chip_example.png",):
+                    sp = OUT / stale
+                    if sp.exists():
+                        sp.unlink()
+                        print("deleted", stale)
 
     names = sorted(p.name for p in OUT.glob("*.png"))
     (OUT / "README.txt").write_text(
         "ChallengeTracker card previews (current design)\n"
-        "- preview_start_pair.png — layout E as posted (NC + tier chip)\n"
-        "- preview_challenger_plus_card.png — NC + full Started card\n"
-        "- Cards: in-card hero status (Started/Cleared/…), no corner pill\n"
-        "- Tier side-tick; Cleared/status soft-glow; short status text-only in channel\n\n"
+        "- preview_start_pair.png — prod start (NC + full Started card)\n"
+        "- Cleared/Abandoned: stamp-outline; other kinds: soft-glow\n"
+        "- Tier side-tick; no corner status pills\n\n"
         "Regenerate: PYTHONPATH=. python scripts/regen_card_previews.py\n\n"
         + "\n".join(names)
         + "\n",
