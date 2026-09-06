@@ -132,18 +132,26 @@ async def _finalize_start(
     status = result.get("status") or "active"
     kind = "scheduled" if status == "scheduled" else "start"
     media = ch.get("media_filter")
+    focus = (result.get("param") or focus or "").strip() or None
     png, caption = await build_event_card(
         kind=kind,
         user=interaction.user,
         title=ch["title"],
         tier=ch["tier"],
         number=int(ch["number"]),
-        param=result.get("param"),
+        param=focus,
+        content=focus,
         starts_at_ts=start_ts if kind == "scheduled" else None,
         ends_at_ts=ends,
         media_filter=media,
     )
-    howto = b.confirm_howto(ch) if kind == "start" else "Cancel anytime with `/challenge abandon`."
+    if kind == "scheduled":
+        howto = (
+            f"Starts <t:{start_ts}:F> · ends <t:{ends}:R> after start.\n"
+            "A new card posts when it goes live. Cancel: `/challenge abandon`."
+        )
+    else:
+        howto = b.confirm_howto(ch)
     card = as_discord_file(png, f"{kind}-card.png")
     await interaction.followup.send(
         content=f"{caption}\n{howto}",
@@ -151,6 +159,7 @@ async def _finalize_start(
         embeds=files_as_image_embeds([card], kind=kind),
         ephemeral=True,
     )
+    # Channel card immediately (schedule or start); start-at-time is expire_loop
     await announce(
         interaction.client,
         kind=kind,
@@ -159,7 +168,8 @@ async def _finalize_start(
         title=ch["title"],
         tier=ch["tier"],
         number=int(ch["number"]),
-        param=result.get("param"),
+        param=focus,
+        content=focus,
         starts_at_ts=start_ts if kind == "scheduled" else None,
         ends_at_ts=ends,
         media_filter=media,
@@ -1185,85 +1195,108 @@ async def challenge_list(interaction: discord.Interaction) -> None:
     view.message = await interaction.original_response()
 
 
-@challenge_group.command(name="status", description="Your challenge status + actions")
-async def challenge_status(interaction: discord.Interaction) -> None:
+@challenge_group.command(
+    name="status",
+    description="Challenge status for you or another member",
+)
+@app_commands.describe(user="Member to check (default: you)")
+async def challenge_status(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+) -> None:
+    """Self: private card + actions. Other member: public mid-challenge card."""
     b = _bot_helpers()
-    await interaction.response.defer(ephemeral=True)
-    active = att_svc.active_attempt(str(interaction.user.id))
-    scheduled = att_svc.scheduled_attempt(str(interaction.user.id))
-    recent = att_svc.list_attempts(discord_id=str(interaction.user.id), limit=8)
+    target = user or interaction.user
+    self_view = target.id == interaction.user.id
+    # Own status stays private; looking someone up is visible in-channel
+    await interaction.response.defer(ephemeral=self_view)
+
+    tid = str(target.id)
+    active = att_svc.active_attempt(tid)
+    scheduled = att_svc.scheduled_attempt(tid)
+    recent = att_svc.list_attempts(discord_id=tid, limit=8) if self_view else []
     lines: list[str] = []
     files: list[discord.File] = []
+    card_kind = "status"
 
     if active:
         ends = b._ts(active["ends_at"])
-        png, _ = await build_event_card(
+        detail = b.confirm_howto(active) if self_view else f"Ends <t:{ends}:R>"
+        png, caption = await build_event_card(
             kind="active",
-            user=interaction.user,
+            user=target,
             title=active["title"],
             tier=active["tier"],
             number=int(active["number"]),
             param=active.get("param"),
             content=att_svc.display_content(active),
             ends_at_ts=ends,
-            detail=b.confirm_howto(active),
+            detail=detail,
             media_filter=active.get("media_filter"),
         )
         files.append(as_discord_file(png, "active-card.png"))
-        lines.append(b.confirm_howto(active))
+        card_kind = "active"
+        lines.append(caption if not self_view else b.confirm_howto(active))
     elif scheduled:
         when = b._ts(scheduled["started_at"])
         ends = b._ts(scheduled["ends_at"])
-        png, _ = await build_event_card(
+        png, caption = await build_event_card(
             kind="scheduled",
-            user=interaction.user,
+            user=target,
             title=scheduled["title"],
             tier=scheduled["tier"],
             number=int(scheduled["number"]),
             param=scheduled.get("param"),
+            content=att_svc.display_content(scheduled),
             starts_at_ts=when,
             ends_at_ts=ends,
             media_filter=scheduled.get("media_filter"),
         )
         files.append(as_discord_file(png, "scheduled-card.png"))
-    else:
-        lines.append("**No active challenge.** Use `/challenge start`.")
-
-    past = []
-    for a in recent:
-        if active and a["id"] == active["id"]:
-            continue
-        if scheduled and a["id"] == scheduled["id"]:
-            continue
-        content = att_svc.display_content(a)
-        focus = f" · _{content}_" if content else ""
-        past.append(
-            f"`{a['status']}` {a['tier']} #{a['number']} {a['title']}{focus}"
+        card_kind = "scheduled"
+        lines.append(
+            caption if not self_view else f"Starts <t:{when}:R> · `/challenge abandon` to cancel."
         )
-    if past:
-        lines.append("**Recent**\n" + "\n".join(past[:6]))
+    else:
+        if self_view:
+            lines.append("**No open challenge.** Use `/challenge start`.")
+        else:
+            lines.append(f"**{target.display_name}** has no active or scheduled challenge.")
 
-    user = att_svc.get_user(str(interaction.user.id))
-    tadoku = (
-        f"Tadoku: `{user['tadoku_user_id']}`"
-        if user and user.get("tadoku_user_id")
-        else "Tadoku: **not linked** — `/challenge link`"
-    )
-    lines.append(tadoku)
+    if self_view:
+        past = []
+        for a in recent:
+            if active and a["id"] == active["id"]:
+                continue
+            if scheduled and a["id"] == scheduled["id"]:
+                continue
+            content = att_svc.display_content(a)
+            focus = f" · _{content}_" if content else ""
+            past.append(
+                f"`{a['status']}` {a['tier']} #{a['number']} {a['title']}{focus}"
+            )
+        if past:
+            lines.append("**Recent**\n" + "\n".join(past[:6]))
+
+        db_user = att_svc.get_user(tid)
+        tadoku = (
+            f"Tadoku: `{db_user['tadoku_user_id']}`"
+            if db_user and db_user.get("tadoku_user_id")
+            else "Tadoku: **not linked** — `/challenge link`"
+        )
+        lines.append(tadoku)
 
     view = None
-    if active or scheduled:
+    if self_view and (active or scheduled):
         view = StatusActionsView(interaction.user.id, has_active=bool(active))
 
     kwargs: dict = {
         "content": "\n".join(lines)[:1900],
-        "ephemeral": True,
+        "ephemeral": self_view,
     }
     if files:
         kwargs["files"] = files
-        kwargs["embeds"] = files_as_image_embeds(
-            files, kind="active" if active else "scheduled"
-        )
+        kwargs["embeds"] = files_as_image_embeds(files, kind=card_kind)
     if view:
         kwargs["view"] = view
     await interaction.followup.send(**kwargs)

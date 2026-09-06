@@ -242,8 +242,8 @@ def _render_challenge(
     """
     Layout:
       [av]  NAME                 [STATUS PILL]
-            TIER #N · title
-            focus (if no poster)
+            [TIER PILL] #N
+            title · focus (if no poster)
       [ outcome block — primary + optional progress + secondary ]
       optional cover on the right
     """
@@ -291,7 +291,7 @@ def _render_challenge(
 
     av_size = 72
     H = 22 + 30  # pad + name row
-    H += 18  # tier row
+    H += 26  # tier badge row
     H += 24 * len(title_lines) + 6
     if show_focus:
         H += 22
@@ -367,14 +367,36 @@ def _render_challenge(
     )
     y += 34 * S
 
-    # Colored tier + #N, then title (1–2 lines)
-    meta_font = _font(13 * S, bold=True)
+    # Tier badge + #N, then title (1–2 lines)
     title_font = _font(20 * S, bold=True)
-    tier_bits = tier_pretty.upper()
+    tlabel = tier_pretty.upper()
+    tpad_x, tpad_y = 10 * S, 4 * S
+    th = pill_font.size + tpad_y * 2
+    tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
+    draw.rounded_rectangle(
+        (cx, y, cx + tw, y + th),
+        radius=th / 2,
+        fill=_mix(tier_color, BG, 0.22),
+        outline=_mix(tier_color, BG, 0.55),
+        width=max(1, S // 2),
+    )
+    draw.text(
+        (cx + tw / 2, y + th / 2),
+        tlabel,
+        font=pill_font,
+        fill=tier_color,
+        anchor="mm",
+    )
     if number:
-        tier_bits = f"{tier_bits}  #{int(number)}"
-    draw.text((cx, y), tier_bits, font=meta_font, fill=tier_color)
-    y += 20 * S
+        num_font = _font(13 * S, bold=True)
+        draw.text(
+            (cx + tw + 10 * S, y + th / 2),
+            f"#{int(number)}",
+            font=num_font,
+            fill=INK_SOFT,
+            anchor="lm",
+        )
+    y += th + 10 * S
     for i, ln in enumerate(title_lines):
         draw.text((cx, y + i * 24 * S), ln, font=title_font, fill=INK)
     y += 24 * S * len(title_lines) + 4 * S

@@ -139,9 +139,11 @@ class ChallengeBot(commands.Bot):
             logger.info("Expired %s attempt(s)", len(expired))
 
         async def _post(kind: str, att: dict, **extra: object) -> None:
+            user = None
             try:
-                user = self.get_user(int(att["discord_id"]))
-            except (TypeError, ValueError):
+                uid = int(att["discord_id"])
+                user = self.get_user(uid) or await self.fetch_user(uid)
+            except (TypeError, ValueError, discord.HTTPException):
                 user = None
             guild = None
             gid = att.get("guild_id") or _runtime().get("guild_id")
@@ -162,6 +164,7 @@ class ChallengeBot(commands.Bot):
             kwargs.update(extra)
             await announce(self, **kwargs)  # type: ignore[arg-type]
 
+        # Scheduled → live: post a fresh START card (schedule card already went out earlier)
         for att in activated:
             ends_ts = None
             try:
@@ -169,8 +172,14 @@ class ChallengeBot(commands.Bot):
             except Exception:  # noqa: BLE001
                 pass
             await _post("start", att, ends_at_ts=ends_ts)
+        # Window closed without a clear → FAILED/EXPIRED card (no congrats)
         for att in expired:
-            await _post("expired", att)
+            ends_ts = None
+            try:
+                ends_ts = _ts(att.get("ends_at"))
+            except Exception:  # noqa: BLE001
+                pass
+            await _post("expired", att, ends_at_ts=ends_ts)
 
     @expire_loop.before_loop
     async def before_expire(self) -> None:
