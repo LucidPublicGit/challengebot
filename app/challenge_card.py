@@ -1236,7 +1236,9 @@ def _render_userinfo(
     W = 560
     margin = 28
     best = (best_tier or "").lower().strip()
-    best_c = TIER_COLOR.get(best) if best else accent
+    best_c = TIER_COLOR.get(best, accent) if best else accent
+    flair = _tier_flair(best) if best else None
+    sec_color = _flair_secondary(flair) if flair else None
     completed = list(completed or [])
     by_tier = by_tier or {}
 
@@ -1260,31 +1262,47 @@ def _render_userinfo(
     outer = (0, 0, W * S - 1, H * S - 1)
     radius = 22 * S
     draw.rounded_rectangle(outer, radius=radius, fill=BG)
+    # Same tier chrome language as completion cards
+    wash_s = float(flair.get("wash") or 0.1) if flair else 0.08
+    wash_w = float(flair.get("wash_width") or 0.38) if flair else 0.35
     _draw_tier_wash(
         draw,
         card_w_px=W * S,
         card_h_px=H * S,
         tier_color=best_c,
-        strength=0.10 if best else 0.08,
-        width_frac=0.38,
+        strength=wash_s,
+        width_frac=wash_w,
     )
-    draw.rounded_rectangle((0, 0, 8 * S, H * S - 1), radius=8 * S, fill=best_c)
-    draw.rectangle((4 * S, 0, 9 * S, H * S - 1), fill=best_c)
+    rail_w = max(3, int((flair or {}).get("rail_kind") or 4)) * S
+    if flair and int(flair.get("rail_tier") or 0) > 0:
+        rail_w = max(rail_w, int(flair["rail_tier"]) * S + rail_w // 2)
+    draw.rounded_rectangle((0, 0, rail_w, H * S - 1), radius=8 * S, fill=best_c)
+    if flair and flair.get("top_rule"):
+        rule_c = sec_color or best_c
+        draw.rectangle(
+            (rail_w, 0, W * S - 1, max(2, 2 * S)),
+            fill=_mix(rule_c, BG, 0.65),
+        )
 
-    # Avatar + name
+    # Avatar + name — rings match completion (gold outer + tier inner for ota)
     d = 56 * S
     av = _circular_avatar(avatar, d)
     ax, ay = margin * S, 22 * S
     img.paste(av, (int(ax), int(ay)), av)
-    ring = best_c if best else HAIRLINE
-    draw.ellipse((ax, ay, ax + d, ay + d), outline=ring, width=2 * S)
-    if best == "ota_master":
-        pad = 3 * S
-        draw.ellipse(
-            (ax - pad, ay - pad, ax + d + pad, ay + d + pad),
-            outline=ACCENT_GOLD,
-            width=2 * S,
-        )
+    if flair:
+        outer_w = int(flair.get("ring_outer") or 0) * S
+        ring_w = max(1, int(flair.get("ring") or 2) * S)
+        oc = _ring_outer_color(flair, best_c)
+        if outer_w > 0 and oc is not None:
+            pad = outer_w + S
+            draw.ellipse(
+                (ax - pad, ay - pad, ax + d + pad, ay + d + pad),
+                outline=_mix(oc, BG, 0.75),
+                width=outer_w,
+            )
+        draw.ellipse((ax, ay, ax + d, ay + d), outline=best_c, width=ring_w)
+    else:
+        draw.ellipse((ax, ay, ax + d, ay + d), outline=HAIRLINE, width=2 * S)
 
     name_x = margin + 56 + 14
     nf = _font(22 * S, bold=True)
@@ -1294,19 +1312,66 @@ def _render_userinfo(
         font=nf,
         fill=INK,
     )
-    # Badge line under name
-    badge = "PROFILE"
+    # Best-tier pill under name (same as completion card)
+    pill_font = _font(11 * S, bold=True)
     if best:
-        badge = f"{TIER_LABEL.get(best, best)} cleared"
-    draw.text(
-        (name_x * S, 56 * S),
-        _truncate(draw, badge, _font(13 * S, bold=True), (W - name_x - margin) * S),
-        font=_font(13 * S, bold=True),
-        fill=best_c if best else INK_SOFT,
-    )
+        tlabel = TIER_LABEL.get(best, best).upper()
+        if best == "ota_master":
+            tlabel = "★  OTA-MASTER"
+        extra_pad = int((flair or {}).get("tier_pill_pad") or 0) * S
+        tpad_x = 10 * S + extra_pad
+        tpad_y = 4 * S + max(0, extra_pad // 2)
+        th = pill_font.size + tpad_y * 2
+        tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
+        tpx = name_x * S
+        tpy = 54 * S
+        tier_outline = (
+            sec_color
+            if best in ("hard", "ota_master") and sec_color
+            else _mix(best_c, BG, 0.55)
+        )
+        draw.rounded_rectangle(
+            (tpx, tpy, tpx + tw, tpy + th),
+            radius=th / 2,
+            fill=_mix(best_c, BG, 0.28 if best != "easy" else 0.22),
+            outline=tier_outline,
+            width=max(
+                1,
+                (1 + (1 if best in ("hard", "ota_master") else 0)) * max(1, S // 2),
+            ),
+        )
+        draw.text(
+            (tpx + tw / 2, tpy + th / 2),
+            tlabel,
+            font=pill_font,
+            fill=ACCENT_GOLD if best == "ota_master" else best_c,
+            anchor="mm",
+        )
+        if flair and flair.get("spark"):
+            sy = int(tpy + th / 2)
+            for dx in (-6 * S, tw + 6 * S):
+                sx = int(tpx + dx)
+                draw.ellipse((sx - S, sy - S, sx + S, sy + S), fill=ACCENT_GOLD)
+            cleared_x = tpx + tw + 14 * S + (8 * S if flair.get("spark") else 0)
+        else:
+            cleared_x = tpx + tw + 10 * S
+        draw.text(
+            (cleared_x, tpy + th / 2),
+            "cleared",
+            font=_font(12 * S, bold=True),
+            fill=ACCENT_GOLD if best == "ota_master" else INK_SOFT,
+            anchor="lm",
+        )
+    else:
+        draw.text(
+            (name_x * S, 56 * S),
+            "PROFILE",
+            font=_font(13 * S, bold=True),
+            fill=INK_SOFT,
+        )
     tad = "Tadoku linked" if tadoku_linked else "Tadoku not linked"
     draw.text(
-        (name_x * S, 76 * S),
+        (name_x * S, 82 * S),
         tad,
         font=_font(12 * S),
         fill=ACCENT_GREEN if tadoku_linked else INK_SOFT,
@@ -1334,7 +1399,18 @@ def _render_userinfo(
     for i, (lab, val, fill) in enumerate(chips):
         cx = margin + i * (chip_w + 9)
         box = (cx * S, y * S, (cx + chip_w) * S, (y + chip_h) * S)
-        draw.rounded_rectangle(box, radius=10 * S, fill=PANEL_BG)
+        chip_outline = None
+        if best == "ota_master" and i == 0:
+            chip_outline = ACCENT_GOLD
+        elif best in ("hard", "ota_master") and sec_color and i == 0:
+            chip_outline = sec_color
+        draw.rounded_rectangle(
+            box,
+            radius=10 * S,
+            fill=PANEL_BG,
+            outline=chip_outline,
+            width=max(1, S // 2) if chip_outline else 0,
+        )
         mid_x = (cx + chip_w / 2) * S
         lab_f = _font(10 * S, bold=True)
         val_f = _font(18 * S, bold=True)
@@ -1356,7 +1432,7 @@ def _render_userinfo(
         )
     y += stats_h
 
-    # Tier breakdown pills
+    # Tier breakdown pills (ota/hard match completion pill chrome)
     if tier_h:
         px = margin * S
         mid = (y + tier_h / 2 - 4) * S
@@ -1365,19 +1441,35 @@ def _render_userinfo(
             if n <= 0:
                 continue
             tc = TIER_COLOR[tkey]
+            tf_flair = _tier_flair(tkey)
+            tf_sec = _flair_secondary(tf_flair)
             short = "OTA" if tkey == "ota_master" else tlab[:3].upper()
             txt = f"{short} {n}"
             tf = _font(11 * S, bold=True)
             tw = draw.textlength(txt, font=tf) + 16 * S
             th = 22 * S
+            outline = (
+                tf_sec
+                if tkey in ("hard", "ota_master") and tf_sec
+                else _mix(tc, BG, 0.55)
+            )
             draw.rounded_rectangle(
                 (px, mid - th / 2, px + tw, mid + th / 2),
                 radius=th / 2,
                 fill=_mix(tc, BG, 0.28),
-                outline=_mix(tc, BG, 0.55),
-                width=max(1, S // 2),
+                outline=outline,
+                width=max(
+                    1,
+                    (1 + (1 if tkey in ("hard", "ota_master") else 0)) * max(1, S // 2),
+                ),
             )
-            draw.text((px + tw / 2, mid), txt, font=tf, fill=tc, anchor="mm")
+            draw.text(
+                (px + tw / 2, mid),
+                txt,
+                font=tf,
+                fill=ACCENT_GOLD if tkey == "ota_master" else tc,
+                anchor="mm",
+            )
             px += tw + 8 * S
         y += tier_h
 
@@ -1393,6 +1485,8 @@ def _render_userinfo(
         for e in completed:
             tier = (e.get("tier") or "").lower().strip()
             tc = TIER_COLOR.get(tier, HAIRLINE)
+            row_flair = _tier_flair(tier) if tier in TIER_COLOR else None
+            row_sec = _flair_secondary(row_flair) if row_flair else None
             title = _oneline(str(e.get("title") or "?"))
             num = e.get("number")
             if num is not None and str(num).strip() != "":
@@ -1409,12 +1503,25 @@ def _render_userinfo(
             tw = draw.textlength(tlab, font=tf) + 10 * S
             th = 18 * S
             tpx = (margin + 10) * S
+            outline = (
+                row_sec
+                if tier in ("hard", "ota_master") and row_sec
+                else None
+            )
             draw.rounded_rectangle(
                 (tpx, mid - th / 2, tpx + tw, mid + th / 2),
                 radius=th / 2,
                 fill=_mix(tc, BG, 0.28),
+                outline=outline,
+                width=max(1, S // 2) if outline else 0,
             )
-            draw.text((tpx + tw / 2, mid), tlab, font=tf, fill=tc, anchor="mm")
+            draw.text(
+                (tpx + tw / 2, mid),
+                tlab,
+                font=tf,
+                fill=ACCENT_GOLD if tier == "ota_master" else tc,
+                anchor="mm",
+            )
             tx = margin + 10 + tw / S + 8
             max_title = (W - margin - tx) * S
             draw.text(
@@ -1441,7 +1548,17 @@ def _render_userinfo(
             fill=INK_SOFT,
         )
 
-    _clip_round(img, outer, radius, _mix(best_c, HAIRLINE, 0.35), S)
+    if flair and flair.get("corners"):
+        _draw_corner_brackets(draw, outer, color=ACCENT_GOLD, S=S)
+    edge_t = float((flair or {}).get("edge") or 0.30)
+    edge = _mix(sec_color or best_c, HAIRLINE, edge_t) if best else _mix(accent, HAIRLINE, 0.35)
+    _clip_round(
+        img,
+        outer,
+        radius,
+        edge,
+        max(S, 2 * S if best == "ota_master" else S),
+    )
     img = img.resize((W, H), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -1738,12 +1855,12 @@ async def render_all_demo_cards(
     ui = await render_userinfo_card(
         display_name=display_name or "Monty",
         avatar=av,
-        points=12,
-        clears=5,
-        rank=2,
+        points=16,
+        clears=6,
+        rank=1,
         ranked=8,
-        best_tier="hard",
-        by_tier={"easy": 2, "medium": 1, "hard": 2},
+        best_tier="ota_master",
+        by_tier={"easy": 2, "medium": 1, "hard": 2, "ota_master": 1},
         fails=1,
         tadoku_linked=True,
         completed=[
@@ -1751,31 +1868,31 @@ async def render_all_demo_cards(
                 "title": "Manga Mini-Marathon",
                 "tier": "easy",
                 "number": 1,
-                "content": "One Piece",
             },
             {
                 "title": "VN 30k",
                 "tier": "easy",
                 "number": 4,
-                "content": "Steins;Gate",
             },
             {
                 "title": "Anime Sprint",
                 "tier": "medium",
                 "number": 2,
-                "content": "Frieren",
             },
             {
                 "title": "Hard Mode Reading",
                 "tier": "hard",
                 "number": 1,
-                "content": "三体",
             },
             {
                 "title": "Immersion Day",
                 "tier": "hard",
                 "number": 3,
-                "content": "",
+            },
+            {
+                "title": "12-Hour Immersion Day",
+                "tier": "ota_master",
+                "number": 1,
             },
         ],
     )
