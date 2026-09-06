@@ -1388,20 +1388,7 @@ def total_completions() -> int:
         return int(row["n"] if row else 0)
 
 
-def top_completers(limit: int = 15) -> list[dict[str, Any]]:
-    """All-time clear leaders: discord_id, display_name, n."""
-    with db_session() as conn:
-        rows = conn.execute(
-            "SELECT a.discord_id, u.display_name, COUNT(*) AS n "
-            "FROM attempts a LEFT JOIN users u ON u.discord_id=a.discord_id "
-            "WHERE a.status='completed' GROUP BY a.discord_id "
-            "ORDER BY n DESC LIMIT ?",
-            (int(limit),),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-# Difficulty ladder for leaderboard row theming
+# Difficulty ladder = leaderboard points (ota_master 4 … easy 1)
 _TIER_RANK = {
     "easy": 1,
     "medium": 2,
@@ -1409,6 +1396,27 @@ _TIER_RANK = {
     "ota_master": 4,
 }
 _RANK_TO_TIER = {v: k for k, v in _TIER_RANK.items()}
+_TIER_POINTS_SQL = (
+    "CASE LOWER(c.tier) "
+    "WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 WHEN 'hard' THEN 3 "
+    "WHEN 'ota_master' THEN 4 ELSE 0 END"
+)
+
+
+def top_completers(limit: int = 15) -> list[dict[str, Any]]:
+    """All-time point leaders: discord_id, display_name, n (tier-weighted points)."""
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT a.discord_id, u.display_name, "
+            f"SUM({_TIER_POINTS_SQL}) AS n "
+            "FROM attempts a "
+            "JOIN challenge_defs c ON c.id=a.challenge_id "
+            "LEFT JOIN users u ON u.discord_id=a.discord_id "
+            "WHERE a.status='completed' GROUP BY a.discord_id "
+            "ORDER BY n DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def highest_completed_tier(discord_id: str) -> str | None:

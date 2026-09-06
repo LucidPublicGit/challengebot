@@ -45,19 +45,22 @@ def test_top_completers_and_total():
         init_db(str(Path(td) / "t.db"))
         now = utcnow_iso()
         with db_session() as conn:
-            conn.execute(
-                "INSERT INTO challenge_defs"
-                "(id,year,tier,number,title,description,time_limit_hours,"
-                "param_label,verify,goal_kind,goal_amount,media_filter)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                ("c1", 2026, "easy", 1, "T", "", 24, None, "tadoku", "pages", 10, "any"),
-            )
-            for did, st in (("u1", "completed"), ("u1", "completed"), ("u2", "completed")):
+            for cid, tier, num in (("c1", "easy", 1), ("c2", "ota_master", 1)):
+                conn.execute(
+                    "INSERT INTO challenge_defs"
+                    "(id,year,tier,number,title,description,time_limit_hours,"
+                    "param_label,verify,goal_kind,goal_amount,media_filter)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (cid, 2026, tier, num, "T", "", 24, None, "tadoku", "pages", 10, "any"),
+                )
+            # u1: two easy (2 pts); u2: one ota_master (4 pts) beats clear count
+            for did, cid in (("u1", "c1"), ("u1", "c1"), ("u2", "c2")):
                 conn.execute(
                     "INSERT INTO attempts(discord_id,challenge_id,status,started_at,ends_at)"
                     " VALUES(?,?,?,?,?)",
-                    (did, "c1", st, now, now),
+                    (did, cid, "completed", now, now),
                 )
         assert att.total_completions() == 3
         top = att.top_completers(10)
-        assert top[0]["discord_id"] == "u1" and int(top[0]["n"]) == 2
+        assert top[0]["discord_id"] == "u2" and int(top[0]["n"]) == 4
+        assert top[1]["discord_id"] == "u1" and int(top[1]["n"]) == 2
