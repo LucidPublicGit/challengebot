@@ -45,6 +45,19 @@ KIND_STYLE = {
     "leaderboard": ("BOARD", ACCENT_PURPLE),
 }
 
+# In-card hero status (no top-right pill) — soft-glow like Cleared
+HERO_STATUS = {
+    "start": "Started",
+    "scheduled": "Scheduled",
+    "active": "Active",
+    "complete": "Cleared",
+    "fail": "Failed",
+    "abandon": "Abandoned",
+    "expired": "Expired",
+    "status": "Status",
+    "leaderboard": "Board",
+}
+
 TIER_LABEL = {
     "easy": "Easy",
     "medium": "Medium",
@@ -445,8 +458,12 @@ def _render_challenge(
         progress_disp = ""
         outcome_meta = line_secondary
 
-    has_outcome = bool(line_primary or line_secondary)
+    # Always show in-card status hero (Started / Cleared / …) — no corner pill
+    has_outcome = True
     has_progress = progress_ratio is not None
+    hero_label = HERO_STATUS.get(kind, (badge or "Event").title())
+    if kind == "complete" and line_primary:
+        hero_label = line_primary  # usually Cleared
 
     # Measure title lines with a scratch draw (for height)
     scratch = ImageDraw.Draw(Image.new("RGB", (8, 8)))
@@ -542,33 +559,10 @@ def _render_challenge(
     right = (WIDTH - MARGIN) * S
     y = 20 * S
 
-    # Status pill (right) — skipped on complete; "Cleared" is the hero instead of DONE
+    # Name uses full width — status lives in the outcome band, not a corner pill
     pill_font = _font(11 * S, bold=True)
-    show_kind_pill = kind != "complete"
-    pill_x = right
-    if show_kind_pill:
-        pill_pad_x, pill_pad_y = 12 * S, 5 * S
-        pill_h = pill_font.size + pill_pad_y * 2
-        pill_w = draw.textlength(badge, font=pill_font) + pill_pad_x * 2
-        pill_x = right - pill_w
-        pill_y = y + 4 * S
-        draw.rounded_rectangle(
-            (pill_x, pill_y, pill_x + pill_w, pill_y + pill_h),
-            radius=pill_h / 2,
-            fill=_mix(accent, BG, 0.30),
-            outline=_mix(accent, BG, 0.55),
-            width=max(1, S // 2),
-        )
-        draw.text(
-            (pill_x + pill_w / 2, pill_y + pill_h / 2),
-            badge,
-            font=pill_font,
-            fill=accent,
-            anchor="mm",
-        )
-
     name_font = _font(24 * S, bold=True)
-    name_max = max(40.0, pill_x - cx - 12 * S)
+    name_max = max(40.0, right - cx)
     draw.text(
         (cx, y),
         _truncate(draw, display_name, name_font, name_max),
@@ -640,13 +634,34 @@ def _render_challenge(
         )
         y += 22 * S
 
-    # Outcome: side tick only (tier-colored, matches card left rail) — no nested panel
+    # Outcome: tier side-tick + hero status (soft-glow, same language as Cleared)
     if has_outcome:
         y += 8 * S
+        # Build soft meta under the hero (skip if it just repeats the status word)
+        meta_bits: list[str] = []
+        lp = (line_primary or "").strip()
+        if lp and lp.lower() not in {
+            hero_label.lower(),
+            "cleared",
+            "done",
+            badge.lower(),
+        }:
+            meta_bits.append(lp)
+        if has_progress and progress_disp:
+            bit = progress_disp
+            if outcome_meta:
+                bit = f"{progress_disp} · {outcome_meta}"
+            meta_bits.append(bit)
+        elif outcome_meta:
+            meta_bits.append(outcome_meta)
+        elif line_secondary and not has_progress:
+            meta_bits.append(line_secondary)
+        meta_line = " · ".join(dict.fromkeys(meta_bits))  # stable unique
+
         if has_progress:
             oh_s = 82 * S
-        elif outcome_meta or (line_secondary and progress_ratio is None):
-            oh_s = (70 if terminal else 64) * S
+        elif meta_line:
+            oh_s = 70 * S
         else:
             oh_s = 54 * S
 
@@ -658,191 +673,60 @@ def _render_challenge(
         tx = cx + tick_w + pad
         tw = right - tx - 12 * S
 
-        primary_size = 22 if terminal else 17
-        # Complete: hero "Cleared" treatment (kind pill already hidden)
-        cs = (cleared_style or "A_tier_bold") if kind == "complete" else ""
-        if kind == "complete" and cs:
-            label = line_primary or "Cleared"
-            meta = outcome_meta or progress_disp or line_secondary or ""
-            if cs == "B_check_tier":
-                label = f"✓  {(label or 'Cleared').upper()}"
-                pf = _font(24 * S, bold=True)
-                draw.text((tx, y + 10 * S), _truncate(draw, label, pf, tw), font=pf, fill=tier_color)
-                if meta:
-                    draw.text(
-                        (tx, y + 44 * S),
-                        _truncate(draw, meta, _font(14 * S), tw),
-                        font=_font(14 * S),
-                        fill=INK_SOFT,
-                    )
-            elif cs == "C_gold_underline":
-                pf = _font(26 * S, bold=True)
-                fill = ACCENT_GOLD if tier_key == "ota_master" else INK
-                lab = _truncate(draw, label, pf, tw)
-                draw.text((tx, y + 8 * S), lab, font=pf, fill=fill)
-                lw = draw.textlength(lab, font=pf)
-                draw.line(
-                    (tx, y + 8 * S + pf.size + 4 * S, tx + lw, y + 8 * S + pf.size + 4 * S),
-                    fill=tier_color,
-                    width=max(2, 2 * S),
-                )
-                if meta:
-                    draw.text(
-                        (tx, y + 8 * S + pf.size + 12 * S),
-                        _truncate(draw, meta, _font(14 * S), tw),
-                        font=_font(14 * S),
-                        fill=INK_SOFT,
-                    )
-            elif cs == "D_soft_glow":
-                pf = _font(26 * S, bold=True)
-                lab = _truncate(draw, label, pf, tw)
-                for dx, dy in ((-S, 0), (S, 0), (0, -S), (0, S)):
-                    draw.text(
-                        (tx + dx, y + 10 * S + dy),
-                        lab,
-                        font=pf,
-                        fill=_mix(tier_color, BG, 0.45),
-                    )
-                draw.text((tx, y + 10 * S), lab, font=pf, fill=tier_color)
-                if meta:
-                    draw.text(
-                        (tx, y + 46 * S),
-                        _truncate(draw, meta, _font(14 * S), tw),
-                        font=_font(14 * S),
-                        fill=INK_SOFT,
-                    )
-            elif cs == "E_label_stack":
-                draw.text(
-                    (tx, y + 6 * S),
-                    "CLEARED",
-                    font=_font(12 * S, bold=True),
-                    fill=tier_color,
-                )
-                big = progress_disp or meta or label
-                draw.text(
-                    (tx, y + 26 * S),
-                    _truncate(draw, big, _font(22 * S, bold=True), tw),
-                    font=_font(22 * S, bold=True),
-                    fill=INK,
-                )
-                sub = outcome_meta if progress_disp else ""
-                if sub:
-                    draw.text(
-                        (tx, y + 56 * S),
-                        _truncate(draw, sub, _font(13 * S), tw),
-                        font=_font(13 * S),
-                        fill=INK_SOFT,
-                    )
-            else:
-                # A_tier_bold — default: large tier-colored Cleared
-                pf = _font(26 * S, bold=True)
-                draw.text(
-                    (tx, y + 10 * S),
-                    _truncate(draw, label, pf, tw * (0.55 if has_progress else 1.0)),
-                    font=pf,
-                    fill=tier_color,
-                )
-                if has_progress:
-                    sf = _font(15 * S, bold=True)
-                    draw.text(
-                        (right - 14 * S, y + 10 * S + 26 * S / 2),
-                        _truncate(draw, progress_disp, sf, tw * 0.4),
-                        font=sf,
-                        fill=INK,
-                        anchor="rm",
-                    )
-                    bar_x0, bar_x1 = tx, right - 14 * S
-                    bar_y0 = y + 48 * S
-                    bar_y1 = bar_y0 + 8 * S
-                    draw.rounded_rectangle(
-                        (bar_x0, bar_y0, bar_x1, bar_y1),
-                        radius=4 * S,
-                        fill=(48, 50, 62),
-                    )
-                    fill_r = max(0.0, min(1.0, float(progress_ratio or 0)))
-                    if fill_r > 0.02:
-                        fx1 = bar_x0 + (bar_x1 - bar_x0) * fill_r
-                        draw.rounded_rectangle(
-                            (bar_x0, bar_y0, fx1, bar_y1),
-                            radius=4 * S,
-                            fill=tier_color,
-                        )
-                    if outcome_meta:
-                        draw.text(
-                            (tx, bar_y1 + 8 * S),
-                            _truncate(draw, outcome_meta, _font(13 * S), tw),
-                            font=_font(13 * S),
-                            fill=INK_SOFT,
-                        )
-                elif meta:
-                    draw.text(
-                        (tx, y + 46 * S),
-                        _truncate(draw, meta, _font(14 * S), tw),
-                        font=_font(14 * S),
-                        fill=INK_SOFT,
-                    )
-        elif has_progress:
-            pf = _font(primary_size * S, bold=True)
+        # D_soft_glow hero status (Started / Scheduled / Cleared / …)
+        pf = _font(26 * S, bold=True)
+        lab = _truncate(draw, hero_label, pf, tw * (0.55 if has_progress else 1.0))
+        for dx, dy in ((-S, 0), (S, 0), (0, -S), (0, S)):
             draw.text(
-                (tx, y + 12 * S),
-                _truncate(draw, line_primary or badge, pf, tw * 0.55),
+                (tx + dx, y + 10 * S + dy),
+                lab,
                 font=pf,
-                fill=INK,
+                fill=_mix(tier_color, BG, 0.45),
             )
+        draw.text((tx, y + 10 * S), lab, font=pf, fill=tier_color)
+
+        if has_progress:
             sf = _font(15 * S, bold=True)
             draw.text(
-                (right - 14 * S, y + 12 * S + primary_size * S / 2),
+                (right - 14 * S, y + 10 * S + 26 * S / 2),
                 _truncate(draw, progress_disp, sf, tw * 0.4),
                 font=sf,
                 fill=INK,
                 anchor="rm",
             )
-            bar_x0 = tx
-            bar_x1 = right - 14 * S
-            bar_y0 = y + 44 * S
+            bar_x0, bar_x1 = tx, right - 14 * S
+            bar_y0 = y + 48 * S
             bar_y1 = bar_y0 + 8 * S
             draw.rounded_rectangle(
-                (bar_x0, bar_y0, bar_x1, bar_y1), radius=4 * S, fill=(48, 50, 62)
+                (bar_x0, bar_y0, bar_x1, bar_y1),
+                radius=4 * S,
+                fill=(48, 50, 62),
             )
-            fill_r = max(0.0, min(1.0, float(progress_ratio)))
+            fill_r = max(0.0, min(1.0, float(progress_ratio or 0)))
             if fill_r > 0.02:
                 fx1 = bar_x0 + (bar_x1 - bar_x0) * fill_r
                 draw.rounded_rectangle(
-                    (bar_x0, bar_y0, fx1, bar_y1), radius=4 * S, fill=tier_color
+                    (bar_x0, bar_y0, fx1, bar_y1),
+                    radius=4 * S,
+                    fill=tier_color,
                 )
-            if outcome_meta:
+            # Prefer human detail under the bar (e.g. Goal not met · Tadoku)
+            foot_bits = [b for b in meta_bits if b != progress_disp]
+            foot = " · ".join(foot_bits) if foot_bits else (outcome_meta or "")
+            if foot:
                 draw.text(
                     (tx, bar_y1 + 8 * S),
-                    _truncate(draw, outcome_meta, _font(13 * S), tw),
+                    _truncate(draw, foot, _font(13 * S), tw),
                     font=_font(13 * S),
                     fill=INK_SOFT,
                 )
-        else:
-            pf = _font(primary_size * S, bold=True)
-            if line_primary:
-                if terminal and not outcome_meta:
-                    draw.text(
-                        (tx, y + oh_s / 2),
-                        _truncate(draw, line_primary, pf, tw),
-                        font=pf,
-                        fill=INK,
-                        anchor="lm",
-                    )
-                else:
-                    draw.text(
-                        (tx, y + 12 * S),
-                        _truncate(draw, line_primary, pf, tw),
-                        font=pf,
-                        fill=INK,
-                    )
-            meta = outcome_meta or (line_secondary if progress_ratio is None else "")
-            if meta:
-                draw.text(
-                    (tx, y + 12 * S + primary_size * S + 8 * S),
-                    _truncate(draw, meta, _font(14 * S), tw),
-                    font=_font(14 * S),
-                    fill=INK_SOFT,
-                )
+        elif meta_line:
+            draw.text(
+                (tx, y + 46 * S),
+                _truncate(draw, meta_line, _font(14 * S), tw),
+                font=_font(14 * S),
+                fill=INK_SOFT,
+            )
         y += oh_s + 6 * S
 
     if footer:
