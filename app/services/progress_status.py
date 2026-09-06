@@ -56,7 +56,7 @@ class StatusEvent:
     mark_time: list  # floats or ONE_H_LEFT
     mark_goal: list  # floats
     mark_goal_met: bool = False
-    kind: str = "status"  # text status post (not lifecycle card)
+    kind: str = "status"  # full milestone card (hero + optional bar)
 
 
 def list_active_attempts() -> list[dict]:
@@ -118,19 +118,42 @@ def _fmt_remaining(seconds: float) -> str:
 
 
 def _time_label(frac: float) -> str:
+    """Short in-card hero (also caption bold)."""
     if frac <= 0.26:
-        return "25% of the clock"
+        return "Quarter in"
     if frac <= 0.51:
-        return "Halfway through the window"
-    return "75% of the clock"
+        return "Halfway"
+    return "Three-quarters"
 
 
 def _goal_label(frac: float) -> str:
     if frac <= 0.26:
-        return "25% of the goal"
+        return "25% goal"
     if frac <= 0.51:
-        return "Halfway to the goal"
-    return "75% of the goal"
+        return "Halfway"
+    return "75% goal"
+
+
+def _fmt_qty(x: float) -> str:
+    if abs(x - round(x)) < 0.05:
+        return str(int(round(x)))
+    return f"{x:.1f}".rstrip("0").rstrip(".")
+
+
+def _time_bar(elapsed: float, total: float, remaining: float, tail: str) -> str:
+    """Secondary: `elapsed / total unit · remaining · tail` → card progress bar."""
+    if total >= 48 * 3600:
+        unit = "days"
+        scale = 86400.0
+    else:
+        unit = "hours"
+        scale = 3600.0
+    bar = f"{_fmt_qty(elapsed / scale)} / {_fmt_qty(total / scale)} {unit}"
+    bits = [bar, _fmt_remaining(remaining)]
+    tail = (tail or "").strip(" ·")
+    if tail:
+        bits.append(tail)
+    return " · ".join(bits)
 
 
 def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) -> list[StatusEvent]:
@@ -170,19 +193,16 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
         key = round(float(m), 2)
         if frac + 1e-9 >= m and key not in hit_set:
             hit_set.add(key)
-            primary = _time_label(m)
-            if honor:
-                secondary = (
-                    f"{_fmt_remaining(remaining)} · honor challenge · "
-                    "still running · confirm when finished"
-                )
-            else:
-                secondary = f"{_fmt_remaining(remaining)} · timer checkpoint"
+            tail = (
+                "honor · still running · confirm when finished"
+                if honor
+                else "timer checkpoint"
+            )
             events.append(
                 StatusEvent(
                     attempt=att,
-                    primary=primary,
-                    secondary=secondary,
+                    primary=_time_label(m),
+                    secondary=_time_bar(elapsed, total, remaining, tail),
                     mark_time=[key],
                     mark_goal=[],
                     kind="status",
@@ -195,18 +215,12 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
         and 0 < remaining <= 3600
         and ONE_H_LEFT not in hit_set
     ):
-        if honor:
-            secondary = (
-                f"{_fmt_remaining(remaining)} · honor · "
-                "confirm if you're done"
-            )
-        else:
-            secondary = f"{_fmt_remaining(remaining)} · final stretch"
+        tail = "honor · confirm if you're done" if honor else "final stretch"
         events.append(
             StatusEvent(
                 attempt=att,
-                primary="Under 1 hour left",
-                secondary=secondary,
+                primary="Final hour",
+                secondary=_time_bar(elapsed, total, remaining, tail),
                 mark_time=[ONE_H_LEFT],
                 mark_goal=[],
                 kind="status",
@@ -313,8 +327,8 @@ async def check_goal_milestones(
         events.append(
             StatusEvent(
                 attempt=att,
-                primary="Goal met on Tadoku",
-                secondary=f"{detail} · run `/challenge confirm`",
+                primary="Goal met",
+                secondary=f"{detail} · run /challenge confirm",
                 mark_time=[],
                 mark_goal=[],
                 mark_goal_met=True,

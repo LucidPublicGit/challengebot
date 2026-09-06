@@ -614,8 +614,9 @@ def _render_challenge(
     has_outcome = True
     has_progress = progress_ratio is not None
     hero_label = HERO_STATUS.get(kind, (badge or "Event").title())
-    if kind == "complete" and line_primary:
-        hero_label = line_primary  # usually Cleared
+    # complete: Cleared; status milestones: Halfway / Final hour / …
+    if kind in ("complete", "status") and line_primary:
+        hero_label = line_primary
 
     # Measure title lines with a scratch draw (for height)
     scratch = ImageDraw.Draw(Image.new("RGB", (8, 8)))
@@ -894,9 +895,18 @@ def _render_challenge(
                     radius=4 * S,
                     fill=tier_color,
                 )
-            # Prefer human detail under the bar (e.g. Goal not met · Tadoku)
-            foot_bits = [b for b in meta_bits if b != progress_disp]
-            foot = " · ".join(foot_bits) if foot_bits else (outcome_meta or "")
+            # Foot: soft meta only (no second copy of the X / Y fraction)
+            foot_bits: list[str] = []
+            if lp and lp.lower() not in {
+                hero_label.lower(),
+                "cleared",
+                "done",
+                badge.lower(),
+            }:
+                foot_bits.append(lp)
+            if outcome_meta:
+                foot_bits.append(outcome_meta)
+            foot = " · ".join(dict.fromkeys(foot_bits))
             if foot:
                 draw.text(
                     (tx, bar_y1 + 8 * S),
@@ -1388,13 +1398,16 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "footer": "",
     },
     "status": {
-        "display_name": "Monty",
-        "challenge_title": "8-Hour Immersion Day",
-        "tier": "hard",
-        "number": 5,
+        "display_name": "PatChatGC",
+        "challenge_title": "12-Hour Immersion Day",
+        "tier": "ota_master",
+        "number": 4,
         "focus": "",
-        "line_primary": "Honor challenge",
-        "line_secondary": "Confirm when finished",
+        "line_primary": "Halfway",
+        "line_secondary": (
+            "12 / 24 hours · 11h 59m left · honor · still running · "
+            "confirm when finished"
+        ),
         "footer": "",
     },
 }

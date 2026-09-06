@@ -311,7 +311,8 @@ async def build_event_card(
         "status": f"📈 {mention} · **{primary}** · {title_bit}",
     }
     caption = captions.get(kind, f"{mention} · {kind}")
-    if kind == "status" and secondary:
+    # Status: card carries secondary (bar + honor copy); keep caption tight
+    if kind == "status" and secondary and skip_image:
         caption = f"{caption}\n{secondary}"
     tmark = tier_caption_mark(tier)
     if tmark:
@@ -382,8 +383,8 @@ async def announce(
         except (TypeError, ValueError, discord.HTTPException):
             user = None
 
-    # Status milestones: text only (no log-lookalike card)
-    need_card = kind != "status"
+    # Status milestones: full card with hero + time/goal bar (kind=status)
+    need_card = True
     png: bytes | None = None
     caption: str | None = None
     try:
@@ -403,11 +404,9 @@ async def announce(
             ends_at_ts=ends_at_ts,
             starts_at_ts=starts_at_ts,
             media_filter=media_filter,
-            skip_image=not need_card,
+            skip_image=False,
             duration_hours=duration_hours,
         )
-        if not need_card:
-            png = None
     except Exception as exc:  # noqa: BLE001
         logger.warning("announce card build failed (%s): %s", kind, exc)
         png, caption = None, None

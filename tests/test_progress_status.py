@@ -33,8 +33,10 @@ def test_time_milestones_short_window_halfway_only():
     # halfway
     ev = ps.check_time_milestones(att, meta, t0 + timedelta(hours=4, minutes=1))
     assert len(ev) == 1
-    assert "Half" in ev[0].primary
+    assert ev[0].primary == "Halfway"
     assert ev[0].kind == "status"
+    assert "/" in ev[0].secondary  # time bar for card
+    assert "hours" in ev[0].secondary
     meta2 = ps.apply_event_marks(meta, ev[0])
     assert ps.check_time_milestones(att, meta2, t0 + timedelta(hours=4, minutes=30)) == []
     # 75% — still skipped on short window
@@ -47,7 +49,8 @@ def test_time_milestones_long_window_keeps_quartiles():
     # 25% of 10d = 2.5d
     ev = ps.check_time_milestones(att, meta, t0 + timedelta(days=2, hours=13))
     assert len(ev) == 1
-    assert "25%" in ev[0].primary or "clock" in ev[0].primary.lower()
+    assert ev[0].primary == "Quarter in"
+    assert "/" in ev[0].secondary
 
 
 def test_honor_time_copy_no_tadoku_language():
@@ -55,8 +58,10 @@ def test_honor_time_copy_no_tadoku_language():
     meta = {"time_hits": [], "goal_hits": []}
     ev = ps.check_time_milestones(att, meta, t0 + timedelta(hours=4, minutes=1))
     assert ev
+    assert ev[0].primary == "Halfway"
     assert "honor" in ev[0].secondary.lower()
     assert "confirm" in ev[0].secondary.lower()
+    assert "tadoku" not in ev[0].secondary.lower()
 
 
 def test_one_hour_left():
@@ -65,6 +70,8 @@ def test_one_hour_left():
     # 50 min left of 8h window
     ev = ps.check_time_milestones(att, meta, t0 + timedelta(hours=7, minutes=10))
     assert any(ps.ONE_H_LEFT in e.mark_time for e in ev)
+    final = next(e for e in ev if ps.ONE_H_LEFT in e.mark_time)
+    assert final.primary == "Final hour"
 
 
 def test_goal_milestones_skipped_for_honor():
