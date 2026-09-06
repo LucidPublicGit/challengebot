@@ -1251,7 +1251,7 @@ def _render_userinfo(
     empty_h = 28 if not completed else 0
     body = stats_h + tier_h + list_hdr + (len(completed) * row_h if completed else empty_h)
     if not footer:
-        footer = f"{BRAND_FOOTER}  ·  pts = easy1 med2 hard3 ota4"
+        footer = BRAND_FOOTER
     elif BRAND_FOOTER.lower() not in footer.lower():
         footer = f"{footer}  ·  {BRAND_FOOTER}"
     foot = 28
@@ -1324,7 +1324,7 @@ def _render_userinfo(
         th = pill_font.size + tpad_y * 2
         tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
         tpx = name_x * S
-        tpy = 54 * S
+        tpy = 60 * S  # below name (was overlapping at 54)
         tier_outline = (
             sec_color
             if best in ("hard", "ota_master") and sec_color
@@ -1352,26 +1352,16 @@ def _render_userinfo(
             for dx in (-6 * S, tw + 6 * S):
                 sx = int(tpx + dx)
                 draw.ellipse((sx - S, sy - S, sx + S, sy + S), fill=ACCENT_GOLD)
-            cleared_x = tpx + tw + 14 * S + (8 * S if flair.get("spark") else 0)
-        else:
-            cleared_x = tpx + tw + 10 * S
-        draw.text(
-            (cleared_x, tpy + th / 2),
-            "cleared",
-            font=_font(12 * S, bold=True),
-            fill=ACCENT_GOLD if best == "ota_master" else INK_SOFT,
-            anchor="lm",
-        )
     else:
         draw.text(
-            (name_x * S, 56 * S),
+            (name_x * S, 60 * S),
             "PROFILE",
             font=_font(13 * S, bold=True),
             fill=INK_SOFT,
         )
     tad = "Tadoku linked" if tadoku_linked else "Tadoku not linked"
     draw.text(
-        (name_x * S, 82 * S),
+        (name_x * S, 90 * S),
         tad,
         font=_font(12 * S),
         fill=ACCENT_GREEN if tadoku_linked else INK_SOFT,
