@@ -145,6 +145,24 @@ def test_immersion_hours():
     assert abs(r.progress - 8.0) < 0.01
 
 
+def test_resolve_content_from_logs_and_param():
+    from app.services.verify import resolve_content
+
+    logs = [
+        {"id": "1", "description": "Steins;Gate S01E01", "series": ""},
+        {"id": "2", "description": "Steins;Gate S01E02"},
+        {"id": "3", "description": "Other Show"},
+    ]
+    c = resolve_content(
+        param="fallback",
+        logs=logs,
+        matched_ids=["1", "2"],
+    )
+    assert c and "Steins;Gate" in c
+    assert resolve_content(param="  VN X  ") == "VN X"
+    assert resolve_content(note="done 8h") == "done 8h"
+
+
 def test_honor_complete_work():
     r = evaluate_logs(
         [],

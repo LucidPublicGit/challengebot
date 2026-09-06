@@ -31,7 +31,7 @@ async def run() -> None:
         logger.warning("Catalog file missing: %s", settings.challenge_catalog)
     expired = expire_overdue()
     if expired:
-        logger.info("Startup expired %s attempt(s)", expired)
+        logger.info("Startup expired %s attempt(s)", len(expired))
 
     app = create_app()
     config = uvicorn.Config(

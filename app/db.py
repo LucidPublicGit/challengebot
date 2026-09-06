@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   discord_id TEXT NOT NULL,
   challenge_id TEXT NOT NULL,
   param TEXT,
+  content TEXT,
   status TEXT NOT NULL,
   started_at TEXT NOT NULL,
   ends_at TEXT NOT NULL,
@@ -101,12 +102,33 @@ CREATE INDEX IF NOT EXISTS idx_attempts_status_ends ON attempts(status, ends_at)
 CREATE INDEX IF NOT EXISTS idx_attempts_challenge ON attempts(challenge_id);
 """
 
+# Additive columns for DBs created before content existed.
+_ATTEMPT_MIGRATIONS = (
+    ("content", "ALTER TABLE attempts ADD COLUMN content TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(attempts)").fetchall()
+    }
+    for name, ddl in _ATTEMPT_MIGRATIONS:
+        if name not in cols:
+            conn.execute(ddl)
+    # Backfill content from declared focus when empty.
+    conn.execute(
+        "UPDATE attempts SET content = param "
+        "WHERE (content IS NULL OR content = '') "
+        "AND param IS NOT NULL AND param != ''"
+    )
+
 
 def init_db(path: Optional[str] = None) -> None:
     if path:
         configure(path)
     with db_session() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:

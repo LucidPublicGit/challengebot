@@ -42,6 +42,67 @@ def test_start_requires_param_when_labeled():
         cleanup_db(path)
 
 
+def test_start_by_challenge_id():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("u1b", "11111111-1111-1111-1111-111111111111")
+        r = att.start_attempt(
+            "u1b", challenge_id="easy-4", param="Game", guild_id="g"
+        )
+        assert r["ok"] is True, r
+        assert r["challenge"]["id"] == "easy-4"
+        bad = att.start_attempt(
+            "u1b", challenge_id="nope-x", param=None, guild_id="g"
+        )
+        assert bad["ok"] is False
+    finally:
+        cleanup_db(path)
+
+
+def test_parse_schedule_local_offset():
+    dt = att.parse_schedule_local("2026-06-01", "12:00", "+9")
+    assert dt.tzinfo is not None
+    # 12:00 UTC+9 → 03:00 UTC
+    assert dt.hour == 3
+    assert dt.day == 1
+
+
+def test_schedule_then_activate():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("u_sched", "11111111-1111-1111-1111-111111111111")
+        future = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(hours=2)
+        r = att.start_attempt(
+            "u_sched",
+            challenge_id="easy-4",
+            param="Game",
+            guild_id="g",
+            starts_at=future,
+        )
+        assert r["ok"] is True, r
+        assert r["status"] == "scheduled"
+        assert att.active_attempt("u_sched") is None
+        assert att.scheduled_attempt("u_sched") is not None
+        # cannot confirm while scheduled
+        conf = _run(att.confirm_attempt("u_sched"))
+        assert conf["ok"] is False
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(
+            microsecond=0
+        ).isoformat()
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE attempts SET started_at=? WHERE discord_id=? AND status='scheduled'",
+                (past, "u_sched"),
+            )
+        activated, _ = att.tick_lifecycle()
+        assert any(a["discord_id"] == "u_sched" for a in activated)
+        assert att.active_attempt("u_sched") is not None
+        assert att.scheduled_attempt("u_sched") is None
+    finally:
+        cleanup_db(path)
+
+
 def test_one_active_and_abandon():
     path = setup_tmp_db()
     try:
@@ -103,8 +164,8 @@ def test_expire_overdue():
                 "UPDATE attempts SET ends_at=? WHERE discord_id=? AND status='active'",
                 (past, "u4"),
             )
-        n = att.expire_overdue()
-        assert n >= 1
+        expired = att.expire_overdue()
+        assert len(expired) >= 1
         assert att.active_attempt("u4") is None
         rows = att.list_attempts(discord_id="u4", status="expired", limit=5)
         assert rows
@@ -131,6 +192,10 @@ def test_admin_fake_pass_dry_and_apply():
         assert applied.get("ok") is True
         assert applied.get("method") == "test_fake"
         assert att.active_attempt("u5") is None
+        # Content stored from param / matched logs
+        assert applied.get("content")
+        done = att.list_attempts(discord_id="u5", status="completed", limit=1)
+        assert done and att.display_content(done[0])
         counts = att.completion_counts("u5")
         assert counts.get("total", 0) >= 1
     finally:

@@ -1,18 +1,32 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from app.catalog import get_challenge_by_tier_num
+from app.catalog import get_challenge, get_challenge_by_tier_num
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, utcnow_iso
 from app.services.verify import (
     VerifyResult,
     evaluate_logs,
     parse_iso,
+    resolve_content,
     synthetic_logs_for_goal,
 )
+
+_OFFSET_RE = re.compile(
+    r"^(?:UTC)?\s*(?P<sign>[+-])\s*(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?$",
+    re.I,
+)
+
+
+def display_content(attempt: dict | None) -> str:
+    """Content shown on completed/recent lists (stored content, else param)."""
+    if not attempt:
+        return ""
+    return (attempt.get("content") or attempt.get("param") or "").strip()
 from app.tadoku.client import resolve_logs_for_user
 
 
@@ -59,18 +73,71 @@ def get_user(discord_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def active_attempt(discord_id: str) -> dict | None:
-    expire_overdue()
+def _attempt_join_row(discord_id: str, statuses: tuple[str, ...]) -> dict | None:
+    placeholders = ",".join("?" * len(statuses))
     with db_session() as conn:
         row = conn.execute(
             "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
             "c.goal_amount, c.media_filter, c.param_label "
             "FROM attempts a JOIN challenge_defs c ON c.id = a.challenge_id "
-            "WHERE a.discord_id=? AND a.status='active' "
+            f"WHERE a.discord_id=? AND a.status IN ({placeholders}) "
             "ORDER BY a.id DESC LIMIT 1",
-            (discord_id,),
+            (discord_id, *statuses),
         ).fetchone()
         return dict(row) if row else None
+
+
+def active_attempt(discord_id: str) -> dict | None:
+    activate_due_scheduled()
+    expire_overdue()
+    return _attempt_join_row(discord_id, ("active",))
+
+
+def scheduled_attempt(discord_id: str) -> dict | None:
+    activate_due_scheduled()
+    return _attempt_join_row(discord_id, ("scheduled",))
+
+
+def open_attempt(discord_id: str) -> dict | None:
+    """Active or scheduled (blocks starting another)."""
+    activate_due_scheduled()
+    expire_overdue()
+    return _attempt_join_row(discord_id, ("active", "scheduled"))
+
+
+def parse_schedule_local(
+    date_s: str,
+    time_s: str,
+    offset_s: str = "+00:00",
+) -> datetime:
+    """
+    Parse date+time in a fixed UTC offset → timezone-aware UTC datetime.
+    date: YYYY-MM-DD, time: HH:MM or HH:MM:SS, offset: +9 / +09:00 / -5 / UTC+9
+    """
+    d = (date_s or "").strip()
+    t = (time_s or "").strip()
+    if not d or not t:
+        raise ValueError("Date and time are required.")
+    if len(t.split(":")) == 2:
+        t = t + ":00"
+    raw_off = (offset_s or "+00:00").strip() or "+00:00"
+    if raw_off.upper() in ("UTC", "Z", "GMT"):
+        sign, oh, om = "+", 0, 0
+    else:
+        m = _OFFSET_RE.match(raw_off.replace(" ", ""))
+        if not m:
+            raise ValueError("Offset must look like +9, -5, or +09:00.")
+        sign = m.group("sign")
+        oh = int(m.group("h"))
+        om = int(m.group("m") or 0)
+        if oh > 14 or om > 59:
+            raise ValueError("Offset out of range.")
+    delta = timedelta(hours=oh, minutes=om)
+    if sign == "-":
+        delta = -delta
+    local_tz = timezone(delta)
+    local_dt = datetime.fromisoformat(f"{d}T{t}").replace(tzinfo=local_tz)
+    return local_dt.astimezone(timezone.utc).replace(microsecond=0)
 
 
 def list_attempts(
@@ -97,33 +164,88 @@ def list_attempts(
         return [dict(r) for r in conn.execute(q, args).fetchall()]
 
 
-def expire_overdue() -> int:
+def expire_overdue() -> list[dict]:
+    """Mark overdue actives expired; return those rows (with challenge fields)."""
     now = utcnow_iso()
     with db_session() as conn:
-        cur = conn.execute(
-            "UPDATE attempts SET status='expired' "
-            "WHERE status='active' AND ends_at < ?",
+        rows = conn.execute(
+            "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
+            "c.goal_amount, c.media_filter, c.param_label, u.display_name "
+            "FROM attempts a "
+            "JOIN challenge_defs c ON c.id = a.challenge_id "
+            "LEFT JOIN users u ON u.discord_id = a.discord_id "
+            "WHERE a.status='active' AND a.ends_at < ?",
             (now,),
-        )
-        return cur.rowcount
+        ).fetchall()
+        expired = [dict(r) for r in rows]
+        if expired:
+            conn.execute(
+                "UPDATE attempts SET status='expired' "
+                "WHERE status='active' AND ends_at < ?",
+                (now,),
+            )
+        return expired
+
+
+def activate_due_scheduled() -> list[dict]:
+    """Flip scheduled attempts whose start time has arrived → active."""
+    now = utcnow_iso()
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
+            "c.goal_amount, c.media_filter, c.param_label, u.display_name "
+            "FROM attempts a "
+            "JOIN challenge_defs c ON c.id = a.challenge_id "
+            "LEFT JOIN users u ON u.discord_id = a.discord_id "
+            "WHERE a.status='scheduled' AND a.started_at <= ?",
+            (now,),
+        ).fetchall()
+        due = [dict(r) for r in rows]
+        if due:
+            conn.execute(
+                "UPDATE attempts SET status='active' "
+                "WHERE status='scheduled' AND started_at <= ?",
+                (now,),
+            )
+            for row in due:
+                row["status"] = "active"
+        return due
+
+
+def tick_lifecycle() -> tuple[list[dict], list[dict]]:
+    """Activate due schedules, then expire overdue actives."""
+    activated = activate_due_scheduled()
+    expired = expire_overdue()
+    return activated, expired
 
 
 def start_attempt(
     discord_id: str,
     *,
-    tier: str,
-    number: int,
+    tier: str | None = None,
+    number: int | None = None,
+    challenge_id: str | None = None,
     param: str | None,
     guild_id: str | None,
     display_name: str | None = None,
     year: int = 2026,
+    starts_at: datetime | None = None,
 ) -> dict[str, Any]:
     ensure_user(discord_id, display_name)
+    activate_due_scheduled()
     expire_overdue()
     rt = _runtime()
-    ch = get_challenge_by_tier_num(tier, number, year=year)
-    if not ch:
-        return {"ok": False, "error": f"No challenge {tier} #{number} for {year}."}
+    ch = None
+    if challenge_id:
+        ch = get_challenge(challenge_id.strip())
+        if not ch:
+            return {"ok": False, "error": f"Unknown challenge `{challenge_id}`."}
+    else:
+        if not tier or number is None:
+            return {"ok": False, "error": "Pick a specific challenge."}
+        ch = get_challenge_by_tier_num(tier, int(number), year=year)
+        if not ch:
+            return {"ok": False, "error": f"No challenge {tier} #{number} for {year}."}
 
     if ch.get("param_label") and not (param and param.strip()):
         return {
@@ -131,8 +253,18 @@ def start_attempt(
             "error": f"This challenge requires **{ch['param_label']}**.",
         }
 
-    existing = active_attempt(discord_id)
+    existing = open_attempt(discord_id)
     if existing:
+        st = existing.get("status")
+        if st == "scheduled":
+            when = int(parse_iso(existing["started_at"]).timestamp())
+            return {
+                "ok": False,
+                "error": (
+                    f"You already scheduled **{existing['title']}** "
+                    f"(starts <t:{when}:R>). `/challenge abandon` to cancel."
+                ),
+            }
         return {
             "ok": False,
             "error": (
@@ -163,8 +295,21 @@ def start_attempt(
             }
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
+    start_dt = now
+    if starts_at is not None:
+        start_dt = starts_at
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        else:
+            start_dt = start_dt.astimezone(timezone.utc)
+        start_dt = start_dt.replace(microsecond=0)
+        # Past / near-now → start immediately
+        if start_dt <= now + timedelta(seconds=30):
+            start_dt = now
+
     hours = float(ch.get("time_limit_hours") or 24)
-    ends = now + timedelta(hours=hours)
+    ends = start_dt + timedelta(hours=hours)
+    status = "active" if start_dt <= now else "scheduled"
     with db_session() as conn:
         cur = conn.execute(
             "INSERT INTO attempts("
@@ -174,8 +319,8 @@ def start_attempt(
                 discord_id,
                 ch["id"],
                 (param or "").strip() or None,
-                "active",
-                now.isoformat(),
+                status,
+                start_dt.isoformat(),
                 ends.isoformat(),
                 guild_id,
             ),
@@ -186,22 +331,24 @@ def start_attempt(
         "ok": True,
         "attempt_id": attempt_id,
         "challenge": ch,
-        "started_at": now.isoformat(),
+        "status": status,
+        "started_at": start_dt.isoformat(),
         "ends_at": ends.isoformat(),
         "param": (param or "").strip() or None,
     }
 
 
 def abandon_attempt(discord_id: str) -> dict[str, Any]:
-    att = active_attempt(discord_id)
+    att = open_attempt(discord_id)
     if not att:
-        return {"ok": False, "error": "No active challenge."}
+        return {"ok": False, "error": "No active or scheduled challenge."}
     with db_session() as conn:
         conn.execute(
-            "UPDATE attempts SET status='abandoned' WHERE id=? AND status='active'",
+            "UPDATE attempts SET status='abandoned' "
+            "WHERE id=? AND status IN ('active','scheduled')",
             (att["id"],),
         )
-    return {"ok": True, "attempt": att}
+    return {"ok": True, "attempt": {**att, "status": "abandoned"}}
 
 
 async def confirm_attempt(
@@ -220,7 +367,19 @@ async def confirm_attempt(
     dry_run: evaluate only, never write completed.
     fake_logs: admin test inject — skip Tadoku fetch, run evaluate_logs on these.
     """
+    activate_due_scheduled()
     expire_overdue()
+    scheduled = scheduled_attempt(discord_id)
+    if scheduled:
+        when = int(parse_iso(scheduled["started_at"]).timestamp())
+        return {
+            "ok": False,
+            "error": (
+                f"**{scheduled['title']}** is scheduled to start <t:{when}:R>. "
+                "Wait until then, or `/challenge abandon` to cancel."
+            ),
+            "attempt": scheduled,
+        }
     att = active_attempt(discord_id)
     if not att:
         return {"ok": False, "error": "No active challenge (or it already expired)."}
@@ -245,6 +404,7 @@ async def confirm_attempt(
                 "method": method_override or "manual",
                 "attempt": att,
                 "note": note,
+                "content": resolve_content(param=att.get("param"), note=note),
             }
         return _complete(
             att,
@@ -263,6 +423,7 @@ async def confirm_attempt(
                 "method": "honor",
                 "attempt": att,
                 "progress": "Honor challenge — confirm would succeed without Tadoku.",
+                "content": resolve_content(param=att.get("param"), note=note),
             }
         return _complete(
             att,
@@ -318,6 +479,13 @@ async def confirm_attempt(
             "dry_run": dry_run,
             **payload,
         }
+    content = resolve_content(
+        param=att.get("param"),
+        logs=logs,
+        matched_ids=result.matched_log_ids,
+        note=note,
+    )
+    payload["content"] = content
     if dry_run:
         return {
             "ok": True,
@@ -337,9 +505,12 @@ async def confirm_attempt(
             "log_count": len(logs),
             "log_source": source,
             "test": source == "fake",
+            "content": content,
         },
         note=note,
         verify_result=result,
+        logs=logs,
+        content=content,
     )
 
 
@@ -480,25 +651,39 @@ def _complete(
     evidence: dict,
     note: str | None,
     verify_result: VerifyResult | None = None,
+    logs: list[dict[str, Any]] | None = None,
+    content: str | None = None,
 ) -> dict[str, Any]:
     now = utcnow_iso()
+    matched = (verify_result.matched_log_ids if verify_result else None) or []
+    content_val = content or resolve_content(
+        param=att.get("param"),
+        logs=logs,
+        matched_ids=matched,
+        note=note,
+    )
+    evidence = {**evidence, "content": content_val}
     with db_session() as conn:
         conn.execute(
             "UPDATE attempts SET status='completed', completed_at=?, "
-            "verify_method=?, evidence_json=?, note=? WHERE id=? AND status='active'",
+            "verify_method=?, evidence_json=?, note=?, content=? "
+            "WHERE id=? AND status='active'",
             (
                 now,
                 method,
                 json.dumps(evidence),
                 note,
+                content_val,
                 att["id"],
             ),
         )
+    att_out = {**att, "content": content_val, "status": "completed"}
     return {
         "ok": True,
-        "attempt": att,
+        "attempt": att_out,
         "completed_at": now,
         "method": method,
+        "content": content_val,
         "verify": _result_dict(verify_result) if verify_result else None,
     }
 
@@ -508,6 +693,7 @@ def admin_update_attempt(
     *,
     status: str | None = None,
     param: str | None = None,
+    content: str | None = None,
     note: str | None = None,
     ends_at: str | None = None,
     started_at: str | None = None,
@@ -524,6 +710,9 @@ def admin_update_attempt(
     if param is not None:
         fields.append("param=?")
         args.append(param or None)
+    if content is not None:
+        fields.append("content=?")
+        args.append(content or None)
     if note is not None:
         fields.append("note=?")
         args.append(note)

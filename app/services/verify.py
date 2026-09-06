@@ -88,6 +88,61 @@ def _description(log: dict) -> str:
     return str(log.get("description") or log.get("title") or "")
 
 
+def content_labels_from_logs(
+    logs: list[dict[str, Any]],
+    matched_ids: list[str] | None = None,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    """Unique work titles from matched Tadoku logs (description/series/title)."""
+    id_set = {str(x) for x in (matched_ids or []) if x}
+    chosen = logs
+    if id_set:
+        filtered = [log for log in logs if str(log.get("id") or "") in id_set]
+        if filtered:
+            chosen = filtered
+    labels: list[str] = []
+    seen: set[str] = set()
+    for log in chosen:
+        raw = (
+            str(log.get("series") or "").strip()
+            or _description(log).strip()
+            or str(log.get("title") or "").strip()
+        )
+        if not raw:
+            continue
+        # Drop episode markers noise for display: keep short label
+        label = raw.split("\n")[0].strip()
+        if len(label) > 80:
+            label = label[:77] + "…"
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+        if len(labels) >= limit:
+            break
+    return labels
+
+
+def resolve_content(
+    *,
+    param: Optional[str] = None,
+    logs: list[dict[str, Any]] | None = None,
+    matched_ids: list[str] | None = None,
+    note: Optional[str] = None,
+) -> Optional[str]:
+    """Best-effort content label stored on completion."""
+    labels = content_labels_from_logs(logs or [], matched_ids)
+    if labels:
+        return ", ".join(labels)
+    if param and str(param).strip():
+        return str(param).strip()
+    if note and str(note).strip():
+        return str(note).strip()[:120]
+    return None
+
+
 def _media_match(log: dict, media_filter: str) -> bool:
     mf = (media_filter or "any").lower()
     if mf in ("any", "all", "*"):
