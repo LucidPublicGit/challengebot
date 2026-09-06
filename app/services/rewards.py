@@ -5,9 +5,16 @@ from typing import Any, Optional
 
 import discord
 
-from app.challenge_card import as_discord_file, avatar_bytes, render_challenge_card
+from app.challenge_card import (
+    as_discord_file,
+    avatar_bytes,
+    files_as_image_embeds,
+    render_challenge_card,
+)
 from app.config import get_settings, merge_runtime
+from app.congrats import as_discord_congrats, pick_congrats
 from app.db import db_session, get_all_settings
+from app.poster import fetch_poster
 from app.services.attempts import completion_counts
 
 logger = logging.getLogger(__name__)
@@ -55,12 +62,12 @@ async def apply_rewards(
     return applied
 
 
-async def resolve_announce_channel(
+async def _resolve_text_channel(
     bot: discord.Client,
+    cid: str,
     guild: discord.Guild | None = None,
 ) -> discord.TextChannel | None:
-    rt = _runtime()
-    cid = (rt.get("announce_channel_id") or "").strip()
+    cid = (cid or "").strip()
     if not cid or not cid.isdigit():
         return None
     channel = None
@@ -78,10 +85,34 @@ async def resolve_announce_channel(
     return channel
 
 
+async def resolve_announce_channel(
+    bot: discord.Client,
+    guild: discord.Guild | None = None,
+) -> discord.TextChannel | None:
+    """Main announce channel (cards + congrats on complete)."""
+    rt = _runtime()
+    return await _resolve_text_channel(bot, rt.get("announce_channel_id") or "", guild)
+
+
+async def resolve_secondary_announce_channel(
+    bot: discord.Client,
+    guild: discord.Guild | None = None,
+) -> discord.TextChannel | None:
+    """Secondary channel — lifecycle cards only (no congrats)."""
+    rt = _runtime()
+    return await _resolve_text_channel(
+        bot, rt.get("announce_secondary_channel_id") or "", guild
+    )
+
+
 def _ts_line(label: str, ts: int | None) -> str:
+    """Human time for PNG cards (Discord <t:> tokens don't render in images)."""
     if not ts:
         return ""
-    return f"{label} <t:{ts}:F> · <t:{ts}:R>"
+    from datetime import datetime, timezone
+
+    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+    return f"{label} {dt.strftime('%a %H:%M UTC')}"
 
 
 async def build_event_card(
@@ -98,6 +129,8 @@ async def build_event_card(
     detail: Optional[str] = None,
     ends_at_ts: int | None = None,
     starts_at_ts: int | None = None,
+    media_filter: Optional[str] = None,
+    poster_bytes: Optional[bytes] = None,
 ) -> tuple[bytes, str]:
     """Return (png_bytes, short_caption)."""
     name = (
@@ -107,40 +140,46 @@ async def build_event_card(
     )
     focus = (content or param or "").strip()
     av = await avatar_bytes(user)
+    poster = poster_bytes
+    if poster is None and focus:
+        try:
+            poster = await fetch_poster(focus, media_filter)
+        except Exception:  # noqa: BLE001
+            poster = None
 
     primary = ""
     secondary = ""
-    footer = "ChallengeTracker"
+    footer = ""
     if kind == "start":
-        primary = "Timer is running — good luck."
-        secondary = _ts_line("Ends", ends_at_ts) or "Window started"
+        primary = "Good luck"
+        secondary = _ts_line("Ends", ends_at_ts) or "Window open"
     elif kind == "scheduled":
-        primary = "Locked in for later."
-        secondary = _ts_line("Starts", starts_at_ts)
-        if ends_at_ts:
-            secondary = (secondary + " · " if secondary else "") + _ts_line(
-                "Ends", ends_at_ts
-            )
+        primary = "Queued to start"
+        bits = [b for b in (_ts_line("Starts", starts_at_ts), _ts_line("Ends", ends_at_ts)) if b]
+        secondary = " → ".join(bits) if bits else ""
     elif kind == "complete":
-        primary = "Cleared."
-        secondary = f"Method: {method}" if method else "Verified"
+        primary = "Cleared"
         if detail:
-            secondary = f"{secondary} · {detail}"[:120]
+            secondary = str(detail)[:90]
+        elif method:
+            secondary = str(method).replace("tadoku_poll", "Tadoku").replace("test_", "")
+        else:
+            secondary = "Verified"
     elif kind == "fail":
-        primary = "Not quite — logs don’t meet the goal yet."
-        secondary = (detail or "")[:140]
+        primary = "Goal not met"
+        secondary = (detail or "")[:90]
     elif kind == "abandon":
-        primary = "Walked away. Cowards never prosper."
-        secondary = focus or "Challenge cancelled"
+        primary = "Abandoned"
+        secondary = ""
     elif kind == "expired":
-        primary = "Timer says no."
+        primary = "Time’s up"
         secondary = _ts_line("Ended", ends_at_ts) or "Window closed"
     elif kind == "active":
         primary = "In progress"
-        secondary = _ts_line("Ends", ends_at_ts)
+        secondary = _ts_line("Ends", ends_at_ts) or "Window open"
     else:
         primary = kind.replace("_", " ").title()
-        secondary = detail or ""
+        secondary = (detail or "")[:90]
 
     png = await render_challenge_card(
         kind=kind if kind in (
@@ -155,6 +194,7 @@ async def build_event_card(
         line_primary=primary,
         line_secondary=secondary,
         footer=footer,
+        poster_bytes=poster,
     )
 
     mention = user.mention if user is not None else name
@@ -186,10 +226,15 @@ async def announce(
     detail: Optional[str] = None,
     ends_at_ts: int | None = None,
     starts_at_ts: int | None = None,
+    media_filter: Optional[str] = None,
 ) -> bool:
-    """Post challenge lifecycle card to ANNOUNCE_CHANNEL_ID."""
-    channel = await resolve_announce_channel(bot, guild)
-    if channel is None:
+    """Post lifecycle card to main + secondary announce channels.
+
+    Congrats media is attached on **main only** (complete events).
+    """
+    main = await resolve_announce_channel(bot, guild)
+    secondary = await resolve_secondary_announce_channel(bot, guild)
+    if main is None and secondary is None:
         return False
 
     # Resolve user object if we only have an id-ish display path
@@ -213,21 +258,65 @@ async def announce(
             detail=detail,
             ends_at_ts=ends_at_ts,
             starts_at_ts=starts_at_ts,
+            media_filter=media_filter,
         )
-        await channel.send(content=caption, file=as_discord_file(png, f"{kind}-card.png"))
-        return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("announce card failed (%s): %s — falling back to text", kind, exc)
-        who = user.mention if user is not None else (display_name or "Someone")
-        focus = (content or param or "").strip()
-        extra = f" · _{focus}_" if focus else ""
-        text = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
+        logger.warning("announce card build failed (%s): %s", kind, exc)
+        png, caption = None, None
+
+    who = user.mention if user is not None else (display_name or "Someone")
+    focus = (content or param or "").strip()
+    extra = f" · _{focus}_" if focus else ""
+    text_fallback = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
+
+    # Congrats path resolved once; only attached on main
+    cong_path = None
+    if kind == "complete" and png is not None:
+        cong_path = pick_congrats(tier=tier, content=focus)
+
+    posted = False
+
+    async def _send(
+        channel: discord.TextChannel, *,
+        with_congrats: bool,
+    ) -> bool:
+        nonlocal posted
         try:
-            await channel.send(text)
+            if png is None:
+                await channel.send(text_fallback)
+                posted = True
+                return True
+            files = [as_discord_file(png, f"{kind}-card.png")]
+            if with_congrats and cong_path is not None:
+                try:
+                    files.append(as_discord_congrats(cong_path))
+                except OSError as exc:
+                    logger.warning("congrats file open failed: %s", exc)
+            embeds = files_as_image_embeds(files, kind=kind)
+            await channel.send(content=caption, files=files, embeds=embeds)
+            posted = True
             return True
-        except discord.HTTPException as exc2:
-            logger.warning("announce failed (%s): %s", kind, exc2)
-            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "announce to #%s failed (%s): %s",
+                getattr(channel, "id", "?"),
+                kind,
+                exc,
+            )
+            try:
+                await channel.send(text_fallback)
+                posted = True
+                return True
+            except discord.HTTPException as exc2:
+                logger.warning("announce text fallback failed: %s", exc2)
+                return False
+
+    if main is not None:
+        await _send(main, with_congrats=True)
+    if secondary is not None and (main is None or secondary.id != main.id):
+        await _send(secondary, with_congrats=False)
+
+    return posted
 
 
 async def announce_completion(

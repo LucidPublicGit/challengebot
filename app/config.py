@@ -54,6 +54,8 @@ class Settings:
     tadoku_api_base: str = "https://tadoku.app/api/internal/immersion"
     tadoku_contest_id: str = "90e6509e-bc32-49d4-936d-ea0776eee602"
     announce_channel_id: str = ""
+    # Cards only (start/finish/fail/…); no congrats gifs
+    announce_secondary_channel_id: str = ""
     reward_roles: str = ""
     allow_reattempt: bool = True
     pages_per_volume: float = 180.0
@@ -97,6 +99,9 @@ def get_settings() -> Settings:
             "TADOKU_CONTEST_ID", "90e6509e-bc32-49d4-936d-ea0776eee602"
         ),
         announce_channel_id=_env("ANNOUNCE_CHANNEL_ID"),
+        announce_secondary_channel_id=_env(
+            "ANNOUNCE_SECONDARY_CHANNEL_ID", "1523503572652916786"
+        ),
         reward_roles=_env("REWARD_ROLES"),
         allow_reattempt=_env_bool("ALLOW_REATTEMPT", True),
         pages_per_volume=_env_float("PAGES_PER_VOLUME", 180.0),
@@ -113,6 +118,7 @@ SETTING_KEYS = (
     "tadoku_contest_id",
     "tadoku_api_base",
     "announce_channel_id",
+    "announce_secondary_channel_id",
     "allow_reattempt",
     "pages_per_volume",
     "episode_minutes",
@@ -127,6 +133,7 @@ def merge_runtime(settings: Settings, db_map: dict[str, str]) -> dict[str, Any]:
         "tadoku_contest_id": settings.tadoku_contest_id,
         "tadoku_api_base": settings.tadoku_api_base,
         "announce_channel_id": settings.announce_channel_id,
+        "announce_secondary_channel_id": settings.announce_secondary_channel_id,
         "allow_reattempt": settings.allow_reattempt,
         "pages_per_volume": settings.pages_per_volume,
         "episode_minutes": settings.episode_minutes,
@@ -140,6 +147,8 @@ def merge_runtime(settings: Settings, db_map: dict[str, str]) -> dict[str, Any]:
         out["tadoku_api_base"] = db_map["tadoku_api_base"]
     if "announce_channel_id" in db_map:
         out["announce_channel_id"] = db_map["announce_channel_id"]
+    if "announce_secondary_channel_id" in db_map:
+        out["announce_secondary_channel_id"] = db_map["announce_secondary_channel_id"]
     if "allow_reattempt" in db_map:
         out["allow_reattempt"] = db_map["allow_reattempt"].lower() in (
             "1",

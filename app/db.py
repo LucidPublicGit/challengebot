@@ -100,6 +100,12 @@ CREATE TABLE IF NOT EXISTS attempts (
 CREATE INDEX IF NOT EXISTS idx_attempts_user_status ON attempts(discord_id, status);
 CREATE INDEX IF NOT EXISTS idx_attempts_status_ends ON attempts(status, ends_at);
 CREATE INDEX IF NOT EXISTS idx_attempts_challenge ON attempts(challenge_id);
+
+CREATE TABLE IF NOT EXISTS congrats_usage (
+  path TEXT PRIMARY KEY,
+  use_count INTEGER NOT NULL DEFAULT 0,
+  last_used TEXT
+);
 """
 
 # Additive columns for DBs created before content existed.

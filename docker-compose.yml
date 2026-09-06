@@ -10,4 +10,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./challenges:/app/challenges:ro
+      - ./completion_pictures:/app/completion_pictures:ro
     # Single replica only — SQLite one-writer.

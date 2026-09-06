@@ -157,6 +157,7 @@ class ChallengeBot(commands.Bot):
                 number=int(att.get("number") or 0),
                 param=att.get("param"),
                 content=att_svc.display_content(att),
+                media_filter=att.get("media_filter"),
             )
             kwargs.update(extra)
             await announce(self, **kwargs)  # type: ignore[arg-type]

@@ -14,9 +14,11 @@ from app.catalog import get_challenge, list_challenges
 from app.challenge_card import (
     as_discord_file,
     avatar_bytes,
-    render_challenge_card,
+    files_as_image_embeds,
+    render_all_demo_cards,
     render_leaderboard_card,
 )
+from app.congrats import as_discord_congrats, pick_congrats
 from app.db import db_session
 from app.services import attempts as att_svc
 from app.services.rewards import (
@@ -129,6 +131,7 @@ async def _finalize_start(
     start_ts = b._ts(result["started_at"])
     status = result.get("status") or "active"
     kind = "scheduled" if status == "scheduled" else "start"
+    media = ch.get("media_filter")
     png, caption = await build_event_card(
         kind=kind,
         user=interaction.user,
@@ -138,11 +141,14 @@ async def _finalize_start(
         param=result.get("param"),
         starts_at_ts=start_ts if kind == "scheduled" else None,
         ends_at_ts=ends,
+        media_filter=media,
     )
     howto = b.confirm_howto(ch) if kind == "start" else "Cancel anytime with `/challenge abandon`."
+    card = as_discord_file(png, f"{kind}-card.png")
     await interaction.followup.send(
         content=f"{caption}\n{howto}",
-        file=as_discord_file(png, f"{kind}-card.png"),
+        file=card,
+        embeds=files_as_image_embeds([card], kind=kind),
         ephemeral=True,
     )
     await announce(
@@ -156,6 +162,7 @@ async def _finalize_start(
         param=result.get("param"),
         starts_at_ts=start_ts if kind == "scheduled" else None,
         ends_at_ts=ends,
+        media_filter=media,
     )
 
 
@@ -188,6 +195,7 @@ async def _run_confirm(
                 content=att_svc.display_content(att),
                 detail=result.get("progress")
                 or (result.get("verify") or {}).get("detail"),
+                media_filter=att.get("media_filter"),
             )
         return
 
@@ -210,6 +218,7 @@ async def _run_confirm(
         content=content,
         method=method,
         detail=detail,
+        media_filter=att.get("media_filter"),
     )
     png, caption = await build_event_card(
         kind="complete",
@@ -221,11 +230,14 @@ async def _run_confirm(
         content=content,
         method=method,
         detail=detail,
+        media_filter=att.get("media_filter"),
     )
     extra = f"\nRoles: {', '.join(roles)}" if roles else ""
+    card = as_discord_file(png, "complete-card.png")
     await interaction.followup.send(
         content=f"{caption}{extra}",
-        file=as_discord_file(png, "complete-card.png"),
+        file=card,
+        embeds=files_as_image_embeds([card], kind="complete"),
         ephemeral=True,
     )
 
@@ -255,6 +267,7 @@ async def _run_abandon(interaction: discord.Interaction) -> None:
         number=int(att.get("number") or 0),
         param=att.get("param"),
         content=att_svc.display_content(att),
+        media_filter=att.get("media_filter"),
     )
 
 
@@ -1194,6 +1207,7 @@ async def challenge_status(interaction: discord.Interaction) -> None:
             content=att_svc.display_content(active),
             ends_at_ts=ends,
             detail=b.confirm_howto(active),
+            media_filter=active.get("media_filter"),
         )
         files.append(as_discord_file(png, "active-card.png"))
         lines.append(b.confirm_howto(active))
@@ -1209,6 +1223,7 @@ async def challenge_status(interaction: discord.Interaction) -> None:
             param=scheduled.get("param"),
             starts_at_ts=when,
             ends_at_ts=ends,
+            media_filter=scheduled.get("media_filter"),
         )
         files.append(as_discord_file(png, "scheduled-card.png"))
     else:
@@ -1246,6 +1261,9 @@ async def challenge_status(interaction: discord.Interaction) -> None:
     }
     if files:
         kwargs["files"] = files
+        kwargs["embeds"] = files_as_image_embeds(
+            files, kind="active" if active else "scheduled"
+        )
     if view:
         kwargs["view"] = view
     await interaction.followup.send(**kwargs)
@@ -1338,8 +1356,10 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
         entries=entries,
         footer=f"{len(entries)} ranked · completed attempts",
     )
+    lb = as_discord_file(png, "leaderboard-card.png")
     await interaction.followup.send(
-        file=as_discord_file(png, "leaderboard-card.png"),
+        file=lb,
+        embeds=files_as_image_embeds([lb], kind="leaderboard"),
     )
 
 
@@ -1365,3 +1385,100 @@ async def challenge_admin(
         ephemeral=True,
     )
     view.message = await interaction.original_response()
+
+
+@challenge_group.command(
+    name="testcards",
+    description="Admin: preview every challenge card format",
+)
+@app_commands.describe(
+    public="If true, post in this channel (default: only you can see)",
+)
+async def challenge_testcards(
+    interaction: discord.Interaction,
+    public: bool = False,
+) -> None:
+    b = _bot_helpers()
+    if not b.is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=not public)
+    av = await avatar_bytes(interaction.user)
+    cards = await render_all_demo_cards(
+        display_name=interaction.user.display_name,
+        avatar=av,
+    )
+    # Discord allows max 10 files per message; we have 9.
+    files = [
+        as_discord_file(png, f"card_{kind}.png") for kind, png in cards[:10]
+    ]
+    labels = ", ".join(kind for kind, _ in cards)
+    await interaction.followup.send(
+        content=f"**Card formats** ({len(files)}): `{labels}`",
+        files=files,
+        embeds=files_as_image_embeds(files),
+        ephemeral=not public,
+    )
+
+
+@challenge_group.command(
+    name="testcongrats",
+    description="Admin: preview a completion congrats image (private)",
+)
+@app_commands.describe(
+    tier="Tier pool to prefer (default: easy)",
+    content="Focus title for content-matched pics (optional)",
+    mark="Count toward uniqueness tracking (default: off)",
+)
+@app_commands.choices(
+    tier=[
+        app_commands.Choice(name="Easy", value="easy"),
+        app_commands.Choice(name="Medium", value="medium"),
+        app_commands.Choice(name="Hard", value="hard"),
+        app_commands.Choice(name="Ota-Master", value="ota_master"),
+    ]
+)
+async def challenge_testcongrats(
+    interaction: discord.Interaction,
+    tier: str = "easy",
+    content: str = "",
+    mark: bool = False,
+) -> None:
+    b = _bot_helpers()
+    if not b.is_bot_admin(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    path = pick_congrats(tier=tier, content=content or None, mark=mark)
+    if path is None:
+        await interaction.followup.send(
+            "No congrats image found under `completion_pictures/` "
+            f"(tier=`{tier}`, content=`{content or '—'}`).",
+            ephemeral=True,
+        )
+        return
+    # Also show the completion card so admins see the full announce pair
+    png, caption = await build_event_card(
+        kind="complete",
+        user=interaction.user,
+        title="Congrats preview",
+        tier=tier,
+        number=0,
+        content=content or None,
+        method="test",
+        detail="preview only",
+    )
+    files = [
+        as_discord_file(png, "complete-card.png"),
+        as_discord_congrats(path),
+    ]
+    await interaction.followup.send(
+        content=(
+            f"{caption}\n"
+            f"Congrats file: `{path.name}`\n"
+            f"tier=`{tier}` content=`{content or '—'}` mark=`{mark}`"
+        ),
+        files=files,
+        embeds=files_as_image_embeds(files, kind="complete"),
+        ephemeral=True,
+    )

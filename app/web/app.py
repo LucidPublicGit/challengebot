@@ -125,6 +125,14 @@ button.danger,.btn.danger{background:transparent;color:var(--bad);border-color:#
 .truncate{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 td .sub{display:block;color:var(--muted);font-size:.75rem;margin-top:.1rem}
 .stat-row{display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.65rem}
+.filters{display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.65rem}
+.filters a{
+  display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .7rem;border-radius:999px;
+  border:1px solid var(--line);background:var(--panel);color:var(--muted);font-weight:600;font-size:.82rem;
+}
+.filters a:hover{color:var(--ink);text-decoration:none;border-color:var(--accent2)}
+.filters a.on{background:rgba(124,156,255,.16);color:var(--ink);border-color:var(--accent2)}
+.filters a .n{font-variant-numeric:tabular-nums;opacity:.85}
 """
 
 
@@ -237,10 +245,32 @@ def create_app() -> FastAPI:
     app = FastAPI(title="ChallengeTracker Admin", docs_url=None, redoc_url=None)
 
     @app.get("/", response_class=HTMLResponse)
-    def home(_: None = Depends(_auth)):
-        rows = att_svc.list_attempts(limit=100)
-        completed = sum(1 for a in rows if a.get("status") == "completed")
-        active = sum(1 for a in rows if a.get("status") == "active")
+    def home(filter: str = "all", _: None = Depends(_auth)):
+        # Tabs: all | active (active+scheduled) | completed | voided
+        filt = (filter or "all").strip().lower()
+        if filt not in ("all", "active", "completed", "voided"):
+            filt = "all"
+        status_map = {
+            "all": None,
+            "active": ["active", "scheduled"],
+            "completed": ["completed"],
+            "voided": ["void"],
+        }
+        statuses = status_map[filt]
+        rows = att_svc.list_attempts(statuses=statuses, limit=200) if statuses else att_svc.list_attempts(
+            limit=200
+        )
+        counts = att_svc.attempt_status_counts()
+        n_active = counts.get("active", 0) + counts.get("scheduled", 0)
+        n_completed = counts.get("completed", 0)
+        n_voided = counts.get("void", 0)
+        n_total = counts.get("total", 0)
+
+        def tab(key: str, label: str, n: int) -> str:
+            on = "on" if filt == key else ""
+            href = "/" if key == "all" else f"/?filter={key}"
+            return f'<a class="{on}" href="{href}">{label} <span class="n">{n}</span></a>'
+
         tr = []
         for a in rows:
             content = _content_cell(a)
@@ -252,16 +282,27 @@ def create_app() -> FastAPI:
                 f"<td>{_esc(a['tier'])} #{a['number']}"
                 f"<span class='sub'>{_esc(a['title'])}</span></td>"
                 f"<td class='truncate' title='{_esc(att_svc.display_content(a))}'>{content}</td>"
-                f"<td><span class='badge { _esc(a['status']) }'>{_esc(a['status'])}</span></td>"
+                f"<td><span class='badge {_esc(a['status'])}'>{_esc(a['status'])}</span></td>"
                 f"<td class='muted mono'>{_esc(a.get('completed_at') or a['started_at'])}</td>"
                 f"<td><a href='/attempts/{a['id']}'>Edit</a></td>"
                 f"</tr>"
             )
+        empty = {
+            "all": "No attempts yet",
+            "active": "No active or scheduled attempts",
+            "completed": "No completed attempts",
+            "voided": "No voided attempts",
+        }[filt]
         body = f"""
+        <div class="filters">
+          {tab("all", "All", n_total)}
+          {tab("active", "Active", n_active)}
+          {tab("completed", "Completed", n_completed)}
+          {tab("voided", "Voided", n_voided)}
+        </div>
         <div class="stat-row">
           <span class="pill">Showing <b>{len(rows)}</b></span>
-          <span class="pill">Active <b>{active}</b></span>
-          <span class="pill">Completed <b>{completed}</b></span>
+          <span class="pill">Filter <b>{_esc(filt)}</b></span>
         </div>
         <div class="card" style="padding:0;overflow:auto">
           <table>
@@ -269,7 +310,7 @@ def create_app() -> FastAPI:
               <th>ID</th><th>User</th><th>Challenge</th><th>Content</th>
               <th>Status</th><th>When</th><th></th>
             </tr></thead>
-            <tbody>{''.join(tr) or '<tr><td colspan=7 class="muted">No attempts yet</td></tr>'}</tbody>
+            <tbody>{''.join(tr) or f'<tr><td colspan=7 class="muted">{empty}</td></tr>'}</tbody>
           </table>
         </div>
         """
@@ -676,8 +717,11 @@ def create_app() -> FastAPI:
                 <input name="tadoku_contest_id" value="{_esc(rt['tadoku_contest_id'])}"/></div>
               <div><label>Tadoku API base</label>
                 <input name="tadoku_api_base" value="{_esc(rt['tadoku_api_base'])}"/></div>
-              <div><label>Announce channel id</label>
+              <div><label>Announce channel id (main — cards + congrats)</label>
                 <input name="announce_channel_id" value="{_esc(rt['announce_channel_id'])}"/></div>
+              <div><label>Secondary announce channel (cards only)</label>
+                <input name="announce_secondary_channel_id"
+                  value="{_esc(rt.get('announce_secondary_channel_id') or '')}"/></div>
               <div><label>Guild id</label>
                 <input name="guild_id" value="{_esc(rt['guild_id'])}"/></div>
               <div class="span-2"><label>Admin role ids</label>
@@ -711,6 +755,7 @@ def create_app() -> FastAPI:
         tadoku_contest_id: str = Form(""),
         tadoku_api_base: str = Form(""),
         announce_channel_id: str = Form(""),
+        announce_secondary_channel_id: str = Form(""),
         guild_id: str = Form(""),
         admin_role_ids: str = Form(""),
         allow_reattempt: str = Form("true"),
@@ -730,6 +775,7 @@ def create_app() -> FastAPI:
                     "tadoku_contest_id": tadoku_contest_id.strip(),
                     "tadoku_api_base": tadoku_api_base.strip(),
                     "announce_channel_id": announce_channel_id.strip(),
+                    "announce_secondary_channel_id": announce_secondary_channel_id.strip(),
                     "guild_id": guild_id.strip(),
                     "admin_role_ids": admin_role_ids.strip(),
                     "allow_reattempt": allow_reattempt.strip().lower(),

@@ -143,6 +143,7 @@ def parse_schedule_local(
 def list_attempts(
     discord_id: str | None = None,
     status: str | None = None,
+    statuses: list[str] | None = None,
     limit: int = 50,
 ) -> list[dict]:
     q = (
@@ -155,13 +156,32 @@ def list_attempts(
     if discord_id:
         q += " AND a.discord_id=?"
         args.append(discord_id)
-    if status:
+    if statuses:
+        ph = ",".join("?" * len(statuses))
+        q += f" AND a.status IN ({ph})"
+        args.extend(statuses)
+    elif status:
         q += " AND a.status=?"
         args.append(status)
     q += " ORDER BY a.id DESC LIMIT ?"
     args.append(limit)
     with db_session() as conn:
         return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+def attempt_status_counts(discord_id: str | None = None) -> dict[str, int]:
+    """Counts by status (plus total)."""
+    q = "SELECT status, COUNT(*) AS n FROM attempts"
+    args: list[Any] = []
+    if discord_id:
+        q += " WHERE discord_id=?"
+        args.append(discord_id)
+    q += " GROUP BY status"
+    with db_session() as conn:
+        rows = conn.execute(q, args).fetchall()
+    out = {r["status"]: int(r["n"]) for r in rows}
+    out["total"] = sum(out.values())
+    return out
 
 
 def expire_overdue() -> list[dict]:
