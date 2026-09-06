@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 import discord
 
+from app.challenge_card import as_discord_file, avatar_bytes, render_challenge_card
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings
 from app.services.attempts import completion_counts
@@ -77,13 +78,96 @@ async def resolve_announce_channel(
     return channel
 
 
-def _challenge_label(tier: str, number: int, title: str) -> str:
-    return f"**{tier} #{number}: {title}**"
+def _ts_line(label: str, ts: int | None) -> str:
+    if not ts:
+        return ""
+    return f"{label} <t:{ts}:F> · <t:{ts}:R>"
 
 
-def _focus_bit(content: Optional[str] = None, param: Optional[str] = None) -> str:
+async def build_event_card(
+    *,
+    kind: str,
+    user: discord.abc.User | None = None,
+    display_name: str | None = None,
+    title: str,
+    tier: str,
+    number: int,
+    param: Optional[str] = None,
+    content: Optional[str] = None,
+    method: Optional[str] = None,
+    detail: Optional[str] = None,
+    ends_at_ts: int | None = None,
+    starts_at_ts: int | None = None,
+) -> tuple[bytes, str]:
+    """Return (png_bytes, short_caption)."""
+    name = (
+        getattr(user, "display_name", None)
+        or display_name
+        or (str(user) if user else "Someone")
+    )
     focus = (content or param or "").strip()
-    return f" · _{focus}_" if focus else ""
+    av = await avatar_bytes(user)
+
+    primary = ""
+    secondary = ""
+    footer = "ChallengeTracker"
+    if kind == "start":
+        primary = "Timer is running — good luck."
+        secondary = _ts_line("Ends", ends_at_ts) or "Window started"
+    elif kind == "scheduled":
+        primary = "Locked in for later."
+        secondary = _ts_line("Starts", starts_at_ts)
+        if ends_at_ts:
+            secondary = (secondary + " · " if secondary else "") + _ts_line(
+                "Ends", ends_at_ts
+            )
+    elif kind == "complete":
+        primary = "Cleared."
+        secondary = f"Method: {method}" if method else "Verified"
+        if detail:
+            secondary = f"{secondary} · {detail}"[:120]
+    elif kind == "fail":
+        primary = "Not quite — logs don’t meet the goal yet."
+        secondary = (detail or "")[:140]
+    elif kind == "abandon":
+        primary = "Walked away. Cowards never prosper."
+        secondary = focus or "Challenge cancelled"
+    elif kind == "expired":
+        primary = "Timer says no."
+        secondary = _ts_line("Ended", ends_at_ts) or "Window closed"
+    elif kind == "active":
+        primary = "In progress"
+        secondary = _ts_line("Ends", ends_at_ts)
+    else:
+        primary = kind.replace("_", " ").title()
+        secondary = detail or ""
+
+    png = await render_challenge_card(
+        kind=kind if kind in (
+            "start", "scheduled", "complete", "fail", "abandon", "expired", "active", "status"
+        ) else "status",
+        display_name=name,
+        challenge_title=title,
+        tier=tier,
+        number=int(number or 0),
+        avatar_bytes=av,
+        focus=focus,
+        line_primary=primary,
+        line_secondary=secondary,
+        footer=footer,
+    )
+
+    mention = user.mention if user is not None else name
+    captions = {
+        "start": f"🏁 {mention} started a challenge",
+        "scheduled": f"📅 {mention} scheduled a challenge",
+        "complete": f"🎉 {mention} completed a challenge",
+        "fail": f"💀 {mention} failed a check",
+        "abandon": f"🏳️ {mention} abandoned a challenge",
+        "expired": f"⏰ {mention} ran out of time",
+        "active": f"📌 {mention} — active challenge",
+    }
+    return png, captions.get(kind, f"{mention} · {kind}")
 
 
 async def announce(
@@ -103,43 +187,47 @@ async def announce(
     ends_at_ts: int | None = None,
     starts_at_ts: int | None = None,
 ) -> bool:
-    """
-    Post challenge lifecycle events to ANNOUNCE_CHANNEL_ID.
-    kind: start | scheduled | complete | fail | abandon | expired
-    """
+    """Post challenge lifecycle card to ANNOUNCE_CHANNEL_ID."""
     channel = await resolve_announce_channel(bot, guild)
     if channel is None:
         return False
 
-    who = user.mention if user is not None else (display_name or "Someone")
-    label = _challenge_label(tier, number, title)
-    focus = _focus_bit(content, param)
-
-    if kind == "start":
-        deadline = f" · ends <t:{ends_at_ts}:R>" if ends_at_ts else ""
-        text = f"🏁 {who} started {label}{focus}{deadline}"
-    elif kind == "scheduled":
-        when = f" · starts <t:{starts_at_ts}:F> (<t:{starts_at_ts}:R>)" if starts_at_ts else ""
-        text = f"📅 {who} scheduled {label}{focus}{when}"
-    elif kind == "complete":
-        method_s = f" ({method})" if method else ""
-        text = f"🎉 {who} completed {label}{focus}{method_s}"
-    elif kind == "fail":
-        extra = f"\n_{detail}_" if detail else ""
-        text = f"💀 {who} tried to confirm {label}{focus}… and **failed**.{extra}"
-    elif kind == "abandon":
-        text = f"🏳️ {who} abandoned {label}{focus}. Cowards never prosper."
-    elif kind == "expired":
-        text = f"⏰ {who} ran out of time on {label}{focus}. Timer says no."
-    else:
-        text = f"{who} · {kind} · {label}{focus}"
+    # Resolve user object if we only have an id-ish display path
+    if user is None and display_name and str(display_name).isdigit():
+        try:
+            user = bot.get_user(int(display_name)) or await bot.fetch_user(int(display_name))
+        except (TypeError, ValueError, discord.HTTPException):
+            user = None
 
     try:
-        await channel.send(text)
+        png, caption = await build_event_card(
+            kind=kind,
+            user=user,
+            display_name=display_name,
+            title=title,
+            tier=tier,
+            number=number,
+            param=param,
+            content=content,
+            method=method,
+            detail=detail,
+            ends_at_ts=ends_at_ts,
+            starts_at_ts=starts_at_ts,
+        )
+        await channel.send(content=caption, file=as_discord_file(png, f"{kind}-card.png"))
         return True
-    except discord.HTTPException as exc:
-        logger.warning("announce failed (%s): %s", kind, exc)
-        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("announce card failed (%s): %s — falling back to text", kind, exc)
+        who = user.mention if user is not None else (display_name or "Someone")
+        focus = (content or param or "").strip()
+        extra = f" · _{focus}_" if focus else ""
+        text = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
+        try:
+            await channel.send(text)
+            return True
+        except discord.HTTPException as exc2:
+            logger.warning("announce failed (%s): %s", kind, exc2)
+            return False
 
 
 async def announce_completion(

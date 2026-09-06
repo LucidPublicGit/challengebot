@@ -11,9 +11,20 @@ import discord
 from discord import app_commands
 
 from app.catalog import get_challenge, list_challenges
+from app.challenge_card import (
+    as_discord_file,
+    avatar_bytes,
+    render_challenge_card,
+    render_leaderboard_card,
+)
 from app.db import db_session
 from app.services import attempts as att_svc
-from app.services.rewards import announce, announce_completion, apply_rewards
+from app.services.rewards import (
+    announce,
+    announce_completion,
+    apply_rewards,
+    build_event_card,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,47 +127,34 @@ async def _finalize_start(
     ch = result["challenge"]
     ends = b._ts(result["ends_at"])
     start_ts = b._ts(result["started_at"])
-    param_s = f"\nFocus: **{result['param']}**" if result.get("param") else ""
     status = result.get("status") or "active"
-    if status == "scheduled":
-        await interaction.followup.send(
-            f"📅 Scheduled **{ch['tier']} #{ch['number']}: {ch['title']}**{param_s}\n"
-            f"{ch.get('description') or ''}\n"
-            f"Starts: <t:{start_ts}:F> (<t:{start_ts}:R>)\n"
-            f"Window ends: <t:{ends}:F> (<t:{ends}:R>)\n"
-            f"Cancel anytime with `/challenge abandon`.",
-            ephemeral=True,
-        )
-        await announce(
-            interaction.client,
-            kind="scheduled",
-            guild=interaction.guild,
-            user=interaction.user,
-            title=ch["title"],
-            tier=ch["tier"],
-            number=int(ch["number"]),
-            param=result.get("param"),
-            starts_at_ts=start_ts,
-            ends_at_ts=ends,
-        )
-        return
-
+    kind = "scheduled" if status == "scheduled" else "start"
+    png, caption = await build_event_card(
+        kind=kind,
+        user=interaction.user,
+        title=ch["title"],
+        tier=ch["tier"],
+        number=int(ch["number"]),
+        param=result.get("param"),
+        starts_at_ts=start_ts if kind == "scheduled" else None,
+        ends_at_ts=ends,
+    )
+    howto = b.confirm_howto(ch) if kind == "start" else "Cancel anytime with `/challenge abandon`."
     await interaction.followup.send(
-        f"Started **{ch['tier']} #{ch['number']}: {ch['title']}**{param_s}\n"
-        f"{ch.get('description') or ''}\n"
-        f"Deadline: <t:{ends}:F> (<t:{ends}:R>)\n\n"
-        f"{b.confirm_howto(ch)}",
+        content=f"{caption}\n{howto}",
+        file=as_discord_file(png, f"{kind}-card.png"),
         ephemeral=True,
     )
     await announce(
         interaction.client,
-        kind="start",
+        kind=kind,
         guild=interaction.guild,
         user=interaction.user,
         title=ch["title"],
         tier=ch["tier"],
         number=int(ch["number"]),
         param=result.get("param"),
+        starts_at_ts=start_ts if kind == "scheduled" else None,
         ends_at_ts=ends,
     )
 
@@ -196,6 +194,7 @@ async def _run_confirm(
     att = result["attempt"]
     method = result.get("method") or "tadoku"
     content = result.get("content") or att_svc.display_content(att)
+    detail = (result.get("verify") or {}).get("detail") if result.get("verify") else None
     roles: list[str] = []
     if interaction.guild and isinstance(interaction.user, discord.Member):
         roles = await apply_rewards(interaction.user, tier=att["tier"])
@@ -210,13 +209,23 @@ async def _run_confirm(
         param=att.get("param"),
         content=content,
         method=method,
+        detail=detail,
+    )
+    png, caption = await build_event_card(
+        kind="complete",
+        user=interaction.user,
+        title=att["title"],
+        tier=att["tier"],
+        number=int(att["number"]),
+        param=att.get("param"),
+        content=content,
+        method=method,
+        detail=detail,
     )
     extra = f"\nRoles: {', '.join(roles)}" if roles else ""
-    detail = f"\n{result['verify'].get('detail')}" if result.get("verify") else ""
-    content_s = f"\nContent: **{content}**" if content else ""
     await interaction.followup.send(
-        f"✅ Completed **{att['tier']} #{att['number']}: {att['title']}** ({method})"
-        f"{content_s}{detail}{extra}",
+        content=f"{caption}{extra}",
+        file=as_discord_file(png, "complete-card.png"),
         ephemeral=True,
     )
 
@@ -1166,29 +1175,46 @@ async def challenge_list(interaction: discord.Interaction) -> None:
 @challenge_group.command(name="status", description="Your challenge status + actions")
 async def challenge_status(interaction: discord.Interaction) -> None:
     b = _bot_helpers()
+    await interaction.response.defer(ephemeral=True)
     active = att_svc.active_attempt(str(interaction.user.id))
     scheduled = att_svc.scheduled_attempt(str(interaction.user.id))
     recent = att_svc.list_attempts(discord_id=str(interaction.user.id), limit=8)
-    lines = []
+    lines: list[str] = []
+    files: list[discord.File] = []
+
     if active:
         ends = b._ts(active["ends_at"])
-        lines.append(
-            f"**Active:** {active['tier']} #{active['number']} {active['title']} "
-            f"— ends <t:{ends}:R>"
-            + (f" · {active['param']}" if active.get("param") else "")
-            + f" · confirm: **{b.verify_label(active)}**"
+        png, _ = await build_event_card(
+            kind="active",
+            user=interaction.user,
+            title=active["title"],
+            tier=active["tier"],
+            number=int(active["number"]),
+            param=active.get("param"),
+            content=att_svc.display_content(active),
+            ends_at_ts=ends,
+            detail=b.confirm_howto(active),
         )
+        files.append(as_discord_file(png, "active-card.png"))
         lines.append(b.confirm_howto(active))
     elif scheduled:
         when = b._ts(scheduled["started_at"])
         ends = b._ts(scheduled["ends_at"])
-        lines.append(
-            f"**Scheduled:** {scheduled['tier']} #{scheduled['number']} {scheduled['title']} "
-            f"— starts <t:{when}:R>, ends <t:{ends}:R>"
-            + (f" · {scheduled['param']}" if scheduled.get("param") else "")
+        png, _ = await build_event_card(
+            kind="scheduled",
+            user=interaction.user,
+            title=scheduled["title"],
+            tier=scheduled["tier"],
+            number=int(scheduled["number"]),
+            param=scheduled.get("param"),
+            starts_at_ts=when,
+            ends_at_ts=ends,
         )
+        files.append(as_discord_file(png, "scheduled-card.png"))
     else:
-        lines.append("**Active:** none")
+        lines.append("**No active challenge.** Use `/challenge start`.")
+
+    past = []
     for a in recent:
         if active and a["id"] == active["id"]:
             continue
@@ -1196,9 +1222,12 @@ async def challenge_status(interaction: discord.Interaction) -> None:
             continue
         content = att_svc.display_content(a)
         focus = f" · _{content}_" if content else ""
-        lines.append(
-            f"`{a['status']}` {a['tier']} #{a['number']} {a['title']}{focus} (#{a['id']})"
+        past.append(
+            f"`{a['status']}` {a['tier']} #{a['number']} {a['title']}{focus}"
         )
+    if past:
+        lines.append("**Recent**\n" + "\n".join(past[:6]))
+
     user = att_svc.get_user(str(interaction.user.id))
     tadoku = (
         f"Tadoku: `{user['tadoku_user_id']}`"
@@ -1206,12 +1235,20 @@ async def challenge_status(interaction: discord.Interaction) -> None:
         else "Tadoku: **not linked** — `/challenge link`"
     )
     lines.append(tadoku)
+
     view = None
     if active or scheduled:
         view = StatusActionsView(interaction.user.id, has_active=bool(active))
-    await interaction.response.send_message(
-        "\n".join(lines), view=view, ephemeral=True
-    )
+
+    kwargs: dict = {
+        "content": "\n".join(lines)[:1900],
+        "ephemeral": True,
+    }
+    if files:
+        kwargs["files"] = files
+    if view:
+        kwargs["view"] = view
+    await interaction.followup.send(**kwargs)
     if view:
         view.message = await interaction.original_response()
 
@@ -1267,6 +1304,7 @@ async def challenge_link(interaction: discord.Interaction) -> None:
 
 @challenge_group.command(name="leaderboard", description="Top completers")
 async def challenge_leaderboard(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
     with db_session() as conn:
         rows = conn.execute(
             "SELECT a.discord_id, u.display_name, COUNT(*) AS n "
@@ -1275,13 +1313,34 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
             "ORDER BY n DESC LIMIT 15"
         ).fetchall()
     if not rows:
-        await interaction.response.send_message("No completions yet.", ephemeral=True)
+        await interaction.followup.send("No completions yet.")
         return
-    lines = [
-        f"**{i+1}.** {r['display_name'] or r['discord_id']} — **{r['n']}**"
-        for i, r in enumerate(rows)
-    ]
-    await interaction.response.send_message("\n".join(lines), ephemeral=False)
+    entries = []
+    for i, r in enumerate(rows):
+        av = None
+        uid = r["discord_id"]
+        name = r["display_name"] or uid
+        if str(uid).isdigit():
+            try:
+                u = interaction.client.get_user(int(uid))
+                if u is None:
+                    u = await interaction.client.fetch_user(int(uid))
+                if u is not None:
+                    name = u.display_name
+                    av = await avatar_bytes(u)
+            except (discord.HTTPException, ValueError):
+                pass
+        entries.append(
+            {"rank": i + 1, "name": name, "score": int(r["n"]), "avatar": av}
+        )
+    png = await render_leaderboard_card(
+        title="Challenge clears",
+        entries=entries,
+        footer=f"{len(entries)} ranked · completed attempts",
+    )
+    await interaction.followup.send(
+        file=as_discord_file(png, "leaderboard-card.png"),
+    )
 
 
 @challenge_group.command(

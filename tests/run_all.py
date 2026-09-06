@@ -18,6 +18,7 @@ MODULES = (
     "tests.test_verify",
     "tests.test_catalog",
     "tests.test_attempts",
+    "tests.test_challenge_card",
 )
 
 
