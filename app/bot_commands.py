@@ -1868,13 +1868,7 @@ async def challenge_timezone(interaction: discord.Interaction) -> None:
 @challenge_group.command(name="leaderboard", description="Top completers")
 async def challenge_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
-    with db_session() as conn:
-        rows = conn.execute(
-            "SELECT a.discord_id, u.display_name, COUNT(*) AS n "
-            "FROM attempts a LEFT JOIN users u ON u.discord_id=a.discord_id "
-            "WHERE a.status='completed' GROUP BY a.discord_id "
-            "ORDER BY n DESC LIMIT 15"
-        ).fetchall()
+    rows = att_svc.top_completers(15)
     if not rows:
         await interaction.followup.send("No completions yet.")
         return

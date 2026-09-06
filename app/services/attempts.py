@@ -854,6 +854,38 @@ def completion_counts(discord_id: str) -> dict[str, int]:
         return by_tier
 
 
+def failure_count(discord_id: str) -> int:
+    """Lifetime expired attempts (challenge losses on record)."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM attempts "
+            "WHERE discord_id=? AND status='expired'",
+            (str(discord_id),),
+        ).fetchone()
+        return int(row["n"] if row else 0)
+
+
+def total_completions() -> int:
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM attempts WHERE status='completed'"
+        ).fetchone()
+        return int(row["n"] if row else 0)
+
+
+def top_completers(limit: int = 15) -> list[dict[str, Any]]:
+    """All-time clear leaders: discord_id, display_name, n."""
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT a.discord_id, u.display_name, COUNT(*) AS n "
+            "FROM attempts a LEFT JOIN users u ON u.discord_id=a.discord_id "
+            "WHERE a.status='completed' GROUP BY a.discord_id "
+            "ORDER BY n DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # Difficulty ladder for leaderboard row theming
 _TIER_RANK = {
     "easy": 1,

@@ -82,6 +82,17 @@ def list_challenges(year: int | None = None, tier: str | None = None) -> list[di
         return [dict(r) for r in conn.execute(q, args).fetchall()]
 
 
+def challenge_count(year: int | None = None) -> int:
+    q = "SELECT COUNT(*) AS n FROM challenge_defs"
+    args: list[Any] = []
+    if year is not None:
+        q += " WHERE year = ?"
+        args.append(int(year))
+    with db_session() as conn:
+        row = conn.execute(q, args).fetchone()
+        return int(row["n"] if row else 0)
+
+
 def get_challenge(challenge_id: str) -> dict | None:
     with db_session() as conn:
         row = conn.execute(

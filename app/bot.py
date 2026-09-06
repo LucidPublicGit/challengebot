@@ -11,6 +11,7 @@ from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
+from app.services.monthly_digest import run_monthly_digest
 from app.services.rewards import announce
 from app.services.verify import parse_iso
 
@@ -116,6 +117,7 @@ class ChallengeBot(commands.Bot):
     async def setup_hook(self) -> None:
         self.tree.add_command(challenge_group)
         self.expire_loop.start()
+        self.monthly_digest_loop.start()
         settings = get_settings()
         guild_id = settings.discord_guild_id or _runtime().get("guild_id")
         if guild_id:
@@ -248,6 +250,19 @@ class ChallengeBot(commands.Bot):
 
     @expire_loop.before_loop
     async def before_expire(self) -> None:
+        await self.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def monthly_digest_loop(self) -> None:
+        try:
+            kind = await run_monthly_digest(self)
+            if kind:
+                logger.info("Monthly digest: %s", kind)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("monthly digest loop: %s", exc)
+
+    @monthly_digest_loop.before_loop
+    async def before_monthly_digest(self) -> None:
         await self.wait_until_ready()
 
 

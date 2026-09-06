@@ -18,7 +18,8 @@ from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session, get_all_settings
 from app.new_challenger import as_discord_new_challenger, render_new_challenger
 from app.poster import fetch_poster
-from app.services.attempts import completion_counts, display_content
+from app.services.attempts import completion_counts, display_content, failure_count
+from app.shame import format_shame_caption
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,11 @@ async def build_event_card(
         when_bits.append(f"Ended {_discord_when(ends_at_ts, relative=False)}")
     if when_bits:
         caption = f"{caption}\n" + " | ".join(when_bits)
+    # Soft roast on fail / time-out; multi-loss tone from expired attempt count
+    if kind in ("fail", "expired"):
+        uid = getattr(user, "id", None)
+        n = failure_count(str(uid)) if uid is not None else 0
+        caption = f"{caption}\n{format_shame_caption(kind, n)}"
     return png, caption
 
 
