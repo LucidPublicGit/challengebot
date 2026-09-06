@@ -108,9 +108,12 @@ CREATE TABLE IF NOT EXISTS congrats_usage (
 );
 """
 
-# Additive columns for DBs created before content existed.
+# Additive columns for DBs created before content / tz existed.
 _ATTEMPT_MIGRATIONS = (
     ("content", "ALTER TABLE attempts ADD COLUMN content TEXT"),
+)
+_USER_MIGRATIONS = (
+    ("tz_offset", "ALTER TABLE users ADD COLUMN tz_offset TEXT"),
 )
 
 
@@ -127,6 +130,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "WHERE (content IS NULL OR content = '') "
         "AND param IS NOT NULL AND param != ''"
     )
+    ucols = {
+        r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    for name, ddl in _USER_MIGRATIONS:
+        if name not in ucols:
+            conn.execute(ddl)
 
 
 def init_db(path: Optional[str] = None) -> None:

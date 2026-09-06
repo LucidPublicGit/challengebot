@@ -73,6 +73,26 @@ def get_user(discord_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def get_tz_offset(discord_id: str, default: str = "+00:00") -> str:
+    """Saved wall-clock UTC offset for scheduling (e.g. '-07:00')."""
+    user = get_user(discord_id)
+    raw = (user or {}).get("tz_offset") if user else None
+    off = (raw or "").strip() or default
+    return off
+
+
+def set_tz_offset(discord_id: str, offset: str, display_name: str | None = None) -> None:
+    """Remember the offset the user last used for schedule picks."""
+    ensure_user(discord_id, display_name)
+    off = (offset or "").strip() or "+00:00"
+    now = utcnow_iso()
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE users SET tz_offset=?, updated_at=? WHERE discord_id=?",
+            (off, now, discord_id),
+        )
+
+
 def _attempt_join_row(discord_id: str, statuses: tuple[str, ...]) -> dict | None:
     placeholders = ",".join("?" * len(statuses))
     with db_session() as conn:
