@@ -639,6 +639,13 @@ def create_app(bot=None) -> FastAPI:
               <div class="span-2"><label>title</label><input name="title" required/></div>
               <div><label>param_label</label><input name="param_label" placeholder="series / game / …"/></div>
               <div><label>time_limit_hours</label><input name="time_limit_hours" value="24"/></div>
+              <div><label>allows_concurrent</label>
+                <select name="allows_concurrent">
+                  <option value="0">false</option>
+                  <option value="1">true</option>
+                </select>
+                <p class="muted" style="margin:.35rem 0 0">If true, can run beside other open challenges.</p>
+              </div>
               <div class="span-2">
                 <label>Verification</label>
                 {_verify_seg('tadoku')}
@@ -689,6 +696,7 @@ def create_app(bot=None) -> FastAPI:
         param_label: str = Form(""),
         verify: str = Form("tadoku"),
         time_limit_hours: float = Form(24),
+        allows_concurrent: str = Form("0"),
         goal_kind: str = Form(...),
         goal_amount: float = Form(...),
         media_filter: str = Form("any"),
@@ -705,6 +713,7 @@ def create_app(bot=None) -> FastAPI:
                 "param_label": param_label or None,
                 "verify": verify,
                 "time_limit_hours": time_limit_hours,
+                "allows_concurrent": allows_concurrent,
                 "goal_kind": goal_kind,
                 "goal_amount": goal_amount,
                 "media_filter": media_filter,
@@ -732,6 +741,12 @@ def create_app(bot=None) -> FastAPI:
                 <input name="param_label" value="{_esc(c.get('param_label') or '')}"/></div>
               <div><label>time_limit_hours</label>
                 <input name="time_limit_hours" value="{_esc(c['time_limit_hours'])}"/></div>
+              <div><label>allows_concurrent</label>
+                <select name="allows_concurrent">
+                  <option value="0" {'selected' if not int(c.get('allows_concurrent') or 0) else ''}>false</option>
+                  <option value="1" {'selected' if int(c.get('allows_concurrent') or 0) else ''}>true</option>
+                </select>
+              </div>
               <div class="span-2">
                 <label>Verification</label>
                 {_verify_seg(c.get('verify') or 'tadoku')}
@@ -896,6 +911,15 @@ def create_app(bot=None) -> FastAPI:
                   <option value="false" {'selected' if not rt['allow_reattempt'] else ''}>false</option>
                 </select>
               </div>
+              <div><label>Allow honor override</label>
+                <select name="allow_honor_override">
+                  <option value="true" {'selected' if rt.get('allow_honor_override', True) else ''}>true</option>
+                  <option value="false" {'selected' if not rt.get('allow_honor_override', True) else ''}>false</option>
+                </select>
+                <p class="muted" style="margin:.35rem 0 0">
+                  Users may complete Tadoku challenges with filter=<code>honor</code> when logs fail.
+                </p>
+              </div>
               <div><label>Pages / volume</label>
                 <input name="pages_per_volume" value="{_esc(rt['pages_per_volume'])}"/></div>
               <div><label>Minutes / episode</label>
@@ -922,6 +946,7 @@ def create_app(bot=None) -> FastAPI:
         guild_id: str = Form(""),
         admin_role_ids: str = Form(""),
         allow_reattempt: str = Form("true"),
+        allow_honor_override: str = Form("true"),
         pages_per_volume: str = Form("180"),
         episode_minutes: str = Form("24"),
         reward_roles_json: str = Form("{}"),
@@ -942,6 +967,7 @@ def create_app(bot=None) -> FastAPI:
                     "guild_id": guild_id.strip(),
                     "admin_role_ids": admin_role_ids.strip(),
                     "allow_reattempt": allow_reattempt.strip().lower(),
+                    "allow_honor_override": allow_honor_override.strip().lower(),
                     "pages_per_volume": pages_per_volume.strip(),
                     "episode_minutes": episode_minutes.strip(),
                     "reward_roles_json": reward_roles_json.strip() or "{}",

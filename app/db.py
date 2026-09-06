@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS challenge_defs (
   goal_kind TEXT NOT NULL,
   goal_amount REAL NOT NULL,
   media_filter TEXT NOT NULL DEFAULT 'any',
+  allows_concurrent INTEGER NOT NULL DEFAULT 0,
+  fixed_param TEXT,
   UNIQUE(year, tier, number)
 );
 
@@ -113,9 +115,22 @@ _ATTEMPT_MIGRATIONS = (
     ("content", "ALTER TABLE attempts ADD COLUMN content TEXT"),
     # Milestone flags for automatic channel status posts
     ("status_json", "ALTER TABLE attempts ADD COLUMN status_json TEXT"),
+    # Manual Tadoku fixup: {"aliases":[...],"log_ids":[...]}
+    ("fixup_json", "ALTER TABLE attempts ADD COLUMN fixup_json TEXT"),
 )
 _USER_MIGRATIONS = (
     ("tz_offset", "ALTER TABLE users ADD COLUMN tz_offset TEXT"),
+)
+_CHALLENGE_MIGRATIONS = (
+    (
+        "allows_concurrent",
+        "ALTER TABLE challenge_defs ADD COLUMN allows_concurrent "
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "fixed_param",
+        "ALTER TABLE challenge_defs ADD COLUMN fixed_param TEXT",
+    ),
 )
 
 
@@ -137,6 +152,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     }
     for name, ddl in _USER_MIGRATIONS:
         if name not in ucols:
+            conn.execute(ddl)
+    ccols = {
+        r[1] for r in conn.execute("PRAGMA table_info(challenge_defs)").fetchall()
+    }
+    for name, ddl in _CHALLENGE_MIGRATIONS:
+        if name not in ccols:
             conn.execute(ddl)
 
 

@@ -38,6 +38,34 @@ def test_start_requires_param_when_labeled():
         assert "game" in (r.get("error") or "").lower() or "requires" in (
             r.get("error") or ""
         ).lower()
+        ok = att.start_attempt(
+            "u1", tier="easy", number=1, param=None, guild_id="g"
+        )
+        assert ok["ok"] is True, ok
+    finally:
+        cleanup_db(path)
+
+
+def test_fixed_param_one_piece_and_content_edit():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("u_op", "11111111-1111-1111-1111-111111111111")
+        r = att.start_attempt(
+            "u_op", challenge_id="medium-7", param=None, guild_id="g"
+        )
+        assert r["ok"] is True, r
+        assert r.get("param") == "One Piece"
+        aid = int(r["attempt_id"])
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE attempts SET status='expired', content=? WHERE id=?",
+                ("One Piece, Wrong Series", aid),
+            )
+        upd = att.user_update_attempt_content(
+            "u_op", attempt_id=aid, remove="Wrong"
+        )
+        assert upd["ok"] is True
+        assert upd["content"] == "One Piece"
     finally:
         cleanup_db(path)
 
@@ -115,10 +143,72 @@ def test_one_active_and_abandon():
             "u1", tier="easy", number=1, param="Series", guild_id="g"
         )
         assert r2["ok"] is False
-        assert "already" in (r2.get("error") or "").lower()
+        assert "already" in (r2.get("error") or "").lower() or "exclusive" in (
+            r2.get("error") or ""
+        ).lower()
         ab = att.abandon_attempt("u1")
         assert ab["ok"] is True
         assert att.active_attempt("u1") is None
+    finally:
+        cleanup_db(path)
+
+
+def test_concurrent_long_with_exclusive():
+    path = setup_tmp_db()
+    try:
+        from app.catalog import get_challenge
+
+        att.link_tadoku("u_conc", "11111111-1111-1111-1111-111111111111")
+        ch = get_challenge("medium-6")
+        assert att.challenge_allows_concurrent(ch)
+
+        # long window alone is not enough — flag required
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE challenge_defs SET allows_concurrent=0 WHERE id='medium-6'"
+            )
+        short = att.start_attempt(
+            "u_conc", tier="easy", number=4, param="Game", guild_id="g"
+        )
+        assert short["ok"] is True, short
+        blocked_long = att.start_attempt(
+            "u_conc",
+            challenge_id="medium-6",
+            param="Dragon Ball",
+            guild_id="g",
+        )
+        assert blocked_long["ok"] is False
+
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE challenge_defs SET allows_concurrent=1 WHERE id='medium-6'"
+            )
+        long = att.start_attempt(
+            "u_conc",
+            challenge_id="medium-6",
+            param="Dragon Ball",
+            guild_id="g",
+        )
+        assert long["ok"] is True, long
+        assert len(att.active_attempts("u_conc")) == 2
+        blocked = att.start_attempt(
+            "u_conc", tier="easy", number=1, param="Series", guild_id="g"
+        )
+        assert blocked["ok"] is False
+        ab = att.abandon_attempt("u_conc", attempt_id=int(short["attempt_id"]))
+        assert ab["ok"] is True
+        left = att.active_attempts("u_conc")
+        assert len(left) == 1
+        assert left[0]["challenge_id"] == "medium-6"
+        conf = _run(
+            att.confirm_attempt(
+                "u_conc",
+                attempt_id=int(long["attempt_id"]),
+                note="finished DB",
+            )
+        )
+        assert conf["ok"] is True, conf
+        assert att.active_attempts("u_conc") == []
     finally:
         cleanup_db(path)
 
@@ -144,6 +234,68 @@ def test_honor_confirm():
         assert result["ok"] is True
         assert result.get("method") == "honor"
         assert att.active_attempt("u3") is None
+    finally:
+        cleanup_db(path)
+
+
+def test_honor_override_and_match_fixup():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("u_ho", "11111111-1111-1111-1111-111111111111")
+        r = att.start_attempt(
+            "u_ho", tier="easy", number=4, param="Game X", guild_id="g"
+        )
+        assert r["ok"]
+        aid = int(r["attempt_id"])
+        # save alias + fake log id for later confirms
+        fix = att.user_update_attempt_content(
+            "u_ho",
+            attempt_id=aid,
+            aliases="GameX, GX",
+            log_ids="log-1, log-2",
+        )
+        assert fix["ok"]
+        assert "GameX" in fix["aliases"]
+        assert "log-1" in fix["log_ids"]
+
+        # tadoku would fail without logs — honor override works
+        conf = _run(
+            att.confirm_attempt(
+                "u_ho",
+                attempt_id=aid,
+                honor_override=True,
+                content="Game X (manual)",
+            )
+        )
+        assert conf["ok"] is True, conf
+        assert conf.get("method") == "honor_override"
+        assert conf.get("content") == "Game X (manual)"
+    finally:
+        cleanup_db(path)
+
+
+def test_failoverride_disabled_setting():
+    path = setup_tmp_db()
+    try:
+        from app.db import db_session, set_setting
+
+        att.link_tadoku("u_fo", "11111111-1111-1111-1111-111111111111")
+        r = att.start_attempt(
+            "u_fo", tier="easy", number=4, param="Game", guild_id="g"
+        )
+        assert r["ok"]
+        with db_session() as conn:
+            set_setting(conn, "allow_honor_override", "false")
+        conf = _run(
+            att.confirm_attempt(
+                "u_fo",
+                attempt_id=int(r["attempt_id"]),
+                honor_override=True,
+                content="nope",
+            )
+        )
+        assert conf["ok"] is False
+        assert "disabled" in (conf.get("error") or "").lower()
     finally:
         cleanup_db(path)
 

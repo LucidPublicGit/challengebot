@@ -244,18 +244,72 @@ async def _run_confirm(
     interaction: discord.Interaction,
     *,
     note: str | None = None,
+    content: str | None = None,
+    filter_mode: str | None = None,
+    exclude: str | None = None,
+    aliases: str | None = None,
+    log_ids: str | None = None,
+    attempt_id: int | None = None,
 ) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True)
-    result = await att_svc.confirm_attempt(str(interaction.user.id), note=note)
+    ignore_param = False
+    param_override = None
+    honor_override = False
+    fm = (filter_mode or "").strip()
+    if fm:
+        low = fm.lower()
+        if low in ("all", "*", "-", "any", "none", "clear"):
+            ignore_param = True
+        elif low in ("honor", "honour", "manual", "override"):
+            honor_override = True
+        else:
+            param_override = fm
+    result = await att_svc.confirm_attempt(
+        str(interaction.user.id),
+        note=note,
+        content=content,
+        ignore_param=ignore_param,
+        param_override=param_override,
+        exclude=exclude,
+        aliases=aliases,
+        log_ids=log_ids,
+        honor_override=honor_override,
+        attempt_id=attempt_id,
+    )
     if not result.get("ok"):
         msg = result.get("error") or "Not completed."
         if result.get("progress"):
             msg += f"\nProgress: {result['progress']}"
         if result.get("log_count") is not None:
             msg += f"\nLogs seen in window: {result['log_count']}"
-        await interaction.followup.send(msg, ephemeral=True)
         att = result.get("attempt")
+        aid = int(att["id"]) if att and att.get("id") is not None else attempt_id
+        # Always point at hard user backdoor when override is allowed
+        from app.config import get_settings, merge_runtime
+        from app.db import db_session, get_all_settings
+
+        with db_session() as conn:
+            rt = merge_runtime(get_settings(), get_all_settings(conn))
+        view = None
+        if rt.get("allow_honor_override", True) and aid is not None:
+            msg += (
+                "\n\n**Mistake / Tadoku miss?** "
+                f"`/challenge failoverride` (attempt `{aid}`) — "
+                "honor complete without Tadoku (no admin needed)."
+            )
+            hint = content
+            if att:
+                hint = content or att_svc.display_content(att)
+            view = FailOverridePromptView(
+                interaction.user.id,
+                attempt_id=int(aid),
+                content_hint=hint,
+            )
+        kw: dict = {"content": msg[:1900], "ephemeral": True}
+        if view:
+            kw["view"] = view
+        await interaction.followup.send(**kw)
         if att and result.get("verify") is not None:
             await announce(
                 interaction.client,
@@ -316,8 +370,12 @@ async def _run_confirm(
     )
 
 
-async def _run_abandon(interaction: discord.Interaction) -> None:
-    result = att_svc.abandon_attempt(str(interaction.user.id))
+async def _run_abandon(
+    interaction: discord.Interaction, *, attempt_id: int | None = None
+) -> None:
+    result = att_svc.abandon_attempt(
+        str(interaction.user.id), attempt_id=attempt_id
+    )
     if not result.get("ok"):
         msg = result.get("error") or "Nope"
         if interaction.response.is_done():
@@ -1260,30 +1318,43 @@ class ListTierView(TierPickView):
 
 
 class StatusActionsView(_OwnerView):
-    def __init__(self, owner_id: int, *, has_active: bool) -> None:
+    def __init__(
+        self,
+        owner_id: int,
+        *,
+        has_active: bool,
+        attempt_id: int | None = None,
+        param: str | None = None,
+        content: str | None = None,
+        aliases: str | None = None,
+        log_ids: str | None = None,
+    ) -> None:
         super().__init__(owner_id)
+        self.attempt_id = attempt_id
+        self.param = param
+        self.content = content
+        self.aliases = aliases
+        self.log_ids = log_ids
         if has_active:
             confirm = discord.ui.Button(
-                label="Confirm complete",
+                label="Confirm…",
                 style=discord.ButtonStyle.success,
-                row=0,
-            )
-            note = discord.ui.Button(
-                label="Confirm + note…",
-                style=discord.ButtonStyle.primary,
                 row=0,
             )
 
             async def _confirm(interaction: discord.Interaction) -> None:
-                await _run_confirm(interaction)
-
-            async def _note(interaction: discord.Interaction) -> None:
-                await interaction.response.send_modal(ConfirmNoteModal())
+                await interaction.response.send_modal(
+                    ConfirmDetailsModal(
+                        attempt_id=self.attempt_id,
+                        param=self.param,
+                        content=self.content,
+                        aliases=self.aliases,
+                        log_ids=self.log_ids,
+                    )
+                )
 
             confirm.callback = _confirm  # type: ignore[method-assign]
-            note.callback = _note  # type: ignore[method-assign]
             self.add_item(confirm)
-            self.add_item(note)
 
         abandon = discord.ui.Button(
             label="Abandon / cancel",
@@ -1292,7 +1363,7 @@ class StatusActionsView(_OwnerView):
         )
 
         async def _abandon(interaction: discord.Interaction) -> None:
-            view = AbandonConfirmView(self.owner_id)
+            view = AbandonConfirmView(self.owner_id, attempt_id=self.attempt_id)
             await interaction.response.send_message(
                 "Really abandon your current challenge?",
                 view=view,
@@ -1303,48 +1374,151 @@ class StatusActionsView(_OwnerView):
         self.add_item(abandon)
 
 
-class ConfirmNoteModal(discord.ui.Modal, title="Confirm with note"):
-    note = discord.ui.TextInput(
-        label="Note (optional spirit / honor)",
-        required=False,
-        max_length=200,
-        style=discord.TextStyle.paragraph,
-    )
+class FailOverridePromptView(_OwnerView):
+    """Shown after a failed confirm — opens hard honor override modal."""
+
+    def __init__(
+        self,
+        owner_id: int,
+        *,
+        attempt_id: int,
+        content_hint: str | None = None,
+    ) -> None:
+        super().__init__(owner_id, timeout=300)
+        self.attempt_id = int(attempt_id)
+        self.content_hint = content_hint
+        btn = discord.ui.Button(
+            label="Fail override (honor)…",
+            style=discord.ButtonStyle.danger,
+            row=0,
+        )
+
+        async def _go(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(
+                FailOverrideModal(
+                    attempt_id=self.attempt_id,
+                    content_hint=self.content_hint,
+                )
+            )
+
+        btn.callback = _go  # type: ignore[method-assign]
+        self.add_item(btn)
+
+
+class FailOverrideModal(discord.ui.Modal, title="Fail override (honor)"):
+    """Hard user backdoor: complete without Tadoku."""
+
+    def __init__(
+        self,
+        *,
+        attempt_id: int,
+        content_hint: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.attempt_id = int(attempt_id)
+        self.content_in = discord.ui.TextInput(
+            label="What you completed (required)",
+            placeholder="Series / URL / works — recorded on the clear",
+            default=(content_hint or "")[:100],
+            required=True,
+            max_length=200,
+        )
+        self.note_in = discord.ui.TextInput(
+            label="Why override? (optional)",
+            placeholder="e.g. Tadoku title misspelled / API down",
+            required=False,
+            max_length=200,
+            style=discord.TextStyle.paragraph,
+        )
+        self.add_item(self.content_in)
+        self.add_item(self.note_in)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await _run_confirm(
             interaction,
-            note=str(self.note.value).strip() or None,
+            content=str(self.content_in.value).strip() or None,
+            note=str(self.note_in.value).strip() or None,
+            filter_mode="honor",
+            attempt_id=self.attempt_id,
         )
 
 
-class ConfirmView(_OwnerView):
-    @discord.ui.button(label="Confirm complete", style=discord.ButtonStyle.success)
-    async def go(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+class ConfirmDetailsModal(discord.ui.Modal, title="Confirm challenge"):
+    def __init__(
+        self,
+        *,
+        attempt_id: int | None = None,
+        param: str | None = None,
+        content: str | None = None,
+        aliases: str | None = None,
+        log_ids: str | None = None,
     ) -> None:
-        await _run_confirm(interaction)
+        super().__init__()
+        self.attempt_id = attempt_id
+        self.content_in = discord.ui.TextInput(
+            label="Content completed (series / URL / works)",
+            placeholder="What you finished — required for honor override",
+            default=(content or param or "")[:100],
+            required=False,
+            max_length=200,
+        )
+        self.filter_in = discord.ui.TextInput(
+            label="Filter: blank keep · all · honor · name",
+            placeholder="honor = skip Tadoku (backdoor)",
+            # Don't prefill focus — blank keeps stored param
+            default="",
+            required=False,
+            max_length=100,
+        )
+        self.aliases_in = discord.ui.TextInput(
+            label="Extra match aliases (comma)",
+            placeholder="OnePiecee, ワンピース — links misspelled Tadoku titles",
+            default=(aliases or "")[:100],
+            required=False,
+            max_length=150,
+        )
+        self.log_ids_in = discord.ui.TextInput(
+            label="Force-include Tadoku log ids",
+            placeholder="From /challenge logs — comma-separated",
+            default=(log_ids or "")[:100],
+            required=False,
+            max_length=200,
+        )
+        self.exclude_in = discord.ui.TextInput(
+            label="Exclude series (comma)",
+            placeholder="Drop wrong titles from count + labels",
+            required=False,
+            max_length=100,
+        )
+        self.add_item(self.content_in)
+        self.add_item(self.filter_in)
+        self.add_item(self.aliases_in)
+        self.add_item(self.log_ids_in)
+        self.add_item(self.exclude_in)
 
-    @discord.ui.button(label="Add note…", style=discord.ButtonStyle.primary)
-    async def note(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await interaction.response.send_modal(ConfirmNoteModal())
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await interaction.response.edit_message(content="Cancelled.", view=None)
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _run_confirm(
+            interaction,
+            content=str(self.content_in.value).strip() or None,
+            filter_mode=str(self.filter_in.value).strip() or None,
+            aliases=str(self.aliases_in.value).strip() or None,
+            log_ids=str(self.log_ids_in.value).strip() or None,
+            exclude=str(self.exclude_in.value).strip() or None,
+            attempt_id=self.attempt_id,
+        )
 
 
 class AbandonConfirmView(_OwnerView):
+    def __init__(self, owner_id: int, *, attempt_id: int | None = None) -> None:
+        super().__init__(owner_id)
+        self.attempt_id = attempt_id
+
     @discord.ui.button(label="Yes, abandon", style=discord.ButtonStyle.danger)
     async def yes(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _run_abandon(interaction)
+        await _run_abandon(interaction, attempt_id=self.attempt_id)
         try:
             await interaction.edit_original_response(content="Done.", view=None)
         except discord.HTTPException:
@@ -1651,24 +1825,7 @@ class StartTimezoneGateView(_OwnerView):
 
 @challenge_group.command(name="start", description="Start or schedule a challenge")
 async def challenge_start(interaction: discord.Interaction) -> None:
-    open_att = att_svc.open_attempt(str(interaction.user.id))
-    b = _bot_helpers()
-    if open_att:
-        if open_att.get("status") == "scheduled":
-            when = b._ts(open_att["started_at"])
-            await interaction.response.send_message(
-                f"You already scheduled **{open_att['title']}** "
-                f"(starts <t:{when}:R>). Use `/challenge abandon` to cancel.",
-                ephemeral=True,
-            )
-            return
-        ends = b._ts(open_att["ends_at"])
-        await interaction.response.send_message(
-            f"You already have **{open_att['title']}** (ends <t:{ends}:R>). "
-            f"Abandon first if you want a new one.",
-            ephemeral=True,
-        )
-        return
+    # Long concurrent challenges may run beside others; start_attempt enforces rules.
     year = _catalog_year()
     guild_id = str(interaction.guild_id) if interaction.guild_id else None
     att_svc.ensure_user(str(interaction.user.id), interaction.user.display_name)
@@ -1716,14 +1873,60 @@ async def challenge_status(
     await interaction.response.defer(ephemeral=self_view)
 
     tid = str(target.id)
-    active = att_svc.active_attempt(tid)
-    scheduled = att_svc.scheduled_attempt(tid)
+    actives = att_svc.active_attempts(tid)
+    scheduleds = att_svc.scheduled_attempts(tid)
+    active = actives[0] if actives else None
+    scheduled = scheduleds[0] if scheduleds else None
     recent = att_svc.list_attempts(discord_id=tid, limit=8) if self_view else []
     lines: list[str] = []
     files: list[discord.File] = []
     card_kind = "status"
+    open_ids = {int(a["id"]) for a in actives + scheduleds}
 
-    if active:
+    if len(actives) + len(scheduleds) > 1 and self_view:
+        bits = []
+        for a in actives + scheduleds:
+            conc = (
+                " · concurrent"
+                if att_svc.challenge_allows_concurrent(a)
+                else ""
+            )
+            focus = att_svc.display_content(a)
+            focus_s = f" · _{focus}_" if focus else ""
+            if a.get("status") == "scheduled":
+                when = b._ts(a["started_at"])
+                bits.append(
+                    f"`#{a['id']}` scheduled **{a['title']}**{focus_s}{conc} "
+                    f"(starts <t:{when}:R>)"
+                )
+            else:
+                ends = b._ts(a["ends_at"])
+                bits.append(
+                    f"`#{a['id']}` active **{a['title']}**{focus_s}{conc} "
+                    f"(ends <t:{ends}:R>)"
+                )
+        lines.append("**Open challenges**\n" + "\n".join(bits))
+        lines.append(
+            "Confirm/abandon: `/challenge confirm attempt_id:` or "
+            "`/challenge abandon attempt_id:`"
+        )
+        if active:
+            ends = b._ts(active["ends_at"])
+            png, caption = await build_event_card(
+                kind="active",
+                user=target,
+                title=active["title"],
+                tier=active["tier"],
+                number=int(active["number"]),
+                param=active.get("param"),
+                content=att_svc.display_content(active),
+                ends_at_ts=ends,
+                detail=b.confirm_howto(active),
+                media_filter=active.get("media_filter"),
+            )
+            files.append(as_discord_file(png, "active-card.png"))
+            card_kind = "active"
+    elif active:
         ends = b._ts(active["ends_at"])
         detail = b.confirm_howto(active) if self_view else f"Ends <t:{ends}:R>"
         png, caption = await build_event_card(
@@ -1761,7 +1964,6 @@ async def challenge_status(
         )
         files.append(as_discord_file(png, "scheduled-card.png"))
         card_kind = "scheduled"
-        # caption already has viewer-local <t:F> / <t:R>
         if self_view:
             lines.append(f"{caption}\n`/challenge abandon` to cancel.")
         else:
@@ -1770,14 +1972,14 @@ async def challenge_status(
         if self_view:
             lines.append("**No open challenge.** Use `/challenge start`.")
         else:
-            lines.append(f"**{target.display_name}** has no active or scheduled challenge.")
+            lines.append(
+                f"**{target.display_name}** has no active or scheduled challenge."
+            )
 
     if self_view:
         past = []
         for a in recent:
-            if active and a["id"] == active["id"]:
-                continue
-            if scheduled and a["id"] == scheduled["id"]:
+            if int(a["id"]) in open_ids:
                 continue
             content = att_svc.display_content(a)
             focus = f" · _{content}_" if content else ""
@@ -1796,8 +1998,26 @@ async def challenge_status(
         lines.append(tadoku)
 
     view = None
-    if self_view and (active or scheduled):
-        view = StatusActionsView(interaction.user.id, has_active=bool(active))
+    # Single open → action buttons; multi → use attempt_id on slash cmds
+    if self_view and len(actives) + len(scheduleds) == 1:
+        only = active or scheduled
+        fix = {}
+        if only and only.get("fixup_json"):
+            try:
+                import json as _json
+
+                fix = _json.loads(only["fixup_json"]) or {}
+            except Exception:
+                fix = {}
+        view = StatusActionsView(
+            interaction.user.id,
+            has_active=bool(active),
+            attempt_id=int(only["id"]) if only else None,
+            param=(only or {}).get("param"),
+            content=att_svc.display_content(only) if only else None,
+            aliases=", ".join(fix.get("aliases") or []),
+            log_ids=", ".join(fix.get("log_ids") or []),
+        )
 
     kwargs: dict = {
         "content": "\n".join(lines)[:1900],
@@ -1814,44 +2034,243 @@ async def challenge_status(
 
 
 @challenge_group.command(name="confirm", description="Confirm your active challenge")
-async def challenge_confirm(interaction: discord.Interaction) -> None:
-    active = att_svc.active_attempt(str(interaction.user.id))
-    if not active:
-        scheduled = att_svc.scheduled_attempt(str(interaction.user.id))
-        if scheduled:
-            b = _bot_helpers()
-            when = b._ts(scheduled["started_at"])
-            await interaction.response.send_message(
-                f"**{scheduled['title']}** starts <t:{when}:R> — can’t confirm yet.",
-                ephemeral=True,
-            )
-            return
+@app_commands.describe(
+    attempt_id="Attempt id when you have more than one open challenge",
+)
+async def challenge_confirm(
+    interaction: discord.Interaction,
+    attempt_id: Optional[int] = None,
+) -> None:
+    uid = str(interaction.user.id)
+    picked = att_svc.resolve_user_attempt(
+        uid, attempt_id=attempt_id, statuses=("active",)
+    )
+    if not picked.get("ok"):
+        # scheduled-only path
+        if attempt_id is None and not att_svc.active_attempts(uid):
+            scheduleds = att_svc.scheduled_attempts(uid)
+            if scheduleds:
+                b = _bot_helpers()
+                if len(scheduleds) == 1:
+                    when = b._ts(scheduleds[0]["started_at"])
+                    await interaction.response.send_message(
+                        f"**{scheduleds[0]['title']}** starts <t:{when}:R> — "
+                        "can’t confirm yet.",
+                        ephemeral=True,
+                    )
+                    return
         await interaction.response.send_message(
-            "No active challenge.", ephemeral=True
+            picked.get("error") or "No active challenge.",
+            ephemeral=True,
         )
         return
-    b = _bot_helpers()
-    view = ConfirmView(interaction.user.id)
+    active = picked["attempt"]
+    fix: dict = {}
+    if active.get("fixup_json"):
+        try:
+            import json as _json
+
+            fix = _json.loads(active["fixup_json"]) or {}
+        except Exception:
+            fix = {}
+    await interaction.response.send_modal(
+        ConfirmDetailsModal(
+            attempt_id=int(active["id"]),
+            param=active.get("param"),
+            content=att_svc.display_content(active),
+            aliases=", ".join(fix.get("aliases") or []),
+            log_ids=", ".join(fix.get("log_ids") or []),
+        )
+    )
+
+
+@challenge_group.command(
+    name="content",
+    description="Set or clean content labels on your attempt (incl. failed)",
+)
+@app_commands.describe(
+    content="Replace content label (what you completed)",
+    remove="Comma-separated series to strip from current content",
+    param="Set Tadoku focus filter (active/scheduled)",
+    clear_param="Clear Tadoku focus filter",
+    attempt_id="Attempt id (default: latest)",
+)
+async def challenge_content(
+    interaction: discord.Interaction,
+    content: str = "",
+    remove: str = "",
+    param: str = "",
+    clear_param: bool = False,
+    attempt_id: Optional[int] = None,
+) -> None:
+    if not content and not remove and not param and not clear_param:
+        await interaction.response.send_message(
+            "Provide `content`, `remove`, `param`, and/or `clear_param`.",
+            ephemeral=True,
+        )
+        return
+    result = att_svc.user_update_attempt_content(
+        str(interaction.user.id),
+        attempt_id=attempt_id,
+        content=content if content else None,
+        remove=remove or None,
+        param=param if param else None,
+        clear_param=clear_param,
+    )
+    if not result.get("ok"):
+        await interaction.response.send_message(
+            result.get("error") or "Update failed.", ephemeral=True
+        )
+        return
     await interaction.response.send_message(
-        f"Confirm **{active['tier']} #{active['number']}: {active['title']}**?\n"
-        f"{b.confirm_howto(active)}",
-        view=view,
+        f"Updated **{result.get('title')}** `#{result.get('attempt_id')}`\n"
+        f"content: `{result.get('content') or '—'}`\n"
+        f"focus filter: `{result.get('param') or '—'}`",
         ephemeral=True,
     )
-    view.message = await interaction.original_response()
 
 
-@challenge_group.command(name="abandon", description="Abandon active or scheduled challenge")
-async def challenge_abandon(interaction: discord.Interaction) -> None:
-    open_att = att_svc.open_attempt(str(interaction.user.id))
-    if not open_att:
+@challenge_group.command(
+    name="failoverride",
+    description="Honor-complete when Tadoku fails (no admin) — use after a failed confirm",
+)
+@app_commands.describe(
+    content="What you completed (series / URL / works) — required",
+    note="Why override (optional)",
+    attempt_id="Attempt id when you have more than one active",
+)
+async def challenge_failoverride(
+    interaction: discord.Interaction,
+    content: str,
+    note: str = "",
+    attempt_id: Optional[int] = None,
+) -> None:
+    content = (content or "").strip()
+    if not content:
         await interaction.response.send_message(
-            "Nothing to abandon.", ephemeral=True
+            "`content` is required (what you finished).",
+            ephemeral=True,
         )
         return
-    view = AbandonConfirmView(interaction.user.id)
+    # Open as confirm with honor filter so rewards/announce share one path
+    await interaction.response.defer(ephemeral=True)
+    await _run_confirm(
+        interaction,
+        content=content,
+        note=(note or "").strip() or None,
+        filter_mode="honor",
+        attempt_id=attempt_id,
+    )
+
+
+@challenge_group.command(
+    name="match",
+    description="Link misspelled Tadoku titles or specific log ids to your attempt",
+)
+@app_commands.describe(
+    aliases="Comma-separated alternate titles (e.g. OnePiecee, ワンピース)",
+    log_ids="Comma-separated Tadoku log ids to force-include",
+    clear="Clear saved aliases and log ids",
+    attempt_id="Attempt id (default: latest open)",
+)
+async def challenge_match(
+    interaction: discord.Interaction,
+    aliases: str = "",
+    log_ids: str = "",
+    clear: bool = False,
+    attempt_id: Optional[int] = None,
+) -> None:
+    if not clear and not aliases and not log_ids:
+        await interaction.response.send_message(
+            "Provide `aliases`, `log_ids`, and/or `clear`. "
+            "Use `/challenge logs` to copy ids.",
+            ephemeral=True,
+        )
+        return
+    result = att_svc.user_update_attempt_content(
+        str(interaction.user.id),
+        attempt_id=attempt_id,
+        aliases=aliases if aliases or clear else None,
+        log_ids=log_ids if log_ids or clear else None,
+        clear_fixup=clear,
+    )
+    if not result.get("ok"):
+        await interaction.response.send_message(
+            result.get("error") or "Update failed.", ephemeral=True
+        )
+        return
     await interaction.response.send_message(
-        f"Abandon **{open_att.get('title')}** (`{open_att.get('status')}`)?",
+        f"Match fixup on **{result.get('title')}** `#{result.get('attempt_id')}`\n"
+        f"aliases: `{', '.join(result.get('aliases') or []) or '—'}`\n"
+        f"log ids: `{', '.join(result.get('log_ids') or []) or '—'}`",
+        ephemeral=True,
+    )
+
+
+@challenge_group.command(
+    name="logs",
+    description="Show Tadoku logs in your active window (for match fixup)",
+)
+@app_commands.describe(attempt_id="Attempt id when you have several active")
+async def challenge_logs(
+    interaction: discord.Interaction,
+    attempt_id: Optional[int] = None,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    result = await att_svc.preview_attempt_logs(
+        str(interaction.user.id), attempt_id=attempt_id
+    )
+    if not result.get("ok"):
+        await interaction.followup.send(
+            result.get("error") or "No logs.", ephemeral=True
+        )
+        return
+    att = result["attempt"]
+    lines = [
+        f"**{att.get('title')}** `#{att.get('id')}` · "
+        f"{result.get('log_count', 0)} logs in window",
+        f"Focus: `{result.get('param') or '—'}` · "
+        f"aliases: `{', '.join(result.get('aliases') or []) or '—'}`",
+    ]
+    for row in result.get("logs") or []:
+        amt = row.get("amount")
+        unit = row.get("unit") or ""
+        lines.append(
+            f"`{row.get('id')}` · {row.get('series') or '—'} "
+            f"({amt} {unit})".strip()
+        )
+    lines.append("Copy ids into `/challenge match log_ids:` or confirm modal.")
+    await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
+
+
+@challenge_group.command(
+    name="abandon", description="Abandon active or scheduled challenge"
+)
+@app_commands.describe(
+    attempt_id="Attempt id when you have more than one open challenge",
+)
+async def challenge_abandon(
+    interaction: discord.Interaction,
+    attempt_id: Optional[int] = None,
+) -> None:
+    picked = att_svc.resolve_user_attempt(
+        str(interaction.user.id),
+        attempt_id=attempt_id,
+        statuses=("active", "scheduled"),
+    )
+    if not picked.get("ok"):
+        await interaction.response.send_message(
+            picked.get("error") or "Nothing to abandon.",
+            ephemeral=True,
+        )
+        return
+    open_att = picked["attempt"]
+    view = AbandonConfirmView(
+        interaction.user.id, attempt_id=int(open_att["id"])
+    )
+    await interaction.response.send_message(
+        f"Abandon **{open_att.get('title')}** "
+        f"(`{open_att.get('status')}`, `#{open_att['id']}`)?",
         view=view,
         ephemeral=True,
     )

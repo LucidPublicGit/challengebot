@@ -5,7 +5,7 @@ challenges:
     tier: easy
     number: 1
     title: Manga Mini-Marathon
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
@@ -17,7 +17,7 @@ challenges:
     tier: easy
     number: 2
     title: Anime Sprint
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
@@ -29,7 +29,7 @@ challenges:
     tier: easy
     number: 3
     title: YouTube Deep Dive
-    param_label: creator / topic
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: minutes
@@ -49,12 +49,26 @@ challenges:
     media_filter: vn
     description: Read at least 30,000 Japanese characters from a visual novel in one day.
 
+  - id: easy-5
+    tier: easy
+    number: 5
+    title: JP Progress Video
+    param_label: null
+    time_limit_hours: 720
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: any
+    description: >-
+      Make a Japanese progress-update video and publish it on YouTube.
+      On confirm, enter the YouTube URL as content.
+
   # Medium
   - id: medium-1
     tier: medium
     number: 1
     title: Manga 10
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
@@ -66,7 +80,7 @@ challenges:
     tier: medium
     number: 2
     title: Anime 15
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
@@ -78,7 +92,7 @@ challenges:
     tier: medium
     number: 3
     title: YouTube Workday
-    param_label: creator / topic
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: minutes
@@ -98,6 +112,68 @@ challenges:
     media_filter: vn
     description: Read at least 50,000 Japanese characters from a visual novel in one day.
 
+  - id: medium-5
+    tier: medium
+    number: 5
+    title: "歴史の漫画"
+    param_label: series
+    time_limit_hours: 8760
+    allows_concurrent: true
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: manga
+    description: >-
+      Complete at least one full history manga series from the club-resources
+      history list within one year. May run concurrent with other challenges.
+
+  - id: medium-6
+    tier: medium
+    number: 6
+    title: "鳥山明先生の作品"
+    param_label: series
+    time_limit_hours: 8760
+    allows_concurrent: true
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: manga
+    description: >-
+      Complete at least one full manga series by Toriyama Akira within one year.
+      May run concurrent with other challenges.
+
+  - id: medium-7
+    tier: medium
+    number: 7
+    title: One Piece
+    param_label: null
+    fixed_param: One Piece
+    time_limit_hours: 4380
+    allows_concurrent: true
+    verify: tadoku
+    goal_kind: volumes
+    goal_amount: 55
+    media_filter: manga
+    description: >-
+      Read at least 55 One Piece volumes within six months. May be taken twice
+      for catch-up; negotiate fewer volumes for a shorter window with an admin.
+      May run concurrent with other challenges. Tadoku filter is fixed to One Piece.
+
+  - id: medium-8
+    tier: medium
+    number: 8
+    title: "楳図かずお先生の作品"
+    param_label: series
+    time_limit_hours: 8760
+    allows_concurrent: true
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: manga
+    description: >-
+      Complete at least one full manga series by Umezu Kazuo within one year.
+      May run concurrent with other challenges.
+
   # Hard
   - id: hard-1
     tier: hard
@@ -115,7 +191,7 @@ challenges:
     tier: hard
     number: 2
     title: Manga 15
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
@@ -127,7 +203,7 @@ challenges:
     tier: hard
     number: 3
     title: Anime 20
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
@@ -164,7 +240,7 @@ challenges:
     tier: ota_master
     number: 1
     title: 200k Reading Day
-    param_label: work(s)
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: characters
@@ -176,7 +252,7 @@ challenges:
     tier: ota_master
     number: 2
     title: Manga 25
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
@@ -188,7 +264,7 @@ challenges:
     tier: ota_master
     number: 3
     title: Anime 30
-    param_label: series
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes

@@ -93,36 +93,122 @@ def set_tz_offset(discord_id: str, offset: str, display_name: str | None = None)
         )
 
 
-def _attempt_join_row(discord_id: str, statuses: tuple[str, ...]) -> dict | None:
+def _attempt_join_rows(
+    discord_id: str, statuses: tuple[str, ...]
+) -> list[dict]:
     placeholders = ",".join("?" * len(statuses))
     with db_session() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
-            "c.goal_amount, c.media_filter, c.param_label "
+            "c.goal_amount, c.media_filter, c.param_label, c.time_limit_hours, "
+            "c.allows_concurrent "
             "FROM attempts a JOIN challenge_defs c ON c.id = a.challenge_id "
             f"WHERE a.discord_id=? AND a.status IN ({placeholders}) "
-            "ORDER BY a.id DESC LIMIT 1",
+            "ORDER BY a.id DESC",
             (discord_id, *statuses),
-        ).fetchone()
-        return dict(row) if row else None
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def _attempt_join_row(discord_id: str, statuses: tuple[str, ...]) -> dict | None:
+    rows = _attempt_join_rows(discord_id, statuses)
+    return rows[0] if rows else None
+
+
+def challenge_allows_concurrent(ch: dict | None) -> bool:
+    """True when challenge_defs.allows_concurrent is set (opt-in long-term)."""
+    if not ch:
+        return False
+    raw = ch.get("allows_concurrent")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
+def active_attempts(discord_id: str) -> list[dict]:
+    activate_due_scheduled()
+    expire_overdue()
+    return _attempt_join_rows(discord_id, ("active",))
+
+
+def scheduled_attempts(discord_id: str) -> list[dict]:
+    activate_due_scheduled()
+    return _attempt_join_rows(discord_id, ("scheduled",))
+
+
+def open_attempts(discord_id: str) -> list[dict]:
+    activate_due_scheduled()
+    expire_overdue()
+    return _attempt_join_rows(discord_id, ("active", "scheduled"))
 
 
 def active_attempt(discord_id: str) -> dict | None:
-    activate_due_scheduled()
-    expire_overdue()
-    return _attempt_join_row(discord_id, ("active",))
+    """Newest exclusive active, else newest active (compat single-slot helpers)."""
+    acts = active_attempts(discord_id)
+    if not acts:
+        return None
+    exclusive = [a for a in acts if not challenge_allows_concurrent(a)]
+    return exclusive[0] if exclusive else acts[0]
 
 
 def scheduled_attempt(discord_id: str) -> dict | None:
-    activate_due_scheduled()
-    return _attempt_join_row(discord_id, ("scheduled",))
+    rows = scheduled_attempts(discord_id)
+    return rows[0] if rows else None
 
 
 def open_attempt(discord_id: str) -> dict | None:
-    """Active or scheduled (blocks starting another)."""
-    activate_due_scheduled()
-    expire_overdue()
-    return _attempt_join_row(discord_id, ("active", "scheduled"))
+    """Newest exclusive open, else newest open."""
+    opens = open_attempts(discord_id)
+    if not opens:
+        return None
+    exclusive = [a for a in opens if not challenge_allows_concurrent(a)]
+    return exclusive[0] if exclusive else opens[0]
+
+
+def _format_open_list(rows: list[dict]) -> str:
+    parts = []
+    for a in rows:
+        focus = display_content(a)
+        bit = f"`#{a['id']}` {a.get('tier')} #{a.get('number')} **{a.get('title')}**"
+        if focus:
+            bit += f" · _{focus}_"
+        bit += f" (`{a.get('status')}`)"
+        parts.append(bit)
+    return "\n".join(parts)
+
+
+def resolve_user_attempt(
+    discord_id: str,
+    *,
+    attempt_id: int | None = None,
+    statuses: tuple[str, ...] = ("active", "scheduled"),
+) -> dict[str, Any]:
+    """Pick one open attempt; require id when several match."""
+    rows = _attempt_join_rows(discord_id, statuses)
+    if attempt_id is not None:
+        for a in rows:
+            if int(a["id"]) == int(attempt_id):
+                return {"ok": True, "attempt": a}
+        return {
+            "ok": False,
+            "error": f"No open attempt `#{attempt_id}` for you.",
+        }
+    if not rows:
+        return {"ok": False, "error": "No open challenge."}
+    if len(rows) == 1:
+        return {"ok": True, "attempt": rows[0]}
+    return {
+        "ok": False,
+        "error": (
+            "Several open challenges — pass `attempt_id`:\n"
+            + _format_open_list(rows)
+        ),
+        "attempts": rows,
+    }
 
 
 def parse_schedule_local(
@@ -309,25 +395,47 @@ def start_attempt(
             "error": f"This challenge requires **{ch['param_label']}**.",
         }
 
-    existing = open_attempt(discord_id)
-    if existing:
-        st = existing.get("status")
-        if st == "scheduled":
-            when = int(parse_iso(existing["started_at"]).timestamp())
-            return {
-                "ok": False,
-                "error": (
-                    f"You already scheduled **{existing['title']}** "
-                    f"(starts <t:{when}:R>). `/challenge abandon` to cancel."
-                ),
-            }
+    focus = (param or "").strip() or None
+    if not focus:
+        fixed = (ch.get("fixed_param") or "").strip() or None
+        if fixed:
+            focus = fixed
+
+    opens = open_attempts(discord_id)
+    if any(o.get("challenge_id") == ch["id"] for o in opens):
+        hit = next(o for o in opens if o.get("challenge_id") == ch["id"])
         return {
             "ok": False,
             "error": (
-                f"You already have an active challenge: **{existing['title']}** "
-                f"(ends <t:{int(parse_iso(existing['ends_at']).timestamp())}:R>)."
+                f"You already have **{hit['title']}** open "
+                f"(`{hit.get('status')}`, attempt `#{hit['id']}`)."
             ),
         }
+
+    new_concurrent = challenge_allows_concurrent(ch)
+    if not new_concurrent:
+        exclusive = [o for o in opens if not challenge_allows_concurrent(o)]
+        if exclusive:
+            existing = exclusive[0]
+            st = existing.get("status")
+            if st == "scheduled":
+                when = int(parse_iso(existing["started_at"]).timestamp())
+                return {
+                    "ok": False,
+                    "error": (
+                        f"You already scheduled **{existing['title']}** "
+                        f"(starts <t:{when}:R>). `/challenge abandon` to cancel, "
+                        f"or start a long concurrent challenge instead."
+                    ),
+                }
+            return {
+                "ok": False,
+                "error": (
+                    f"You already have an exclusive challenge: **{existing['title']}** "
+                    f"(ends <t:{int(parse_iso(existing['ends_at']).timestamp())}:R>). "
+                    f"Abandon it, or start a long concurrent challenge alongside."
+                ),
+            }
 
     if not rt["allow_reattempt"]:
         with db_session() as conn:
@@ -374,7 +482,7 @@ def start_attempt(
             (
                 discord_id,
                 ch["id"],
-                (param or "").strip() or None,
+                focus,
                 status,
                 start_dt.isoformat(),
                 ends.isoformat(),
@@ -390,14 +498,22 @@ def start_attempt(
         "status": status,
         "started_at": start_dt.isoformat(),
         "ends_at": ends.isoformat(),
-        "param": (param or "").strip() or None,
+        "param": focus,
     }
 
 
-def abandon_attempt(discord_id: str) -> dict[str, Any]:
-    att = open_attempt(discord_id)
-    if not att:
-        return {"ok": False, "error": "No active or scheduled challenge."}
+def abandon_attempt(
+    discord_id: str, *, attempt_id: int | None = None
+) -> dict[str, Any]:
+    picked = resolve_user_attempt(
+        discord_id, attempt_id=attempt_id, statuses=("active", "scheduled")
+    )
+    if not picked.get("ok"):
+        err = picked.get("error") or "No active or scheduled challenge."
+        if err == "No open challenge.":
+            err = "No active or scheduled challenge."
+        return {"ok": False, "error": err, "attempts": picked.get("attempts")}
+    att = picked["attempt"]
     with db_session() as conn:
         conn.execute(
             "UPDATE attempts SET status='abandoned' "
@@ -407,38 +523,183 @@ def abandon_attempt(discord_id: str) -> dict[str, Any]:
     return {"ok": True, "attempt": {**att, "status": "abandoned"}}
 
 
+def _parse_exclude(raw: str | None) -> list[str]:
+    if not raw or not str(raw).strip():
+        return []
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+
+def _parse_fixup(raw: str | None) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {"aliases": [], "log_ids": []}
+    if not raw or not str(raw).strip():
+        return out
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return out
+    if not isinstance(data, dict):
+        return out
+    for key in ("aliases", "log_ids"):
+        val = data.get(key) or []
+        if isinstance(val, str):
+            val = _parse_exclude(val)
+        out[key] = [str(x).strip() for x in val if str(x).strip()]
+    return out
+
+
+def _dump_fixup(aliases: list[str], log_ids: list[str]) -> str | None:
+    aliases = [a for a in aliases if a]
+    log_ids = [i for i in log_ids if i]
+    if not aliases and not log_ids:
+        return None
+    return json.dumps({"aliases": aliases, "log_ids": log_ids}, ensure_ascii=False)
+
+
+def _merge_unique(*lists: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for lst in lists:
+        for x in lst:
+            k = str(x).strip()
+            if not k or k.lower() in seen:
+                continue
+            seen.add(k.lower())
+            out.append(k)
+    return out
+
+
+def user_update_attempt_content(
+    discord_id: str,
+    *,
+    attempt_id: int | None = None,
+    content: str | None = None,
+    remove: str | None = None,
+    param: str | None = None,
+    clear_param: bool = False,
+    aliases: str | None = None,
+    log_ids: str | None = None,
+    clear_fixup: bool = False,
+) -> dict[str, Any]:
+    """Owner edit of content/param/Tadoku fixup on own attempt (any status)."""
+    from app.services.verify import strip_content_labels
+
+    q = (
+        "SELECT a.*, c.title, c.tier, c.number FROM attempts a "
+        "JOIN challenge_defs c ON c.id = a.challenge_id WHERE a.discord_id=?"
+    )
+    args: list[Any] = [discord_id]
+    if attempt_id is not None:
+        q += " AND a.id=?"
+        args.append(int(attempt_id))
+    else:
+        q += " AND a.status IN ('active','scheduled','completed','expired','abandoned') "
+        q += "ORDER BY a.id DESC LIMIT 1"
+    with db_session() as conn:
+        row = conn.execute(q, args).fetchone()
+        if not row:
+            return {"ok": False, "error": "Attempt not found."}
+        att = dict(row)
+        new_content = att.get("content")
+        if content is not None:
+            new_content = (content or "").strip() or None
+        if remove:
+            new_content = strip_content_labels(
+                new_content or att.get("param"), _parse_exclude(remove)
+            ) or None
+        new_param = att.get("param")
+        if clear_param:
+            new_param = None
+        elif param is not None:
+            new_param = (param or "").strip() or None
+
+        fix = _parse_fixup(att.get("fixup_json"))
+        if clear_fixup:
+            fix = {"aliases": [], "log_ids": []}
+        if aliases is not None:
+            # replace aliases list when provided (empty clears)
+            fix["aliases"] = _parse_exclude(aliases)
+        if log_ids is not None:
+            fix["log_ids"] = _parse_exclude(log_ids)
+        fixup_s = _dump_fixup(fix["aliases"], fix["log_ids"])
+
+        conn.execute(
+            "UPDATE attempts SET content=?, param=?, fixup_json=? "
+            "WHERE id=? AND discord_id=?",
+            (new_content, new_param, fixup_s, att["id"], discord_id),
+        )
+    return {
+        "ok": True,
+        "attempt_id": att["id"],
+        "content": new_content,
+        "param": new_param,
+        "aliases": fix["aliases"],
+        "log_ids": fix["log_ids"],
+        "title": att.get("title"),
+    }
+
+
 async def confirm_attempt(
     discord_id: str,
     *,
+    attempt_id: int | None = None,
     note: str | None = None,
+    content: str | None = None,
+    ignore_param: bool = False,
+    param_override: str | None = None,
+    exclude: str | None = None,
+    aliases: str | None = None,
+    log_ids: str | None = None,
+    honor_override: bool = False,
     force_honor: bool = False,
     dry_run: bool = False,
     fake_logs: list[dict[str, Any]] | None = None,
     method_override: str | None = None,
 ) -> dict[str, Any]:
     """
-    Confirm active attempt. Tadoku challenges must pass verify unless force_honor
-    (admin/manual only).
+    Confirm active attempt. Tadoku challenges must pass verify unless
+    force_honor (admin) or honor_override (user backdoor when enabled).
 
     dry_run: evaluate only, never write completed.
     fake_logs: admin test inject — skip Tadoku fetch, run evaluate_logs on these.
     """
     activate_due_scheduled()
     expire_overdue()
-    scheduled = scheduled_attempt(discord_id)
-    if scheduled:
-        when = int(parse_iso(scheduled["started_at"]).timestamp())
+    if attempt_id is None:
+        only_sched = scheduled_attempts(discord_id)
+        actives = active_attempts(discord_id)
+        if not actives and only_sched:
+            if len(only_sched) == 1:
+                scheduled = only_sched[0]
+                when = int(parse_iso(scheduled["started_at"]).timestamp())
+                return {
+                    "ok": False,
+                    "error": (
+                        f"**{scheduled['title']}** is scheduled to start <t:{when}:R>. "
+                        "Wait until then, or `/challenge abandon` to cancel."
+                    ),
+                    "attempt": scheduled,
+                }
+            return {
+                "ok": False,
+                "error": (
+                    "Only scheduled challenges — nothing to confirm yet:\n"
+                    + _format_open_list(only_sched)
+                ),
+                "attempts": only_sched,
+            }
+    picked = resolve_user_attempt(
+        discord_id, attempt_id=attempt_id, statuses=("active",)
+    )
+    if not picked.get("ok"):
+        err = picked.get("error") or "No active challenge."
+        if err == "No open challenge.":
+            err = "No active challenge (or it already expired)."
         return {
             "ok": False,
-            "error": (
-                f"**{scheduled['title']}** is scheduled to start <t:{when}:R>. "
-                "Wait until then, or `/challenge abandon` to cancel."
-            ),
-            "attempt": scheduled,
+            "error": err,
+            "attempts": picked.get("attempts"),
         }
-    att = active_attempt(discord_id)
-    if not att:
-        return {"ok": False, "error": "No active challenge (or it already expired)."}
+    att = picked["attempt"]
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     ends = parse_iso(att["ends_at"])
@@ -450,8 +711,78 @@ async def confirm_attempt(
 
     ch_verify = att.get("verify") or "tadoku"
     rt = _runtime()
+    exclude_list = _parse_exclude(exclude)
+    user_content = (content or "").strip() or None
+    stored_fix = _parse_fixup(att.get("fixup_json"))
+    alias_list = _merge_unique(
+        stored_fix.get("aliases") or [],
+        _parse_exclude(aliases),
+    )
+    include_ids = _merge_unique(
+        stored_fix.get("log_ids") or [],
+        _parse_exclude(log_ids),
+    )
 
-    if force_honor and not fake_logs:
+    if param_override is not None:
+        verify_param = (param_override or "").strip() or None
+    elif ignore_param:
+        verify_param = None
+    else:
+        verify_param = att.get("param")
+
+    # Persist any new aliases / log ids provided on this confirm
+    if aliases is not None or log_ids is not None:
+        dump = _dump_fixup(alias_list, include_ids)
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE attempts SET fixup_json=? WHERE id=?",
+                (dump, att["id"]),
+            )
+        att["fixup_json"] = dump
+
+    use_honor = force_honor or (
+        honor_override and bool(rt.get("allow_honor_override", True))
+    )
+    if honor_override and not rt.get("allow_honor_override", True) and not force_honor:
+        return {
+            "ok": False,
+            "error": "Honor override is disabled by admins.",
+            "attempt": att,
+        }
+
+    # Honor complete_work / honor_override should name what finished.
+    needs_named_content = (
+        (
+            ch_verify == "honor"
+            and (att.get("goal_kind") or "") == "complete_work"
+        )
+        or (honor_override and not force_honor)
+    )
+    if (
+        needs_named_content
+        and not user_content
+        and not (att.get("param") or "").strip()
+        and not force_honor
+        and fake_logs is None
+    ):
+        return {
+            "ok": False,
+            "error": (
+                "Enter what you completed (series, book, or YouTube URL) "
+                "in the confirm content field."
+            ),
+            "attempt": att,
+        }
+
+    def _honor_content() -> str | None:
+        return resolve_content(
+            param=att.get("param"),
+            note=note,
+            content_override=user_content,
+            exclude=exclude_list,
+        )
+
+    if use_honor and not fake_logs:
         if dry_run:
             return {
                 "ok": True,
@@ -460,14 +791,27 @@ async def confirm_attempt(
                 "method": method_override or "manual",
                 "attempt": att,
                 "note": note,
-                "content": resolve_content(param=att.get("param"), note=note),
+                "content": _honor_content(),
             }
+        method = method_override or (
+            "honor"
+            if ch_verify == "honor" and not honor_override
+            else ("honor_override" if honor_override and not force_honor else "manual")
+        )
         return _complete(
             att,
-            method=method_override
-            or ("honor" if ch_verify == "honor" else "manual"),
-            evidence={"note": note, "forced": force_honor},
+            method=method,
+            evidence={
+                "note": note,
+                "forced": force_honor,
+                "honor_override": bool(honor_override),
+                "ignore_param": ignore_param,
+                "exclude": exclude_list,
+                "aliases": alias_list,
+                "log_ids": include_ids,
+            },
             note=note,
+            content=_honor_content(),
         )
 
     if ch_verify == "honor" and fake_logs is None and not force_honor:
@@ -479,13 +823,18 @@ async def confirm_attempt(
                 "method": "honor",
                 "attempt": att,
                 "progress": "Honor challenge — confirm would succeed without Tadoku.",
-                "content": resolve_content(param=att.get("param"), note=note),
+                "content": _honor_content(),
             }
         return _complete(
             att,
             method="honor",
-            evidence={"note": note, "forced": False},
+            evidence={
+                "note": note,
+                "forced": False,
+                "exclude": exclude_list,
+            },
             note=note,
+            content=_honor_content(),
         )
 
     user = get_user(discord_id)
@@ -497,24 +846,50 @@ async def confirm_attempt(
         source = "fake"
     else:
         if not user or not user.get("tadoku_user_id"):
-            return {"ok": False, "error": "Link Tadoku first (`/challenge link`)."}
+            tip = ""
+            if rt.get("allow_honor_override", True):
+                tip = (
+                    " Link Tadoku, or `/challenge failoverride` "
+                    "(honor complete, no admin)."
+                )
+            return {
+                "ok": False,
+                "error": f"Link Tadoku first (`/challenge link`).{tip}",
+                "attempt": att,
+            }
         started = parse_iso(att["started_at"])
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
-        logs = await resolve_logs_for_user(
-            tadoku_user_id=user["tadoku_user_id"],
-            contest_id=str(rt["tadoku_contest_id"]),
-            api_base=str(rt["tadoku_api_base"]),
-            since=started,
-            until=min(now, ends),
-        )
+        try:
+            logs = await resolve_logs_for_user(
+                tadoku_user_id=user["tadoku_user_id"],
+                contest_id=str(rt["tadoku_contest_id"]),
+                api_base=str(rt["tadoku_api_base"]),
+                since=started,
+                until=min(now, ends),
+            )
+        except Exception as exc:  # noqa: BLE001
+            tip = ""
+            if rt.get("allow_honor_override", True):
+                tip = (
+                    " Use `/challenge failoverride`, or fix aliases/log ids "
+                    "via `/challenge match` / `/challenge logs`."
+                )
+            return {
+                "ok": False,
+                "error": f"Tadoku fetch failed: {type(exc).__name__}: {exc}.{tip}",
+                "attempt": att,
+            }
 
     result = evaluate_logs(
         logs,
         goal_kind=att["goal_kind"],
         goal_amount=float(att["goal_amount"]),
         media_filter=att.get("media_filter") or "any",
-        param=att.get("param"),
+        param=verify_param,
+        exclude=exclude_list or None,
+        aliases=alias_list or None,
+        include_log_ids=include_ids or None,
         pages_per_volume=float(rt["pages_per_volume"]),
         episode_minutes=float(rt["episode_minutes"]),
     )
@@ -525,23 +900,41 @@ async def confirm_attempt(
         "log_source": source,
         "attempt": att,
         "tadoku_user_id": (user or {}).get("tadoku_user_id"),
+        "verify_param": verify_param,
+        "ignore_param": ignore_param,
+        "aliases": alias_list,
+        "log_ids": include_ids,
     }
     if not result.ok:
+        tips = [
+            "Try filter=`all`, add **aliases** (e.g. OnePiecee), "
+            "or paste Tadoku **log ids** via `/challenge match` / confirm.",
+        ]
+        if rt.get("allow_honor_override", True):
+            tips.append(
+                "**Backdoor (no admin):** `/challenge failoverride` — "
+                "honor-complete if Tadoku is wrong or missing."
+            )
+        err = (
+            "Tadoku logs do not meet the goal yet."
+            if source == "tadoku"
+            else "Fake logs do not meet the goal."
+        )
         return {
             "ok": False,
-            "error": "Tadoku logs do not meet the goal yet."
-            if source == "tadoku"
-            else "Fake logs do not meet the goal.",
+            "error": err + "\n" + "\n".join(tips),
             "dry_run": dry_run,
             **payload,
         }
-    content = resolve_content(
-        param=att.get("param"),
+    content_val = resolve_content(
+        param=verify_param or att.get("param"),
         logs=logs,
         matched_ids=result.matched_log_ids,
         note=note,
+        content_override=user_content,
+        exclude=exclude_list or None,
     )
-    payload["content"] = content
+    payload["content"] = content_val
     if dry_run:
         return {
             "ok": True,
@@ -561,13 +954,80 @@ async def confirm_attempt(
             "log_count": len(logs),
             "log_source": source,
             "test": source == "fake",
-            "content": content,
+            "content": content_val,
+            "verify_param": verify_param,
+            "ignore_param": ignore_param,
+            "exclude": exclude_list,
+            "aliases": alias_list,
+            "log_ids": include_ids,
         },
         note=note,
         verify_result=result,
         logs=logs,
-        content=content,
+        content=content_val,
     )
+
+
+async def preview_attempt_logs(
+    discord_id: str,
+    *,
+    attempt_id: int | None = None,
+    limit: int = 15,
+) -> dict[str, Any]:
+    """List window Tadoku logs (id + series) so users can link fixups."""
+    picked = resolve_user_attempt(
+        discord_id, attempt_id=attempt_id, statuses=("active",)
+    )
+    if not picked.get("ok"):
+        return {"ok": False, "error": picked.get("error") or "No active challenge."}
+    att = picked["attempt"]
+    user = get_user(discord_id)
+    if not user or not user.get("tadoku_user_id"):
+        return {"ok": False, "error": "Link Tadoku first."}
+    rt = _runtime()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    started = parse_iso(att["started_at"])
+    ends = parse_iso(att["ends_at"])
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if ends.tzinfo is None:
+        ends = ends.replace(tzinfo=timezone.utc)
+    try:
+        logs = await resolve_logs_for_user(
+            tadoku_user_id=user["tadoku_user_id"],
+            contest_id=str(rt["tadoku_contest_id"]),
+            api_base=str(rt["tadoku_api_base"]),
+            since=started,
+            until=min(now, ends),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"Tadoku fetch failed: {exc}"}
+    fix = _parse_fixup(att.get("fixup_json"))
+    rows = []
+    for log in logs[: max(1, int(limit))]:
+        series = (
+            str(log.get("series") or "").strip()
+            or str(log.get("description") or "")[:60]
+            or str(log.get("title") or "")
+        )
+        rows.append(
+            {
+                "id": str(log.get("id") or ""),
+                "series": series,
+                "amount": log.get("amount"),
+                "unit": log.get("unit") or log.get("unit_name"),
+                "tags": log.get("tags"),
+            }
+        )
+    return {
+        "ok": True,
+        "attempt": att,
+        "log_count": len(logs),
+        "logs": rows,
+        "aliases": fix.get("aliases") or [],
+        "log_ids": fix.get("log_ids") or [],
+        "param": att.get("param"),
+    }
 
 
 async def probe_tadoku_link(
@@ -801,20 +1261,31 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
     param = data.get("param_label")
     if param in ("", "null"):
         param = None
+    concurrent = 1 if challenge_allows_concurrent(
+        {"allows_concurrent": data.get("allows_concurrent")}
+    ) else 0
+    fixed = data.get("fixed_param")
+    if fixed in ("", "null", None):
+        fixed = None
+    else:
+        fixed = str(fixed).strip() or None
     with db_session() as conn:
         conn.execute(
             """
             INSERT INTO challenge_defs(
               id, year, tier, number, title, description, time_limit_hours,
-              param_label, verify, goal_kind, goal_amount, media_filter
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+              param_label, verify, goal_kind, goal_amount, media_filter,
+              allows_concurrent, fixed_param
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               year=excluded.year, tier=excluded.tier, number=excluded.number,
               title=excluded.title, description=excluded.description,
               time_limit_hours=excluded.time_limit_hours,
               param_label=excluded.param_label, verify=excluded.verify,
               goal_kind=excluded.goal_kind, goal_amount=excluded.goal_amount,
-              media_filter=excluded.media_filter
+              media_filter=excluded.media_filter,
+              allows_concurrent=excluded.allows_concurrent,
+              fixed_param=excluded.fixed_param
             """,
             (
                 data["id"],
@@ -829,6 +1300,8 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
                 data["goal_kind"],
                 float(data["goal_amount"]),
                 data.get("media_filter") or "any",
+                concurrent,
+                fixed,
             ),
         )
     return {"ok": True}

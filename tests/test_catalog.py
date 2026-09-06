@@ -10,9 +10,12 @@ def test_seed_2026_count():
     path = setup_tmp_db()
     try:
         items = list_challenges(year=2026)
-        assert len(items) == 17
+        assert len(items) == 22
         tiers = {c["tier"] for c in items}
         assert tiers == {"easy", "medium", "hard", "ota_master"}
+        op = get_challenge("medium-7")
+        assert op is not None and int(op.get("allows_concurrent") or 0) == 1
+        assert int(get_challenge("easy-5").get("allows_concurrent") or 0) == 0
     finally:
         cleanup_db(path)
 

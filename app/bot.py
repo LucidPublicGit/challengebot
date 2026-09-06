@@ -42,7 +42,8 @@ def confirm_howto(ch: dict) -> str:
         lines = [
             "**Confirmation: manual (honor system)**",
             "Tadoku is **not** checked for this challenge.",
-            "When you finish, run `/challenge confirm` (optional note is fine).",
+            "When you finish, run `/challenge confirm` and enter **content** "
+            "(what you completed — series, book, URL, …).",
         ]
         if kind == "immersion_hours":
             lines.append(
@@ -52,7 +53,7 @@ def confirm_howto(ch: dict) -> str:
         elif kind == "complete_work":
             lines.append(
                 "Goal: finish the full work end-to-end. "
-                "Tadoku cannot prove ‘complete novel’, so confirm is manual."
+                "Name it in the confirm content field (Tadoku can’t prove completion)."
             )
         else:
             lines.append("Complete the goal, then confirm yourself.")
@@ -72,11 +73,15 @@ def confirm_howto(ch: dict) -> str:
         f"Goal check: {goal_bits} (media filter: `{media}`).",
         "1. Link once: `/challenge link` with your Tadoku user id/URL",
         "2. Log immersion on tadoku.app **during** the timer",
-        "3. `/challenge confirm` — bot pulls logs and checks the numbers",
+        "3. `/challenge confirm` — content + filter/aliases/log ids; bot checks Tadoku",
+        "Filter: blank=keep focus · `all`=any media · `honor`=skip Tadoku.",
+        "If confirm **fails**: `/challenge failoverride` (honor complete, no admin) "
+        "or fix titles via `/challenge logs` + `/challenge match`.",
+        "Labels later: `/challenge content` (works on failed attempts too).",
     ]
     if param:
         lines.append(
-            f"Logs should mention your **{param}** focus so matching can filter them."
+            f"Start focus **{param}** filters Tadoku unless you override on confirm."
         )
     return "\n".join(lines)
 

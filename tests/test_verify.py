@@ -12,6 +12,49 @@ if str(ROOT) not in sys.path:
 from app.services.verify import evaluate_logs, synthetic_logs_for_goal
 
 
+def test_param_normalize_and_aliases():
+    from app.services.verify import evaluate_logs
+
+    logs = [
+        {
+            "id": "a",
+            "amount": 10,
+            "unit": "volumes",
+            "tags": ["manga"],
+            "series": "OnePiecee",
+        }
+    ]
+    # space / case normalize
+    r = evaluate_logs(
+        logs,
+        goal_kind="volumes",
+        goal_amount=5,
+        media_filter="manga",
+        param="One Piece",
+    )
+    assert r.ok, r.detail
+    # explicit alias
+    r2 = evaluate_logs(
+        logs,
+        goal_kind="volumes",
+        goal_amount=5,
+        media_filter="manga",
+        param="One Piece",
+        aliases=["totally-wrong"],
+    )
+    assert r2.ok
+    # force include by id ignores bad param
+    r3 = evaluate_logs(
+        logs,
+        goal_kind="volumes",
+        goal_amount=5,
+        media_filter="manga",
+        param="Naruto",
+        include_log_ids=["a"],
+    )
+    assert r3.ok
+
+
 def test_characters():
     logs = [
         {

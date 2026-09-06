@@ -59,6 +59,8 @@ class Settings:
     announce_secondary_channel_id: str = "1523503572652916786"
     reward_roles: str = ""
     allow_reattempt: bool = True
+    # Users may complete tadoku challenges via honor when logs fail / mismatch
+    allow_honor_override: bool = True
     pages_per_volume: float = 180.0
     episode_minutes: float = 24.0
     # Automatic active-challenge status posts (time + Tadoku goal milestones)
@@ -111,6 +113,7 @@ def get_settings() -> Settings:
         ),
         reward_roles=_env("REWARD_ROLES"),
         allow_reattempt=_env_bool("ALLOW_REATTEMPT", True),
+        allow_honor_override=_env_bool("ALLOW_HONOR_OVERRIDE", True),
         pages_per_volume=_env_float("PAGES_PER_VOLUME", 180.0),
         episode_minutes=_env_float("EPISODE_MINUTES", 24.0),
         status_updates_enabled=_env_bool("STATUS_UPDATES_ENABLED", True),
@@ -130,6 +133,7 @@ SETTING_KEYS = (
     "announce_channel_id",
     "announce_secondary_channel_id",
     "allow_reattempt",
+    "allow_honor_override",
     "pages_per_volume",
     "episode_minutes",
     "reward_roles_json",
@@ -145,6 +149,7 @@ def merge_runtime(settings: Settings, db_map: dict[str, str]) -> dict[str, Any]:
         "announce_channel_id": settings.announce_channel_id,
         "announce_secondary_channel_id": settings.announce_secondary_channel_id,
         "allow_reattempt": settings.allow_reattempt,
+        "allow_honor_override": settings.allow_honor_override,
         "pages_per_volume": settings.pages_per_volume,
         "episode_minutes": settings.episode_minutes,
         "reward_roles": settings.reward_roles_map(),
@@ -163,6 +168,13 @@ def merge_runtime(settings: Settings, db_map: dict[str, str]) -> dict[str, Any]:
         ].strip()
     if "allow_reattempt" in db_map:
         out["allow_reattempt"] = db_map["allow_reattempt"].lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    if "allow_honor_override" in db_map:
+        out["allow_honor_override"] = db_map["allow_honor_override"].lower() in (
             "1",
             "true",
             "yes",

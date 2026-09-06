@@ -125,15 +125,30 @@ def content_labels_from_logs(
     return labels
 
 
+def _exclude_hit(label: str, exclude: list[str] | None) -> bool:
+    if not exclude:
+        return False
+    low = label.lower()
+    return any(ex.strip().lower() in low for ex in exclude if ex and str(ex).strip())
+
+
 def resolve_content(
     *,
     param: Optional[str] = None,
     logs: list[dict[str, Any]] | None = None,
     matched_ids: list[str] | None = None,
     note: Optional[str] = None,
+    content_override: Optional[str] = None,
+    exclude: list[str] | None = None,
 ) -> Optional[str]:
     """Best-effort content label stored on completion."""
-    labels = content_labels_from_logs(logs or [], matched_ids)
+    if content_override and str(content_override).strip():
+        return str(content_override).strip()[:300]
+    labels = [
+        lb
+        for lb in content_labels_from_logs(logs or [], matched_ids)
+        if not _exclude_hit(lb, exclude)
+    ]
     if labels:
         return ", ".join(labels)
     if param and str(param).strip():
@@ -141,6 +156,26 @@ def resolve_content(
     if note and str(note).strip():
         return str(note).strip()[:120]
     return None
+
+
+def strip_content_labels(content: str | None, remove: list[str]) -> str:
+    """Drop comma-separated labels that match any remove needle."""
+    raw = (content or "").strip()
+    if not raw:
+        return ""
+    needles = [r.strip().lower() for r in remove if r and str(r).strip()]
+    if not needles:
+        return raw
+    kept: list[str] = []
+    for part in raw.split(","):
+        label = part.strip()
+        if not label:
+            continue
+        low = label.lower()
+        if any(n in low for n in needles):
+            continue
+        kept.append(label)
+    return ", ".join(kept)
 
 
 def _media_match(log: dict, media_filter: str) -> bool:
@@ -171,18 +206,49 @@ def _media_match(log: dict, media_filter: str) -> bool:
     return has(mf)
 
 
-def _param_match(log: dict, param: Optional[str]) -> bool:
-    if not param or not str(param).strip():
+def _norm_match_key(s: str) -> str:
+    """Lowercase + strip non-alnum so 'One Piece' ≈ 'OnePiecee' prefix-ish."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKC", s or "").lower()
+    return re.sub(r"[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+", "", t)
+
+
+def _param_match(
+    log: dict,
+    param: Optional[str],
+    *,
+    aliases: list[str] | None = None,
+) -> bool:
+    needles_raw = []
+    if param and str(param).strip():
+        needles_raw.append(str(param).strip())
+    for a in aliases or []:
+        if a and str(a).strip():
+            needles_raw.append(str(a).strip())
+    if not needles_raw:
         return True
-    needle = str(param).strip().lower()
     blob = " ".join(
         [
-            _description(log).lower(),
+            _description(log),
             " ".join(_tags(log)),
-            str(log.get("series") or "").lower(),
+            str(log.get("series") or ""),
+            str(log.get("title") or ""),
         ]
     )
-    return needle in blob
+    blob_l = blob.lower()
+    blob_n = _norm_match_key(blob)
+    for needle in needles_raw:
+        n = needle.lower()
+        if n and n in blob_l:
+            return True
+        nn = _norm_match_key(needle)
+        if nn and len(nn) >= 3 and nn in blob_n:
+            return True
+        # one extra letter on needle (OnePiecee → onepiece)
+        if nn and len(nn) >= 5 and nn[:-1] in blob_n:
+            return True
+    return False
 
 
 @dataclass
@@ -203,16 +269,36 @@ def evaluate_logs(
     goal_amount: float,
     media_filter: str,
     param: Optional[str] = None,
+    exclude: list[str] | None = None,
+    aliases: list[str] | None = None,
+    include_log_ids: list[str] | None = None,
     pages_per_volume: float = 180.0,
     episode_minutes: float = 24.0,
 ) -> VerifyResult:
     kind = (goal_kind or "").lower()
     target = float(goal_amount)
-    filtered = [
-        log
-        for log in logs
-        if _media_match(log, media_filter) and _param_match(log, param)
-    ]
+
+    def _log_label_blob(log: dict) -> str:
+        return " ".join(
+            [
+                _description(log),
+                str(log.get("series") or ""),
+                str(log.get("title") or ""),
+            ]
+        )
+
+    include_ids = {str(x) for x in (include_log_ids or []) if x}
+    filtered = []
+    for log in logs:
+        lid = str(log.get("id") or "")
+        forced = bool(lid and lid in include_ids)
+        if not _media_match(log, media_filter) and not forced:
+            continue
+        if not forced and not _param_match(log, param, aliases=aliases):
+            continue
+        if not forced and _exclude_hit(_log_label_blob(log), exclude):
+            continue
+        filtered.append(log)
     ids = [str(log.get("id") or "") for log in filtered if log.get("id")]
 
     if kind == "characters":

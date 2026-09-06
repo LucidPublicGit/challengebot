@@ -8,6 +8,16 @@ import yaml
 from app.db import db_session
 
 
+def _as_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
 def load_yaml(path: str | Path) -> dict[str, Any]:
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -27,13 +37,20 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
             param = c.get("param_label")
             if param in (None, "null", ""):
                 param = None
+            concurrent = 1 if _as_bool(c.get("allows_concurrent")) else 0
+            fixed = c.get("fixed_param")
+            if fixed in (None, "null", ""):
+                fixed = None
+            else:
+                fixed = str(fixed).strip() or None
             conn.execute(
                 """
                 INSERT INTO challenge_defs(
                   id, year, tier, number, title, description,
                   time_limit_hours, param_label, verify,
-                  goal_kind, goal_amount, media_filter
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                  goal_kind, goal_amount, media_filter, allows_concurrent,
+                  fixed_param
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                   year=excluded.year,
                   tier=excluded.tier,
@@ -45,7 +62,9 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                   verify=excluded.verify,
                   goal_kind=excluded.goal_kind,
                   goal_amount=excluded.goal_amount,
-                  media_filter=excluded.media_filter
+                  media_filter=excluded.media_filter,
+                  allows_concurrent=excluded.allows_concurrent,
+                  fixed_param=excluded.fixed_param
                 """,
                 (
                     c["id"],
@@ -60,6 +79,8 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                     c["goal_kind"],
                     float(c["goal_amount"]),
                     c.get("media_filter") or "any",
+                    concurrent,
+                    fixed,
                 ),
             )
             n += 1
