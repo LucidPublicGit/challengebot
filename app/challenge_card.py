@@ -1228,7 +1228,7 @@ def _render_userinfo(
 ) -> bytes:
     """Profile card: points/clears/rank + completed challenge list.
 
-    completed entries: {title, tier, number?, content?}
+    completed entries: {title, tier, number?}  (content ignored if present)
     by_tier: {easy/medium/hard/ota_master: count}
     """
     S = SCALE
@@ -1397,7 +1397,6 @@ def _render_userinfo(
             num = e.get("number")
             if num is not None and str(num).strip() != "":
                 title = f"#{num} {title}"
-            content = _oneline(str(e.get("content") or ""))
             mid = (y + row_h / 2) * S
             # left tier tick
             draw.rounded_rectangle(
@@ -1418,12 +1417,9 @@ def _render_userinfo(
             draw.text((tpx + tw / 2, mid), tlab, font=tf, fill=tc, anchor="mm")
             tx = margin + 10 + tw / S + 8
             max_title = (W - margin - tx) * S
-            line = title
-            if content:
-                line = f"{title}  ·  {content}"
             draw.text(
                 (tx * S, mid),
-                _truncate(draw, line, _font(13 * S), max_title),
+                _truncate(draw, title, _font(13 * S), max_title),
                 font=_font(13 * S),
                 fill=INK,
                 anchor="lm",
