@@ -64,3 +64,8 @@ def test_top_completers_and_total():
         top = att.top_completers(10)
         assert top[0]["discord_id"] == "u2" and int(top[0]["n"]) == 4
         assert top[1]["discord_id"] == "u1" and int(top[1]["n"]) == 2
+        assert att.challenge_points("u2") == 4
+        st = att.leaderboard_standing("u2")
+        assert st["rank"] == 1 and st["ranked"] == 2
+        assert att.leaderboard_standing("u1")["rank"] == 2
+        assert att.leaderboard_standing("nobody")["rank"] is None

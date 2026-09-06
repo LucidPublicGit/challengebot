@@ -17,6 +17,7 @@ from app.challenge_card import (
     files_as_image_embeds,
     render_all_demo_cards,
     render_leaderboard_card,
+    render_userinfo_card,
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
@@ -2388,6 +2389,66 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.followup.send(
         file=lb,
         embeds=files_as_image_embeds([lb], kind="leaderboard"),
+    )
+
+
+@challenge_group.command(
+    name="userinfo",
+    description="Profile: clears, points, rank, completed list",
+)
+@app_commands.describe(user="Member to look up (default: you)")
+async def challenge_userinfo(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+) -> None:
+    target = user or interaction.user
+    await interaction.response.defer()
+    tid = str(target.id)
+    standing = att_svc.leaderboard_standing(tid)
+    counts = att_svc.completion_counts(tid)
+    best = att_svc.highest_completed_tier(tid)
+    fails = att_svc.failure_count(tid)
+    db_user = att_svc.get_user(tid)
+    tadoku_linked = bool(db_user and db_user.get("tadoku_user_id"))
+    done = att_svc.list_attempts(discord_id=tid, status="completed", limit=100)
+    completed = [
+        {
+            "title": a.get("title") or "?",
+            "tier": a.get("tier") or "",
+            "number": a.get("number"),
+            "content": att_svc.display_content(a),
+        }
+        for a in done
+    ]
+    # list_attempts is newest-first; show oldest→newest on the card
+    completed.reverse()
+    av = await avatar_bytes(target)
+    png = await render_userinfo_card(
+        display_name=target.display_name,
+        avatar=av,
+        points=int(standing["points"]),
+        clears=int(counts.get("total") or 0),
+        rank=standing.get("rank"),
+        ranked=int(standing.get("ranked") or 0),
+        best_tier=best,
+        by_tier=counts,
+        fails=fails,
+        completed=completed,
+        tadoku_linked=tadoku_linked,
+    )
+    f = as_discord_file(png, "userinfo-card.png")
+    bits = [
+        f"**{target.display_name}**",
+        f"Points **{standing['points']}** · Clears **{counts.get('total', 0)}**",
+    ]
+    if standing.get("rank"):
+        bits.append(f"Rank **#{standing['rank']}** / {standing['ranked']}")
+    if best:
+        bits.append(f"Best tier **{best.replace('_', '-')}**")
+    await interaction.followup.send(
+        content=" · ".join(bits),
+        file=f,
+        embeds=files_as_image_embeds([f], kind="userinfo"),
     )
 
 

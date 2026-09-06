@@ -21,9 +21,10 @@ def test_print_every_card_format():
     """Render every card kind to data/card_previews/ and print paths."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     cards = asyncio.run(render_all_demo_cards())
-    kinds_expected = [k for k in KIND_STYLE if k != "leaderboard"] + ["leaderboard"]
+    extra = ("userinfo", "leaderboard")
+    kinds_expected = [k for k in KIND_STYLE if k not in extra] + list(extra)
     assert [k for k, _ in cards] == kinds_expected
-    assert set(DEMO_CHALLENGE_SAMPLES) == set(kinds_expected) - {"leaderboard"}
+    assert set(DEMO_CHALLENGE_SAMPLES) == set(kinds_expected) - set(extra)
 
     written: list[Path] = []
     for kind, png in cards:
@@ -42,7 +43,7 @@ def test_print_every_card_format():
         encoding="utf-8",
     )
     print(f"Wrote {len(written)} cards under {OUT_DIR}")
-    assert len(written) == 9
+    assert len(written) == 10
 
 
 def test_multi_works_grows_card_height():

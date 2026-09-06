@@ -42,6 +42,7 @@ KIND_STYLE = {
     "abandon": ("QUIT", ACCENT_AMBER),
     "expired": ("EXPIRED", ACCENT_RED),
     "status": ("STATUS", ACCENT_PURPLE),
+    "userinfo": ("PROFILE", ACCENT_PURPLE),
     "leaderboard": ("BOARD", ACCENT_PURPLE),
 }
 
@@ -55,6 +56,7 @@ HERO_STATUS = {
     "abandon": "Abandoned",
     "expired": "Expired",
     "status": "Status",
+    "userinfo": "Profile",
     "leaderboard": "Board",
 }
 
@@ -1209,6 +1211,247 @@ def _render_leaderboard(
     return buf.getvalue()
 
 
+def _render_userinfo(
+    *,
+    display_name: str,
+    avatar: Optional[bytes] = None,
+    points: int = 0,
+    clears: int = 0,
+    rank: int | None = None,
+    ranked: int = 0,
+    best_tier: str | None = None,
+    by_tier: dict | None = None,
+    fails: int = 0,
+    completed: list | None = None,
+    tadoku_linked: bool = False,
+    footer: str = "",
+) -> bytes:
+    """Profile card: points/clears/rank + completed challenge list.
+
+    completed entries: {title, tier, number?, content?}
+    by_tier: {easy/medium/hard/ota_master: count}
+    """
+    S = SCALE
+    accent = ACCENT_PURPLE
+    W = 560
+    margin = 28
+    best = (best_tier or "").lower().strip()
+    best_c = TIER_COLOR.get(best) if best else accent
+    completed = list(completed or [])
+    by_tier = by_tier or {}
+
+    # Measure body height
+    header = 118
+    stats_h = 64
+    tier_h = 36 if any(by_tier.get(t) for t in TIER_LABEL) else 0
+    list_hdr = 28 if completed else 0
+    row_h = 34
+    empty_h = 28 if not completed else 0
+    body = stats_h + tier_h + list_hdr + (len(completed) * row_h if completed else empty_h)
+    if not footer:
+        footer = f"{BRAND_FOOTER}  ·  pts = easy1 med2 hard3 ota4"
+    elif BRAND_FOOTER.lower() not in footer.lower():
+        footer = f"{footer}  ·  {BRAND_FOOTER}"
+    foot = 28
+    H = header + body + foot
+
+    img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    outer = (0, 0, W * S - 1, H * S - 1)
+    radius = 22 * S
+    draw.rounded_rectangle(outer, radius=radius, fill=BG)
+    _draw_tier_wash(
+        draw,
+        card_w_px=W * S,
+        card_h_px=H * S,
+        tier_color=best_c,
+        strength=0.10 if best else 0.08,
+        width_frac=0.38,
+    )
+    draw.rounded_rectangle((0, 0, 8 * S, H * S - 1), radius=8 * S, fill=best_c)
+    draw.rectangle((4 * S, 0, 9 * S, H * S - 1), fill=best_c)
+
+    # Avatar + name
+    d = 56 * S
+    av = _circular_avatar(avatar, d)
+    ax, ay = margin * S, 22 * S
+    img.paste(av, (int(ax), int(ay)), av)
+    ring = best_c if best else HAIRLINE
+    draw.ellipse((ax, ay, ax + d, ay + d), outline=ring, width=2 * S)
+    if best == "ota_master":
+        pad = 3 * S
+        draw.ellipse(
+            (ax - pad, ay - pad, ax + d + pad, ay + d + pad),
+            outline=ACCENT_GOLD,
+            width=2 * S,
+        )
+
+    name_x = margin + 56 + 14
+    nf = _font(22 * S, bold=True)
+    draw.text(
+        (name_x * S, 28 * S),
+        _truncate(draw, _oneline(display_name), nf, (W - name_x - margin) * S),
+        font=nf,
+        fill=INK,
+    )
+    # Badge line under name
+    badge = "PROFILE"
+    if best:
+        badge = f"{TIER_LABEL.get(best, best)} cleared"
+    draw.text(
+        (name_x * S, 56 * S),
+        _truncate(draw, badge, _font(13 * S, bold=True), (W - name_x - margin) * S),
+        font=_font(13 * S, bold=True),
+        fill=best_c if best else INK_SOFT,
+    )
+    tad = "Tadoku linked" if tadoku_linked else "Tadoku not linked"
+    draw.text(
+        (name_x * S, 76 * S),
+        tad,
+        font=_font(12 * S),
+        fill=ACCENT_GREEN if tadoku_linked else INK_SOFT,
+    )
+
+    y = header
+    draw.line(
+        (margin * S, (y - 8) * S, (W - margin) * S, (y - 8) * S),
+        fill=HAIRLINE,
+        width=S,
+    )
+
+    # Stat chips: Points / Clears / Rank / Fails
+    rank_s = f"#{rank}" if rank else "—"
+    if rank and ranked:
+        rank_s = f"#{rank}/{ranked}"
+    chips = [
+        ("POINTS", str(int(points)), ACCENT_GOLD if best == "ota_master" else INK),
+        ("CLEARS", str(int(clears)), INK),
+        ("RANK", rank_s, INK),
+        ("FAILS", str(int(fails)), ACCENT_RED if fails else INK_SOFT),
+    ]
+    chip_w = (W - 2 * margin - 9 * 3) / 4
+    chip_h = stats_h - 10  # air under chips before next section
+    for i, (lab, val, fill) in enumerate(chips):
+        cx = margin + i * (chip_w + 9)
+        box = (cx * S, y * S, (cx + chip_w) * S, (y + chip_h) * S)
+        draw.rounded_rectangle(box, radius=10 * S, fill=PANEL_BG)
+        mid_x = (cx + chip_w / 2) * S
+        lab_f = _font(10 * S, bold=True)
+        val_f = _font(18 * S, bold=True)
+        # Fixed insets so value isn't flush with chip bottom
+        pad_y = 11
+        draw.text(
+            (mid_x, (y + pad_y) * S),
+            lab,
+            font=lab_f,
+            fill=INK_SOFT,
+            anchor="mt",
+        )
+        draw.text(
+            (mid_x, (y + chip_h - pad_y) * S),
+            _truncate(draw, val, val_f, chip_w * S - 12 * S),
+            font=val_f,
+            fill=fill,
+            anchor="mb",  # bottom of glyph sits pad_y above chip edge
+        )
+    y += stats_h
+
+    # Tier breakdown pills
+    if tier_h:
+        px = margin * S
+        mid = (y + tier_h / 2 - 4) * S
+        for tkey, tlab in TIER_LABEL.items():
+            n = int(by_tier.get(tkey) or 0)
+            if n <= 0:
+                continue
+            tc = TIER_COLOR[tkey]
+            short = "OTA" if tkey == "ota_master" else tlab[:3].upper()
+            txt = f"{short} {n}"
+            tf = _font(11 * S, bold=True)
+            tw = draw.textlength(txt, font=tf) + 16 * S
+            th = 22 * S
+            draw.rounded_rectangle(
+                (px, mid - th / 2, px + tw, mid + th / 2),
+                radius=th / 2,
+                fill=_mix(tc, BG, 0.28),
+                outline=_mix(tc, BG, 0.55),
+                width=max(1, S // 2),
+            )
+            draw.text((px + tw / 2, mid), txt, font=tf, fill=tc, anchor="mm")
+            px += tw + 8 * S
+        y += tier_h
+
+    # Completed list
+    if completed:
+        draw.text(
+            (margin * S, y * S),
+            "COMPLETED",
+            font=_font(11 * S, bold=True),
+            fill=INK_SOFT,
+        )
+        y += list_hdr
+        for e in completed:
+            tier = (e.get("tier") or "").lower().strip()
+            tc = TIER_COLOR.get(tier, HAIRLINE)
+            title = _oneline(str(e.get("title") or "?"))
+            num = e.get("number")
+            if num is not None and str(num).strip() != "":
+                title = f"#{num} {title}"
+            content = _oneline(str(e.get("content") or ""))
+            mid = (y + row_h / 2) * S
+            # left tier tick
+            draw.rounded_rectangle(
+                ((margin - 2) * S, y * S + 4 * S, (margin + 3) * S, (y + row_h) * S - 4 * S),
+                radius=2 * S,
+                fill=tc,
+            )
+            tlab = "OTA" if tier == "ota_master" else TIER_LABEL.get(tier, tier or "?")[:3].upper()
+            tf = _font(10 * S, bold=True)
+            tw = draw.textlength(tlab, font=tf) + 10 * S
+            th = 18 * S
+            tpx = (margin + 10) * S
+            draw.rounded_rectangle(
+                (tpx, mid - th / 2, tpx + tw, mid + th / 2),
+                radius=th / 2,
+                fill=_mix(tc, BG, 0.28),
+            )
+            draw.text((tpx + tw / 2, mid), tlab, font=tf, fill=tc, anchor="mm")
+            tx = margin + 10 + tw / S + 8
+            max_title = (W - margin - tx) * S
+            line = title
+            if content:
+                line = f"{title}  ·  {content}"
+            draw.text(
+                (tx * S, mid),
+                _truncate(draw, line, _font(13 * S), max_title),
+                font=_font(13 * S),
+                fill=INK,
+                anchor="lm",
+            )
+            y += row_h
+    else:
+        draw.text(
+            (margin * S, y * S + 4 * S),
+            "No clears yet",
+            font=_font(14 * S),
+            fill=INK_SOFT,
+        )
+
+    if footer:
+        draw.text(
+            (margin * S, (H - 20) * S),
+            _truncate(draw, _oneline(footer), _font(12 * S), (W - 2 * margin) * S),
+            font=_font(12 * S),
+            fill=INK_SOFT,
+        )
+
+    _clip_round(img, outer, radius, _mix(best_c, HAIRLINE, 0.35), S)
+    img = img.resize((W, H), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _render_event_chip(
     *,
     primary: str,
@@ -1258,6 +1501,10 @@ async def render_leaderboard_card(**kwargs) -> bytes:
     return await asyncio.to_thread(_render_leaderboard, **kwargs)
 
 
+async def render_userinfo_card(**kwargs) -> bytes:
+    return await asyncio.to_thread(_render_userinfo, **kwargs)
+
+
 async def avatar_bytes(user) -> Optional[bytes]:
     if user is None:
         return None
@@ -1283,6 +1530,7 @@ _KIND_EMBED_COLOR = {
     "abandon": 0xE6C07B,
     "expired": 0xF07178,
     "status": 0x9680E2,
+    "userinfo": 0x9680E2,
     "leaderboard": 0x9680E2,
     "new_challenger": 0x5B9CFA,
 }
@@ -1491,6 +1739,51 @@ async def render_all_demo_cards(
             kind=kind, avatar_bytes=av, poster_bytes=poster, **payload
         )
         out.append((kind, png))
+    ui = await render_userinfo_card(
+        display_name=display_name or "Monty",
+        avatar=av,
+        points=12,
+        clears=5,
+        rank=2,
+        ranked=8,
+        best_tier="hard",
+        by_tier={"easy": 2, "medium": 1, "hard": 2},
+        fails=1,
+        tadoku_linked=True,
+        completed=[
+            {
+                "title": "Manga Mini-Marathon",
+                "tier": "easy",
+                "number": 1,
+                "content": "One Piece",
+            },
+            {
+                "title": "VN 30k",
+                "tier": "easy",
+                "number": 4,
+                "content": "Steins;Gate",
+            },
+            {
+                "title": "Anime Sprint",
+                "tier": "medium",
+                "number": 2,
+                "content": "Frieren",
+            },
+            {
+                "title": "Hard Mode Reading",
+                "tier": "hard",
+                "number": 1,
+                "content": "三体",
+            },
+            {
+                "title": "Immersion Day",
+                "tier": "hard",
+                "number": 3,
+                "content": "",
+            },
+        ],
+    )
+    out.append(("userinfo", ui))
     lb = await render_leaderboard_card(
         title="Challenge clears",
         entries=[

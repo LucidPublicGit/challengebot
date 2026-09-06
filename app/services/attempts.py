@@ -290,7 +290,7 @@ def list_attempts(
     discord_id: str | None = None,
     status: str | None = None,
     statuses: list[str] | None = None,
-    limit: int = 50,
+    limit: int | None = 50,
 ) -> list[dict]:
     q = (
         "SELECT a.*, c.title, c.tier, c.number, u.display_name, u.tadoku_user_id "
@@ -309,8 +309,10 @@ def list_attempts(
     elif status:
         q += " AND a.status=?"
         args.append(status)
-    q += " ORDER BY a.id DESC LIMIT ?"
-    args.append(limit)
+    q += " ORDER BY a.id DESC"
+    if limit is not None:
+        q += " LIMIT ?"
+        args.append(int(limit))
     with db_session() as conn:
         return [dict(r) for r in conn.execute(q, args).fetchall()]
 
@@ -1417,6 +1419,49 @@ def top_completers(limit: int = 15) -> list[dict[str, Any]]:
             (int(limit),),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def challenge_points(discord_id: str) -> int:
+    """Tier-weighted leaderboard points for one user."""
+    with db_session() as conn:
+        row = conn.execute(
+            f"SELECT COALESCE(SUM({_TIER_POINTS_SQL}), 0) AS n "
+            "FROM attempts a "
+            "JOIN challenge_defs c ON c.id=a.challenge_id "
+            "WHERE a.discord_id=? AND a.status='completed'",
+            (str(discord_id),),
+        ).fetchone()
+        return int(row["n"] if row else 0)
+
+
+def leaderboard_standing(discord_id: str) -> dict[str, Any]:
+    """points, rank (1-based or None if 0 pts), ranked (players with points)."""
+    did = str(discord_id)
+    points = challenge_points(did)
+    with db_session() as conn:
+        ranked_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM ("
+            "SELECT a.discord_id FROM attempts a "
+            "JOIN challenge_defs c ON c.id=a.challenge_id "
+            "WHERE a.status='completed' GROUP BY a.discord_id "
+            f"HAVING SUM({_TIER_POINTS_SQL}) > 0)"
+        ).fetchone()
+        ranked = int(ranked_row["n"] if ranked_row else 0)
+        if points <= 0:
+            return {"points": 0, "rank": None, "ranked": ranked}
+        better = conn.execute(
+            "SELECT COUNT(*) AS n FROM ("
+            "SELECT a.discord_id FROM attempts a "
+            "JOIN challenge_defs c ON c.id=a.challenge_id "
+            "WHERE a.status='completed' GROUP BY a.discord_id "
+            f"HAVING SUM({_TIER_POINTS_SQL}) > ?)",
+            (points,),
+        ).fetchone()
+        return {
+            "points": points,
+            "rank": int(better["n"] if better else 0) + 1,
+            "ranked": ranked,
+        }
 
 
 def highest_completed_tier(discord_id: str) -> str | None:
