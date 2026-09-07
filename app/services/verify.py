@@ -254,18 +254,57 @@ def _norm_match_key(s: str) -> str:
     return re.sub(r"[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+", "", t)
 
 
+def _expand_param_needles(param: str) -> list[str]:
+    """Multi-work focus ('A/B', 'A, B', lines) → OR needles for log match."""
+    text = str(param).strip()
+    if not text:
+        return []
+    items = parse_content_items(text) or [text]
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(s: str) -> None:
+        s = s.strip()
+        if not s:
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(s)
+
+    for item in items:
+        add(item)
+        split = False
+        for sep in (" / ", " | ", " + "):
+            if sep in item:
+                for p in item.split(sep):
+                    add(p)
+                split = True
+                break
+        if split:
+            continue
+        # bare slash multi-work (kamen rider/madoka); skip short bits (Fate/stay)
+        if "/" in item:
+            parts = [p.strip() for p in item.split("/") if p.strip()]
+            if len(parts) >= 2 and all(len(_norm_match_key(p)) >= 5 for p in parts):
+                for p in parts:
+                    add(p)
+    return out
+
+
 def _param_match(
     log: dict,
     param: Optional[str],
     *,
     aliases: list[str] | None = None,
 ) -> bool:
-    needles_raw = []
+    needles_raw: list[str] = []
     if param and str(param).strip():
-        needles_raw.append(str(param).strip())
+        needles_raw.extend(_expand_param_needles(str(param)))
     for a in aliases or []:
         if a and str(a).strip():
-            needles_raw.append(str(a).strip())
+            needles_raw.extend(_expand_param_needles(str(a)))
     if not needles_raw:
         return True
     blob = " ".join(

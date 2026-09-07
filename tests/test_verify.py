@@ -295,6 +295,49 @@ def test_param_filters_out():
     assert r.progress == 0
 
 
+def test_multi_work_param_slash_or_match():
+    """Focus 'A/B' should match logs titled A or B (not require literal A/B)."""
+    logs = [
+        {
+            "id": "1",
+            "amount": 4,
+            "unit": "episodes",
+            "tags": ["anime"],
+            "description": "kamen rider",
+        },
+        {
+            "id": "2",
+            "amount": 4,
+            "unit": "episodes",
+            "tags": ["anime"],
+            "description": "madoka",
+        },
+        {
+            "id": "3",
+            "amount": 99,
+            "unit": "episodes",
+            "tags": ["anime"],
+            "description": "unrelated show",
+        },
+    ]
+    r = evaluate_logs(
+        logs,
+        goal_kind="episodes",
+        goal_amount=8,
+        media_filter="anime",
+        param="kamen rider/madoka",
+    )
+    assert r.ok, r.detail
+    assert r.progress == 8
+    assert set(r.matched_log_ids) == {"1", "2"}
+
+    # bare short slash titles stay whole (Fate/stay night style)
+    from app.services.verify import _expand_param_needles
+
+    needles = _expand_param_needles("Fate/stay night")
+    assert needles == ["Fate/stay night"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
