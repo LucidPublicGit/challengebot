@@ -74,6 +74,24 @@ def test_one_hour_left():
     assert final.primary == "Final hour"
 
 
+def test_due_final_hour_dm_once():
+    att, t0 = _att()
+    meta: dict = {}
+    assert not ps.due_final_hour_dm(att, meta, t0 + timedelta(hours=6))
+    assert ps.due_final_hour_dm(att, meta, t0 + timedelta(hours=7, minutes=10))
+    marked = ps.mark_final_hour_dm(meta)
+    assert marked.get(ps.FINAL_HOUR_DM)
+    assert not ps.due_final_hour_dm(att, marked, t0 + timedelta(hours=7, minutes=20))
+    # windows ≤1h never DM
+    short, t1 = _att(ends_at=(t0 + timedelta(minutes=45)).isoformat())
+    assert not ps.due_final_hour_dm(short, {}, t1 + timedelta(minutes=20))
+    # already finished → no reminder
+    done, _ = _att(status="completed")
+    assert not ps.due_final_hour_dm(
+        done, {}, t0 + timedelta(hours=7, minutes=10)
+    )
+
+
 def test_goal_milestones_skipped_for_honor():
     import asyncio
 

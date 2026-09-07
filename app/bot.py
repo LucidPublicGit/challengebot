@@ -12,7 +12,7 @@ from app.db import db_session, get_all_settings
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
 from app.services.monthly_digest import run_monthly_digest
-from app.services.rewards import announce
+from app.services.rewards import announce, send_user_only
 from app.services.verify import parse_iso
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,25 @@ def _ts(iso: str) -> int:
     return int(dt.timestamp())
 
 
-def confirm_howto(ch: dict) -> str:
+def _manage_howto(attempt_id: int | None = None) -> str:
+    """Commands to check/update an open attempt (not confirm-specific)."""
+    abandon = (
+        f"`/challenge abandon attempt_id:{attempt_id}`"
+        if attempt_id is not None
+        else "`/challenge abandon`"
+    )
+    return "\n".join(
+        [
+            "**Update / check anytime**",
+            "`/challenge status` — progress + this guide again",
+            "`/challenge content` — labels / focus param",
+            "`/challenge logs` + `/challenge match` — fix Tadoku title matching",
+            f"{abandon} — cancel this run",
+        ]
+    )
+
+
+def confirm_howto(ch: dict, *, attempt_id: int | None = None) -> str:
     """Plain-English how this challenge is confirmed (shown on start/list/status)."""
     mode = (ch.get("verify") or "tadoku").lower()
     kind = (ch.get("goal_kind") or "").lower()
@@ -40,10 +58,9 @@ def confirm_howto(ch: dict) -> str:
 
     if mode == "honor":
         lines = [
-            "**Confirmation: manual (honor system)**",
+            "**How to complete (honor)**",
             "Tadoku is **not** checked for this challenge.",
-            "When you finish, run `/challenge confirm` and enter **content** "
-            "(what you completed — series, book, URL, …).",
+            "When you finish, run `/challenge confirm`.",
         ]
         if kind == "immersion_hours":
             lines.append(
@@ -53,36 +70,37 @@ def confirm_howto(ch: dict) -> str:
         elif kind == "complete_work":
             lines.append(
                 "Goal: finish the full work end-to-end. "
-                "Name it in the confirm content field (Tadoku can’t prove completion)."
+                "You’ll name it once on confirm if you didn’t set a focus at start."
             )
         else:
             lines.append("Complete the goal, then confirm yourself.")
-        return "\n".join(lines)
+    else:
+        goal_bits = {
+            "characters": f"≥ **{amount:,.0f}** characters on Tadoku",
+            "minutes": f"≥ **{amount:g}** minutes on Tadoku",
+            "volumes": f"≥ **{amount:g}** manga volumes (from Tadoku logs / page estimates)",
+            "episodes": f"≥ **{amount:g}** anime episodes (from Tadoku logs)",
+            "immersion_hours": f"≥ **{amount:g}** hours from timed Tadoku logs",
+        }.get(kind, f"meet goal `{kind}` = {amount} via Tadoku")
 
-    goal_bits = {
-        "characters": f"≥ **{amount:,.0f}** characters on Tadoku",
-        "minutes": f"≥ **{amount:g}** minutes on Tadoku",
-        "volumes": f"≥ **{amount:g}** manga volumes (from Tadoku logs / page estimates)",
-        "episodes": f"≥ **{amount:g}** anime episodes (from Tadoku logs)",
-        "immersion_hours": f"≥ **{amount:g}** hours from timed Tadoku logs",
-    }.get(kind, f"meet goal `{kind}` = {amount} via Tadoku")
+        lines = [
+            "**How to complete (Tadoku-verified)**",
+            "`/challenge confirm` checks your Tadoku logs in this window immediately.",
+            f"Goal check: {goal_bits} (media filter: `{media}`).",
+            "1. Link once: `/challenge link` with your Tadoku user id/URL",
+            "2. Log immersion on tadoku.app **during** the timer",
+            "3. `/challenge confirm` — no form; bot pulls Tadoku and clears if the goal is met",
+            "If confirm **fails**: `/challenge failoverride` (honor, no admin) "
+            "or fix titles via `/challenge logs` + `/challenge match`.",
+        ]
+        if param:
+            lines.append(
+                f"Start focus **{param}** filters which Tadoku titles count "
+                "(`/challenge content param:` / `clear_param` to change)."
+            )
 
-    lines = [
-        "**Confirmation: Tadoku-verified**",
-        "`/challenge confirm` only succeeds if your Tadoku logs in this window meet the goal.",
-        f"Goal check: {goal_bits} (media filter: `{media}`).",
-        "1. Link once: `/challenge link` with your Tadoku user id/URL",
-        "2. Log immersion on tadoku.app **during** the timer",
-        "3. `/challenge confirm` — content + filter/aliases/log ids; bot checks Tadoku",
-        "Filter: blank=keep focus · `all`=any media · `honor`=skip Tadoku.",
-        "If confirm **fails**: `/challenge failoverride` (honor complete, no admin) "
-        "or fix titles via `/challenge logs` + `/challenge match`.",
-        "Labels later: `/challenge content` (works on failed attempts too).",
-    ]
-    if param:
-        lines.append(
-            f"Start focus **{param}** filters Tadoku unless you override on confirm."
-        )
+    lines.append("")
+    lines.append(_manage_howto(attempt_id))
     return "\n".join(lines)
 
 
@@ -189,6 +207,31 @@ class ChallengeBot(commands.Bot):
             except Exception:  # noqa: BLE001
                 pass
             await _post("start", att, ends_at_ts=ends_ts, starts_at_ts=starts_ts)
+            # Private how-to (ephemeral only exists on slash start; schedule needs this)
+            try:
+                uid = int(att["discord_id"])
+                user = self.get_user(uid) or await self.fetch_user(uid)
+            except (TypeError, ValueError, discord.HTTPException):
+                user = None
+            guild = None
+            gid = att.get("guild_id") or _runtime().get("guild_id")
+            if gid and str(gid).isdigit():
+                guild = self.get_guild(int(gid))
+            if user is not None:
+                title = att.get("title") or "challenge"
+                body = (
+                    f"▶ **Your challenge is live** — "
+                    f"{att.get('tier')} #{att.get('number')} **{title}**\n"
+                    f"Ends <t:{ends_ts or 0}:R>.\n\n"
+                    f"{confirm_howto(att, attempt_id=int(att['id']))}"
+                )[:1900]
+                await send_user_only(
+                    self,
+                    guild=guild,
+                    user=user,
+                    content=body,
+                    thread_name=f"Live · {title}"[:100],
+                )
         # Window closed without a clear → FAILED/EXPIRED card (no congrats)
         for att in expired:
             ends_ts = None
@@ -206,6 +249,14 @@ class ChallengeBot(commands.Bot):
                     logger.info("Posted %s active status update(s)", n)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("status updates failed: %s", exc)
+
+        # Private ~1h-left nudge (private thread preferred; DM fallback)
+        try:
+            n = await self._run_final_hour_reminders()
+            if n:
+                logger.info("Sent %s final-hour reminder(s)", n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("final-hour reminders failed: %s", exc)
 
     async def _run_status_updates(self) -> int:
         """Time + Tadoku goal milestone cards for active attempts."""
@@ -266,6 +317,72 @@ class ChallengeBot(commands.Bot):
                 prog_svc.save_status_meta(int(att["id"]), meta)
                 posted += 1
         return posted
+
+    async def _run_final_hour_reminders(self) -> int:
+        """Once when ≤1h left: private thread (else DM) with complete/update howto."""
+        sent = 0
+        for att in prog_svc.list_active_attempts():
+            aid = int(att["id"])
+            meta = prog_svc.get_status_meta(aid)
+            if not prog_svc.due_final_hour_dm(att, meta):
+                continue
+            if not prog_svc.attempt_is_active(aid):
+                continue
+            try:
+                ends_ts = _ts(att["ends_at"])
+            except Exception:  # noqa: BLE001
+                ends_ts = 0
+            focus = att_svc.display_content(att)
+            tier = att.get("tier") or "?"
+            number = att.get("number") or "?"
+            title = att.get("title") or "?"
+            lines = [
+                f"⏰ **Final hour** — {tier} #{number} **{title}**",
+                f"Ends <t:{ends_ts}:R> (<t:{ends_ts}:f>).",
+            ]
+            desc = (att.get("description") or "").strip()
+            if desc:
+                lines.append(desc)
+            if focus:
+                lines.append(f"Focus: **{focus}**")
+            lines.append("")
+            lines.append(confirm_howto(att, attempt_id=aid))
+            body = "\n".join(lines)[:1900]
+            try:
+                if not prog_svc.attempt_is_active(aid):
+                    continue
+                uid = int(att["discord_id"])
+                user = self.get_user(uid) or await self.fetch_user(uid)
+                guild = None
+                gid = att.get("guild_id") or _runtime().get("guild_id")
+                if gid and str(gid).isdigit():
+                    guild = self.get_guild(int(gid))
+                how = await send_user_only(
+                    self,
+                    guild=guild,
+                    user=user,
+                    content=body,
+                    thread_name=f"Final hour · {title}"[:100],
+                )
+                if how:
+                    sent += 1
+                    meta = prog_svc.mark_final_hour_dm(meta)
+                    prog_svc.save_status_meta(aid, meta)
+                else:
+                    logger.info(
+                        "final-hour notice undeliverable attempt=%s user=%s",
+                        aid,
+                        att.get("discord_id"),
+                    )
+                    # Can't deliver → mark so we don't retry every minute
+                    meta = prog_svc.mark_final_hour_dm(meta)
+                    prog_svc.save_status_meta(aid, meta)
+            except (TypeError, ValueError, discord.HTTPException) as exc:
+                logger.warning(
+                    "final-hour reminder failed attempt=%s: %s", aid, exc
+                )
+                # leave unmarked → retry next tick
+        return sent
 
     @expire_loop.before_loop
     async def before_expire(self) -> None:

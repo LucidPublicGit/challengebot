@@ -942,8 +942,9 @@ async def confirm_attempt(
     }
     if not result.ok:
         tips = [
-            "Try filter=`all`, add **aliases** (e.g. OnePiecee), "
-            "or paste Tadoku **log ids** via `/challenge match` / confirm.",
+            "Fix titles: `/challenge logs` + `/challenge match` "
+            "(aliases / log ids), or clear focus with "
+            "`/challenge content clear_param:true`, then confirm again.",
         ]
         if rt.get("allow_honor_override", True):
             tips.append(

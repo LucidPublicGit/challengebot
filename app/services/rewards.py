@@ -108,6 +108,79 @@ async def resolve_secondary_announce_channel(
     )
 
 
+async def send_user_only(
+    bot: discord.Client,
+    *,
+    guild: discord.Guild | None,
+    user: discord.abc.User,
+    content: str,
+    thread_name: str,
+) -> str | None:
+    """Reach one user privately without a public channel post.
+
+    Prefers a private thread in the log/announce channel (server-side, not a DM).
+    Falls back to DM if threads fail. Returns ``"thread"``, ``"dm"``, or ``None``.
+    """
+    body = (content or "")[:2000]
+    if not body:
+        return None
+
+    member: discord.Member | None = None
+    if guild is not None:
+        member = guild.get_member(user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user.id)
+            except discord.HTTPException:
+                member = None
+
+    channels: list[discord.TextChannel] = []
+    if guild is not None:
+        for resolver in (
+            resolve_secondary_announce_channel,
+            resolve_announce_channel,
+        ):
+            ch = await resolver(bot, guild)
+            if ch is not None and ch not in channels:
+                channels.append(ch)
+
+    if member is not None:
+        for channel in channels:
+            try:
+                thread = await channel.create_thread(
+                    name=(thread_name or "challenge")[:100],
+                    type=discord.ChannelType.private_thread,
+                    invitable=False,
+                    auto_archive_duration=1440,
+                    reason="Challenge private notice",
+                )
+                try:
+                    await thread.add_user(member)
+                except discord.HTTPException as exc:
+                    logger.info(
+                        "private thread add_user failed thread=%s: %s",
+                        getattr(thread, "id", "?"),
+                        exc,
+                    )
+                    # Still try send — user may already be a member somehow
+                await thread.send(body)
+                return "thread"
+            except discord.HTTPException as exc:
+                logger.info(
+                    "private thread failed channel=%s: %s", channel.id, exc
+                )
+
+    try:
+        dm_user = user if isinstance(user, discord.User) else await bot.fetch_user(
+            user.id
+        )
+        await dm_user.send(body)
+        return "dm"
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        logger.info("user-only DM failed user=%s: %s", user.id, exc)
+        return None
+
+
 # Which kinds go to the highlights (main) channel
 _HIGHLIGHT_KINDS = frozenset({"start", "complete", "fail"})
 # Log channel gets every kind we announce

@@ -917,7 +917,7 @@ def create_app(bot=None) -> FastAPI:
                   <option value="false" {'selected' if not rt.get('allow_honor_override', True) else ''}>false</option>
                 </select>
                 <p class="muted" style="margin:.35rem 0 0">
-                  Users may complete Tadoku challenges with filter=<code>honor</code> when logs fail.
+                  Users may <code>/challenge failoverride</code> (honor complete) when Tadoku logs fail.
                 </p>
               </div>
               <div><label>Pages / volume</label>

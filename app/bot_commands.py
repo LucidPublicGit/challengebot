@@ -201,10 +201,20 @@ async def _finalize_start(
         media_filter=media,
         duration_hours=dur_h,
     )
+    aid = result.get("attempt_id") or (result.get("attempt") or {}).get("id")
+    try:
+        aid_i = int(aid) if aid is not None else None
+    except (TypeError, ValueError):
+        aid_i = None
     if kind == "scheduled":
-        howto = "A new card posts when it goes live. Cancel: `/challenge abandon`."
+        howto = (
+            "**Scheduled** — public card when it starts; you'll get a private "
+            "how-to thread/DM at go-live.\n"
+            "Cancel anytime: `/challenge abandon`"
+            + (f" `attempt_id:{aid_i}`" if aid_i is not None else ".")
+        )
     else:
-        howto = b.confirm_howto(ch)
+        howto = b.confirm_howto(ch, attempt_id=aid_i)
     files = await _layout_e_start_files(
         user=interaction.user,
         kind=kind,
@@ -218,7 +228,11 @@ async def _finalize_start(
         card_png=png,
         duration_hours=dur_h,
     )
-    kwargs: dict = {"content": f"{caption}\n{howto}", "ephemeral": True}
+    # Ephemeral = only the starter sees complete/update instructions (not a DM)
+    guide = (
+        f"**Only you see this guide**\n{caption}\n\n{howto}"
+    )[:1900]
+    kwargs: dict = {"content": guide, "ephemeral": True}
     if files:
         kwargs["files"] = files
         kwargs["embeds"] = files_as_image_embeds(files, chrome=False)
@@ -1325,34 +1339,33 @@ class StatusActionsView(_OwnerView):
         *,
         has_active: bool,
         attempt_id: int | None = None,
-        param: str | None = None,
-        content: str | None = None,
-        aliases: str | None = None,
-        log_ids: str | None = None,
+        attempt: dict | None = None,
     ) -> None:
         super().__init__(owner_id)
         self.attempt_id = attempt_id
-        self.param = param
-        self.content = content
-        self.aliases = aliases
-        self.log_ids = log_ids
+        self.attempt = attempt
         if has_active:
             confirm = discord.ui.Button(
-                label="Confirm…",
+                label="Confirm",
                 style=discord.ButtonStyle.success,
                 row=0,
             )
 
             async def _confirm(interaction: discord.Interaction) -> None:
-                await interaction.response.send_modal(
-                    ConfirmDetailsModal(
+                att = self.attempt
+                if att is None and self.attempt_id is not None:
+                    picked = att_svc.resolve_user_attempt(
+                        str(interaction.user.id),
                         attempt_id=self.attempt_id,
-                        param=self.param,
-                        content=self.content,
-                        aliases=self.aliases,
-                        log_ids=self.log_ids,
+                        statuses=("active",),
                     )
-                )
+                    att = picked.get("attempt") if picked.get("ok") else None
+                if not att:
+                    await interaction.response.send_message(
+                        "No active challenge.", ephemeral=True
+                    )
+                    return
+                await _begin_confirm(interaction, att)
 
             confirm.callback = _confirm  # type: ignore[method-assign]
             self.add_item(confirm)
@@ -1446,72 +1459,62 @@ class FailOverrideModal(discord.ui.Modal, title="Fail override (honor)"):
         )
 
 
-class ConfirmDetailsModal(discord.ui.Modal, title="Confirm challenge"):
+class HonorConfirmModal(discord.ui.Modal, title="Confirm challenge"):
+    """Single field when honor complete_work needs a named work."""
+
     def __init__(
         self,
         *,
-        attempt_id: int | None = None,
-        param: str | None = None,
-        content: str | None = None,
-        aliases: str | None = None,
-        log_ids: str | None = None,
+        attempt_id: int,
+        content_hint: str | None = None,
     ) -> None:
         super().__init__()
-        self.attempt_id = attempt_id
-        # Prefer newlines in stored content; show first lines in the box
-        _cdefault = (content or param or "").replace(", ", "\n")
+        self.attempt_id = int(attempt_id)
+        _hint = (content_hint or "").replace(", ", "\n")
         self.content_in = discord.ui.TextInput(
-            label="Works completed (one per line)",
-            placeholder="One Piece\nSand Land\n— or a single title / URL",
-            default=_cdefault[:1800],
-            required=False,
+            label="What you completed",
+            placeholder="Series, book, URL — one per line",
+            default=_hint[:1800],
+            required=True,
             max_length=1800,
             style=discord.TextStyle.paragraph,
         )
-        self.filter_in = discord.ui.TextInput(
-            label="Filter: blank keep · all · honor · name",
-            placeholder="honor = skip Tadoku (backdoor)",
-            # Don't prefill focus — blank keeps stored param
-            default="",
-            required=False,
-            max_length=100,
-        )
-        self.aliases_in = discord.ui.TextInput(
-            label="Extra match aliases (comma)",
-            placeholder="OnePiecee, ワンピース — links misspelled Tadoku titles",
-            default=(aliases or "")[:100],
-            required=False,
-            max_length=150,
-        )
-        self.log_ids_in = discord.ui.TextInput(
-            label="Force-include Tadoku log ids",
-            placeholder="From /challenge logs — comma-separated",
-            default=(log_ids or "")[:100],
-            required=False,
-            max_length=200,
-        )
-        self.exclude_in = discord.ui.TextInput(
-            label="Exclude series (comma)",
-            placeholder="Drop wrong titles from count + labels",
-            required=False,
-            max_length=100,
-        )
         self.add_item(self.content_in)
-        self.add_item(self.filter_in)
-        self.add_item(self.aliases_in)
-        self.add_item(self.log_ids_in)
-        self.add_item(self.exclude_in)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await _run_confirm(
             interaction,
             content=str(self.content_in.value).strip() or None,
-            filter_mode=str(self.filter_in.value).strip() or None,
-            aliases=str(self.aliases_in.value).strip() or None,
-            log_ids=str(self.log_ids_in.value).strip() or None,
-            exclude=str(self.exclude_in.value).strip() or None,
             attempt_id=self.attempt_id,
         )
+
+
+def _confirm_needs_content(att: dict) -> bool:
+    """True when honor complete_work has no focus/content yet."""
+    if (att.get("verify") or "tadoku").lower() != "honor":
+        return False
+    if (att.get("goal_kind") or "") != "complete_work":
+        return False
+    if (att.get("param") or "").strip():
+        return False
+    if (att.get("content") or "").strip():
+        return False
+    return True
+
+
+async def _begin_confirm(
+    interaction: discord.Interaction, att: dict
+) -> None:
+    """Tadoku: verify immediately. Honor needing a name: one-field modal."""
+    if _confirm_needs_content(att):
+        await interaction.response.send_modal(
+            HonorConfirmModal(
+                attempt_id=int(att["id"]),
+                content_hint=att_svc.display_content(att) or None,
+            )
+        )
+        return
+    await _run_confirm(interaction, attempt_id=int(att["id"]))
 
 
 class AbandonConfirmView(_OwnerView):
@@ -1927,14 +1930,18 @@ async def challenge_status(
                 param=active.get("param"),
                 content=att_svc.display_content(active),
                 ends_at_ts=ends,
-                detail=b.confirm_howto(active),
+                detail=b.confirm_howto(active, attempt_id=int(active["id"])),
                 media_filter=active.get("media_filter"),
             )
             files.append(as_discord_file(png, "active-card.png"))
             card_kind = "active"
     elif active:
         ends = b._ts(active["ends_at"])
-        detail = b.confirm_howto(active) if self_view else f"Ends <t:{ends}:R>"
+        detail = (
+            b.confirm_howto(active, attempt_id=int(active["id"]))
+            if self_view
+            else f"Ends <t:{ends}:R>"
+        )
         png, caption = await build_event_card(
             kind="active",
             user=target,
@@ -1950,7 +1957,9 @@ async def challenge_status(
         files.append(as_discord_file(png, "active-card.png"))
         card_kind = "active"
         if self_view:
-            lines.append(f"{caption}\n{b.confirm_howto(active)}")
+            lines.append(
+                f"{caption}\n{b.confirm_howto(active, attempt_id=int(active['id']))}"
+            )
         else:
             lines.append(caption)
     elif scheduled:
@@ -2007,22 +2016,11 @@ async def challenge_status(
     # Single open → action buttons; multi → use attempt_id on slash cmds
     if self_view and len(actives) + len(scheduleds) == 1:
         only = active or scheduled
-        fix = {}
-        if only and only.get("fixup_json"):
-            try:
-                import json as _json
-
-                fix = _json.loads(only["fixup_json"]) or {}
-            except Exception:
-                fix = {}
         view = StatusActionsView(
             interaction.user.id,
             has_active=bool(active),
             attempt_id=int(only["id"]) if only else None,
-            param=(only or {}).get("param"),
-            content=att_svc.display_content(only) if only else None,
-            aliases=", ".join(fix.get("aliases") or []),
-            log_ids=", ".join(fix.get("log_ids") or []),
+            attempt=only if active else None,
         )
 
     kwargs: dict = {
@@ -2039,7 +2037,10 @@ async def challenge_status(
         view.message = await interaction.original_response()
 
 
-@challenge_group.command(name="confirm", description="Confirm your active challenge")
+@challenge_group.command(
+    name="confirm",
+    description="Confirm active challenge (Tadoku check runs immediately)",
+)
 @app_commands.describe(
     attempt_id="Attempt id when you have more than one open challenge",
 )
@@ -2070,24 +2071,7 @@ async def challenge_confirm(
             ephemeral=True,
         )
         return
-    active = picked["attempt"]
-    fix: dict = {}
-    if active.get("fixup_json"):
-        try:
-            import json as _json
-
-            fix = _json.loads(active["fixup_json"]) or {}
-        except Exception:
-            fix = {}
-    await interaction.response.send_modal(
-        ConfirmDetailsModal(
-            attempt_id=int(active["id"]),
-            param=active.get("param"),
-            content=att_svc.display_content(active),
-            aliases=", ".join(fix.get("aliases") or []),
-            log_ids=", ".join(fix.get("log_ids") or []),
-        )
-    )
+    await _begin_confirm(interaction, picked["attempt"])
 
 
 @challenge_group.command(
@@ -2245,7 +2229,7 @@ async def challenge_logs(
             f"`{row.get('id')}` · {row.get('series') or '—'} "
             f"({amt} {unit})".strip()
         )
-    lines.append("Copy ids into `/challenge match log_ids:` or confirm modal.")
+    lines.append("Copy ids into `/challenge match log_ids:` then `/challenge confirm`.")
     await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
 
 

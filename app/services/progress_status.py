@@ -25,6 +25,7 @@ TIME_FRACS_SHORT = (0.5,)  # day-scale challenges: halfway only
 TIME_LONG_WINDOW_SEC = 7 * 24 * 3600
 GOAL_FRACS = (0.25, 0.5, 0.75)
 ONE_H_LEFT = "1h_left"
+FINAL_HOUR_DM = "final_hour_dm"
 GOAL_MET = "goal_met"
 # back-compat alias
 TIME_FRACS = TIME_FRACS_LONG
@@ -65,6 +66,7 @@ def list_active_attempts() -> list[dict]:
         rows = conn.execute(
             "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
             "c.goal_amount, c.media_filter, c.param_label, c.time_limit_hours, "
+            "c.description, "
             "u.display_name, u.tadoku_user_id "
             "FROM attempts a "
             "JOIN challenge_defs c ON c.id = a.challenge_id "
@@ -356,6 +358,43 @@ def apply_event_marks(meta: dict, event: StatusEvent) -> dict:
     if event.mark_goal_met:
         meta["goal_met_hint"] = True
     meta["last_post_at"] = utcnow_iso()
+    return meta
+
+
+def attempt_is_active(attempt_id: int) -> bool:
+    """Fresh DB check — completed/abandoned/expired must not get reminders."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT status FROM attempts WHERE id=?", (int(attempt_id),)
+        ).fetchone()
+    return bool(row) and (row["status"] or "") == "active"
+
+
+def due_final_hour_dm(
+    att: dict, meta: dict, now: datetime | None = None
+) -> bool:
+    """True once when ~1h remains on an still-active attempt (DM not yet sent)."""
+    if meta.get(FINAL_HOUR_DM):
+        return False
+    if (att.get("status") or "active") != "active":
+        return False
+    now = _aware(now or _now())
+    try:
+        started = _aware(parse_iso(att["started_at"]))
+        ends = _aware(parse_iso(att["ends_at"]))
+    except Exception:  # noqa: BLE001
+        return False
+    total = (ends - started).total_seconds()
+    remaining = (ends - now).total_seconds()
+    if total <= 3600 or remaining <= 0 or remaining > 3600:
+        return False
+    return True
+
+
+def mark_final_hour_dm(meta: dict) -> dict:
+    meta = dict(meta)
+    meta[FINAL_HOUR_DM] = True
+    meta["final_hour_dm_at"] = utcnow_iso()
     return meta
 
 

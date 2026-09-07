@@ -38,7 +38,7 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 1. Create application → Bot → token  
 2. Privileged intent: **Server Members** (for reward roles)  
 3. OAuth2 scopes: `bot`, `applications.commands`  
-4. Bot perms: Send Messages, Manage Roles (if rewarding), Use App Commands  
+4. Bot perms: Send Messages, Create Private Threads, Send Messages in Threads, Manage Roles (if rewarding), Use App Commands  
 5. Installation → enable **Guild Install**  
 6. Optional `ADMIN_ROLE_IDS` (guild owner + Administrator always allowed)
 
@@ -47,7 +47,7 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 1. `/challenge link user_id:<tadoku uuid or profile url>`  
 2. `/challenge list` → `/challenge start tier:Easy number:4 param:Some VN`  
 3. Log immersion on tadoku.app inside the window  
-4. `/challenge confirm` — bot pulls logs and checks the goal  
+4. `/challenge confirm` — bot pulls Tadoku logs immediately (no form); edit labels later with `/challenge content`  
 
 ### Admin tests (owner / Administrator / `ADMIN_ROLE_IDS` only)
 
