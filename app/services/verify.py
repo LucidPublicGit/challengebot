@@ -231,8 +231,13 @@ def _media_match(log: dict, media_filter: str) -> bool:
 
     if mf == "manga":
         return has("manga") or "manga" in desc
-    if mf == "anime":
-        return has("anime") or "anime" in desc
+    if mf in ("anime", "shows", "show"):
+        # anime kept as alias; shows = anime/drama/variety/tv/etc.
+        return has(
+            "anime", "drama", "variety", "tv", "show", "shows", "jdrama"
+        ) or any(
+            w in desc for w in ("anime", "drama", "variety", "jdrama")
+        )
     if mf == "youtube":
         return has("youtube", "youtube:video") or "youtube" in desc
     if mf in ("vn", "visual_novel"):
@@ -567,6 +572,8 @@ def synthetic_logs_for_goal(
     tag = {
         "manga": "manga",
         "anime": "anime",
+        "shows": "anime",
+        "show": "anime",
         "youtube": "youtube",
         "vn": "vn",
         "visual_novel": "vn",

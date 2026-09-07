@@ -154,7 +154,7 @@ def test_episodes_unit():
         logs,
         goal_kind="episodes",
         goal_amount=8,
-        media_filter="anime",
+        media_filter="shows",
         param="Show",
     )
     assert r.ok
@@ -253,7 +253,7 @@ def test_synthetic_pass_fail():
 def test_synthetic_volumes_and_episodes():
     for kind, amount, media in (
         ("volumes", 5, "manga"),
-        ("episodes", 8, "anime"),
+        ("episodes", 8, "shows"),
         ("minutes", 180, "youtube"),
         ("immersion_hours", 8, "any"),
     ):
@@ -302,7 +302,7 @@ def test_multi_work_param_slash_or_match():
             "id": "1",
             "amount": 4,
             "unit": "episodes",
-            "tags": ["anime"],
+            "tags": ["drama"],
             "description": "kamen rider",
         },
         {
@@ -316,7 +316,7 @@ def test_multi_work_param_slash_or_match():
             "id": "3",
             "amount": 99,
             "unit": "episodes",
-            "tags": ["anime"],
+            "tags": ["youtube"],
             "description": "unrelated show",
         },
     ]
@@ -324,7 +324,7 @@ def test_multi_work_param_slash_or_match():
         logs,
         goal_kind="episodes",
         goal_amount=8,
-        media_filter="anime",
+        media_filter="shows",
         param="kamen rider/madoka",
     )
     assert r.ok, r.detail

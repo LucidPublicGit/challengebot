@@ -1717,7 +1717,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
     },
     "scheduled": {
         "display_name": "Monty",
-        "challenge_title": "Anime Sprint",
+        "challenge_title": "Shows Sprint",
         "tier": "easy",
         "number": 2,
         "focus": "Frieren",
@@ -1767,7 +1767,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
     },
     "expired": {
         "display_name": "Monty",
-        "challenge_title": "Anime 15",
+        "challenge_title": "Shows 15",
         "tier": "medium",
         "number": 2,
         "focus": "Dungeon Meshi",
@@ -1816,12 +1816,12 @@ async def render_all_demo_cards(
     out: list[tuple[str, bytes]] = []
     media_by_kind = {
         "start": "manga",
-        "scheduled": "anime",
+        "scheduled": "shows",
         "active": "vn",
         "complete": "vn",
         "fail": "manga",
         "abandon": "youtube",
-        "expired": "anime",
+        "expired": "shows",
         "status": "any",
     }
     for kind, sample in DEMO_CHALLENGE_SAMPLES.items():
@@ -1865,7 +1865,7 @@ async def render_all_demo_cards(
                 "number": 4,
             },
             {
-                "title": "Anime Sprint",
+                "title": "Shows Sprint",
                 "tier": "medium",
                 "number": 2,
             },

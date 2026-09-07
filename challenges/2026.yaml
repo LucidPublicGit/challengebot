@@ -16,14 +16,15 @@ challenges:
   - id: easy-2
     tier: easy
     number: 2
-    title: Anime Sprint
+    title: Shows Sprint
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
     goal_amount: 8
-    media_filter: anime
-    description: Watch at least 8 anime episodes in one day.
+    media_filter: shows
+    description: >-
+      Watch at least 8 episodes of anime, drama, variety, or other shows in one day.
 
   - id: easy-3
     tier: easy
@@ -79,14 +80,15 @@ challenges:
   - id: medium-2
     tier: medium
     number: 2
-    title: Anime 15
+    title: Shows 15
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
     goal_amount: 15
-    media_filter: anime
-    description: Watch at least 15 anime episodes in one day.
+    media_filter: shows
+    description: >-
+      Watch at least 15 episodes of anime, drama, variety, or other shows in one day.
 
   - id: medium-3
     tier: medium
@@ -202,14 +204,15 @@ challenges:
   - id: hard-3
     tier: hard
     number: 3
-    title: Anime 20
+    title: Shows 20
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
     goal_amount: 20
-    media_filter: anime
-    description: Watch at least 20 anime episodes in one day.
+    media_filter: shows
+    description: >-
+      Watch at least 20 episodes of anime, drama, variety, or other shows in one day.
 
   - id: hard-4
     tier: hard
@@ -263,14 +266,15 @@ challenges:
   - id: ota-3
     tier: ota_master
     number: 3
-    title: Anime 30
+    title: Shows 30
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: episodes
     goal_amount: 30
-    media_filter: anime
-    description: Watch at least 30 anime episodes in one day.
+    media_filter: shows
+    description: >-
+      Watch at least 30 episodes of anime, drama, variety, or other shows in one day.
 
   - id: ota-4
     tier: ota_master

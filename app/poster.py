@@ -47,7 +47,7 @@ def _media_category(media_filter: str | None) -> str:
         return "vn"
     if m in ("manga", "comic"):
         return "manga"
-    if m in ("anime",):
+    if m in ("anime", "shows", "show"):
         return "anime"
     if m in ("book", "novel", "ln", "light_novel", "reading"):
         return "book"
