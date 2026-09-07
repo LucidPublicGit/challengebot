@@ -58,7 +58,7 @@ class Settings:
     # Log: schedule, start, status, complete/fail, abandon, expired, …
     announce_secondary_channel_id: str = "1523503572652916786"
     reward_roles: str = ""
-    allow_reattempt: bool = True
+    allow_reattempt: bool = False
     # Users may complete tadoku challenges via honor when logs fail / mismatch
     allow_honor_override: bool = True
     pages_per_volume: float = 180.0
@@ -112,7 +112,7 @@ def get_settings() -> Settings:
             "ANNOUNCE_SECONDARY_CHANNEL_ID", "1523503572652916786"
         ),
         reward_roles=_env("REWARD_ROLES"),
-        allow_reattempt=_env_bool("ALLOW_REATTEMPT", True),
+        allow_reattempt=_env_bool("ALLOW_REATTEMPT", False),
         allow_honor_override=_env_bool("ALLOW_HONOR_OVERRIDE", True),
         pages_per_volume=_env_float("PAGES_PER_VOLUME", 180.0),
         episode_minutes=_env_float("EPISODE_MINUTES", 24.0),

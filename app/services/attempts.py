@@ -473,7 +473,7 @@ def start_attempt(
         if done:
             return {
                 "ok": False,
-                "error": "Re-attempts are disabled and you already completed this challenge.",
+                "error": "You already cleared this challenge — each one is one-time only.",
             }
 
     if ch.get("verify") == "tadoku":
@@ -1356,6 +1356,20 @@ def admin_delete_challenge(challenge_id: str) -> dict[str, Any]:
     with db_session() as conn:
         conn.execute("DELETE FROM challenge_defs WHERE id=?", (challenge_id,))
     return {"ok": True}
+
+
+def completed_challenge_ids(discord_id: str) -> set[str]:
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT challenge_id FROM attempts "
+            "WHERE discord_id=? AND status='completed'",
+            (str(discord_id),),
+        ).fetchall()
+    return {str(r["challenge_id"]) for r in rows}
+
+
+def reattempts_allowed() -> bool:
+    return bool(_runtime().get("allow_reattempt"))
 
 
 def completion_counts(discord_id: str) -> dict[str, int]:

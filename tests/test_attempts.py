@@ -432,29 +432,22 @@ def test_reattempt_setting():
             "u9", tier="easy", number=4, param="G", guild_id="g"
         )
         _run(att.admin_test_verify("u9", mode="fake_pass", apply=True))
-        # default allow_reattempt true
+        # default allow_reattempt false → one clear only
+        blocked = att.start_attempt(
+            "u9", tier="easy", number=4, param="G", guild_id="g"
+        )
+        assert blocked["ok"] is False
+        assert "already" in (blocked.get("error") or "").lower()
+
+        from app.db import db_session, set_setting
+
+        with db_session() as conn:
+            set_setting(conn, "allow_reattempt", "true")
         r = att.start_attempt(
             "u9", tier="easy", number=4, param="G", guild_id="g"
         )
         assert r["ok"] is True, r
         att.abandon_attempt("u9")
-
-        from app.db import db_session, set_setting
-
-        with db_session() as conn:
-            set_setting(conn, "allow_reattempt", "false")
-        # complete once more then block
-        att.start_attempt(
-            "u9", tier="easy", number=4, param="G", guild_id="g"
-        )
-        _run(att.admin_test_verify("u9", mode="fake_pass", apply=True))
-        blocked = att.start_attempt(
-            "u9", tier="easy", number=4, param="G", guild_id="g"
-        )
-        assert blocked["ok"] is False
-        assert "re-attempt" in (blocked.get("error") or "").lower() or "already" in (
-            blocked.get("error") or ""
-        ).lower()
     finally:
         cleanup_db(path)
 

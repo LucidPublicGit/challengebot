@@ -37,6 +37,20 @@ from app.services.rewards import (
 logger = logging.getLogger(__name__)
 
 
+def _cleared_note() -> str:
+    if att_svc.reattempts_allowed():
+        return "✅ = already cleared."
+    return "✅ = cleared (one-time — can't start again)."
+
+
+def _challenge_done_tag(challenge_id: str, done_ids: set[str]) -> str:
+    if challenge_id not in done_ids:
+        return ""
+    if att_svc.reattempts_allowed():
+        return " ✅ cleared"
+    return " ✅ cleared · one-time only"
+
+
 # Imported lazily-friendly bits from bot to avoid cycles at import time
 def _bot_helpers():
     from app import bot as b
@@ -1108,22 +1122,27 @@ class WhenPickView(_OwnerView):
             )
             return
         items = list_challenges(year=self.year, tier=self.tier)
+        done_ids = att_svc.completed_challenge_ids(str(self.owner_id))
         pick = ChallengePickView(
             self.owner_id,
             tier=self.tier,
             year=self.year,
             guild_id=self.guild_id,
             challenges=items,
+            done_ids=done_ids,
         )
         lines = [
             f"**#{c['number']} {c['title']}**"
             + (f" · needs *{c['param_label']}*" if c.get("param_label") else "")
+            + _challenge_done_tag(str(c["id"]), done_ids)
             for c in items
         ]
         await interaction.response.edit_message(
             embed=_start_embed(
                 title=f"{self.tier} challenges",
-                description="Select one:\n" + "\n".join(lines),
+                description=(
+                    f"{_cleared_note()}\nSelect one:\n" + "\n".join(lines)
+                ),
             ),
             view=pick,
         )
@@ -1149,18 +1168,30 @@ class WhenPickView(_OwnerView):
 
 
 class ChallengeSelect(discord.ui.Select):
-    def __init__(self, challenges: list[dict]) -> None:
+    def __init__(
+        self, challenges: list[dict], *, done_ids: set[str] | None = None
+    ) -> None:
+        self.done_ids = done_ids or set()
+        lock = not att_svc.reattempts_allowed()
         options = []
         for c in challenges[:25]:
+            cid = str(c["id"])
+            done = cid in self.done_ids
             need = c.get("param_label")
-            desc = (c.get("description") or "")[:100]
-            if need:
-                desc = f"Needs {need} · {desc}"[:100]
+            if done and lock:
+                desc = "Cleared — can't redo"
+            elif done:
+                desc = "Already cleared"
+            else:
+                desc = (c.get("description") or "")[:100]
+                if need:
+                    desc = f"Needs {need} · {desc}"[:100]
             options.append(
                 discord.SelectOption(
                     label=f"#{c['number']} · {c['title']}"[:100],
-                    value=str(c["id"]),
+                    value=cid,
                     description=desc or None,
+                    emoji="✅" if done else None,
                 )
             )
         super().__init__(
@@ -1176,6 +1207,15 @@ class ChallengeSelect(discord.ui.Select):
         if not ch:
             await interaction.response.send_message(
                 "Challenge not found — try again.", ephemeral=True
+            )
+            return
+        if (
+            str(ch["id"]) in self.done_ids
+            and not att_svc.reattempts_allowed()
+        ):
+            await interaction.response.send_message(
+                "You already cleared this challenge — each one is one-time only.",
+                ephemeral=True,
             )
             return
         if ch.get("param_label"):
@@ -1213,12 +1253,14 @@ class ChallengePickView(_OwnerView):
         year: int,
         guild_id: str | None,
         challenges: list[dict],
+        done_ids: set[str] | None = None,
     ) -> None:
         super().__init__(owner_id)
         self.tier = tier
         self.year = year
         self.guild_id = guild_id
-        self.add_item(ChallengeSelect(challenges))
+        self.done_ids = done_ids or set()
+        self.add_item(ChallengeSelect(challenges, done_ids=self.done_ids))
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=1)
     async def back(
@@ -1258,13 +1300,16 @@ class TierButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
+        done_ids = att_svc.completed_challenge_ids(str(view.owner_id))
         if view.mode == "list":
             b = _bot_helpers()
-            lines = []
+            lines = [_cleared_note(), ""]
             for c in items:
                 param = f" `<{c['param_label']}>`" if c.get("param_label") else ""
+                tag = _challenge_done_tag(str(c["id"]), done_ids)
                 lines.append(
-                    f"**#{c['number']} {c['title']}**{param} — {c.get('description') or ''} "
+                    f"**#{c['number']} {c['title']}**{param}{tag} — "
+                    f"{c.get('description') or ''} "
                     f"_(confirm: {b.verify_label(c)})_"
                 )
             embed = discord.Embed(
@@ -1279,18 +1324,22 @@ class TierButton(discord.ui.Button):
         lines = []
         for c in items:
             need = f" · needs *{c['param_label']}*" if c.get("param_label") else ""
-            lines.append(f"**#{c['number']} {c['title']}**{need}")
+            tag = _challenge_done_tag(str(c["id"]), done_ids)
+            lines.append(f"**#{c['number']} {c['title']}**{need}{tag}")
         pick = ChallengePickView(
             view.owner_id,
             tier=self.tier,
             year=view.year,
             guild_id=view.guild_id,
             challenges=items,
+            done_ids=done_ids,
         )
         await interaction.response.edit_message(
             embed=_start_embed(
                 title=f"{self.label} challenges",
-                description="Select one:\n" + "\n".join(lines),
+                description=(
+                    f"{_cleared_note()}\nSelect one:\n" + "\n".join(lines)
+                ),
             ),
             view=pick,
         )
@@ -1856,7 +1905,9 @@ async def challenge_list(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         embed=discord.Embed(
             title=f"Challenges {year}",
-            description="Pick a difficulty to browse.",
+            description=(
+                f"Pick a difficulty to browse.\n{_cleared_note()}"
+            ),
             color=0x5865F2,
         ),
         view=view,
