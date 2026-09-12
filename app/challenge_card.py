@@ -169,8 +169,11 @@ _FONT_FILES: dict[bool, list[str | tuple[str, int]]] = {
     ],
 }
 
+# Allow 12,688 / 50,000 (commas) — bare [\d.]+ matched 688/50 and broke bars
 _PROGRESS_RE = re.compile(
-    r"(?P<a>[\d.]+)\s*(?P<ak>k)?\s*/\s*(?P<b>[\d.]+)\s*(?P<bk>k)?",
+    r"(?P<a>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?P<ak>k)?"
+    r"\s*/\s*"
+    r"(?P<b>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?P<bk>k)?",
     re.IGNORECASE,
 )
 
@@ -299,8 +302,8 @@ def _parse_progress(text: str) -> tuple[Optional[float], str]:
     m = _PROGRESS_RE.search(text)
     if not m:
         return None, text
-    a = float(m.group("a")) * (1000 if m.group("ak") else 1)
-    b = float(m.group("b")) * (1000 if m.group("bk") else 1)
+    a = float(m.group("a").replace(",", "")) * (1000 if m.group("ak") else 1)
+    b = float(m.group("b").replace(",", "")) * (1000 if m.group("bk") else 1)
     if b <= 0:
         return None, text
     ratio = a / b

@@ -1602,6 +1602,20 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
         max_length=80,
     )
 
+    def __init__(
+        self,
+        *,
+        resume_message: discord.Message | None = None,
+        year: int | None = None,
+        guild_id: str | None = None,
+        owner_id: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.resume_message = resume_message
+        self.year = year
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         raw = str(self.user_id.value).strip()
         m = re.search(
@@ -1617,8 +1631,37 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
             return
         name = str(self.display_name.value).strip() or None
         att_svc.link_tadoku(str(interaction.user.id), m.group(0), name)
+        linked = m.group(0)
+        if (
+            self.resume_message is not None
+            and self.year is not None
+            and self.owner_id is not None
+        ):
+            view = TierPickView(
+                self.owner_id, year=self.year, guild_id=self.guild_id
+            )
+            await interaction.response.send_message(
+                f"Linked Tadoku `{linked}`. Pick a difficulty on the start panel.",
+                ephemeral=True,
+            )
+            try:
+                await self.resume_message.edit(
+                    embed=_start_embed(
+                        title="Pick difficulty",
+                        description=(
+                            f"Tadoku linked · **{self.year}** catalog\n"
+                            "1️⃣ Difficulty → 2️⃣ Challenge → 3️⃣ Focus if needed → "
+                            "4️⃣ **Now** or **Schedule**"
+                        ),
+                    ),
+                    view=view,
+                )
+                view.message = self.resume_message
+            except discord.HTTPException:
+                logger.warning("could not advance start panel after Tadoku link")
+            return
         await interaction.response.send_message(
-            f"Linked Tadoku user `{m.group(0)}`.",
+            f"Linked Tadoku user `{linked}`.",
             ephemeral=True,
         )
 
@@ -1788,8 +1831,120 @@ class VoidModal(discord.ui.Modal, title="Void attempt"):
 # ----- slash commands -----
 
 
+def _start_tier_embed(*, year: int, note: str = "") -> discord.Embed:
+    head = f"{note}\n" if note else ""
+    return _start_embed(
+        title="Pick difficulty",
+        description=(
+            f"{head}**{year}** catalog\n"
+            "1️⃣ Difficulty → 2️⃣ Challenge → 3️⃣ Focus if needed → "
+            "4️⃣ **Now** or **Schedule**"
+        ),
+    )
+
+
+async def _advance_start_after_timezone(
+    interaction: discord.Interaction,
+    *,
+    owner_id: int,
+    year: int,
+    guild_id: str | None,
+    offset: str,
+) -> None:
+    """Timezone done → Tadoku link gate (if needed) → tier pick."""
+    user = att_svc.get_user(str(owner_id))
+    linked = bool(user and user.get("tadoku_user_id"))
+    note = f"Timezone **`{offset}`** · **{_day_label(offset, 0)}**"
+    if linked:
+        view = TierPickView(owner_id, year=year, guild_id=guild_id)
+        await interaction.response.edit_message(
+            embed=_start_tier_embed(year=year, note=note),
+            view=view,
+        )
+        view.message = interaction.message
+        return
+    view = StartTadokuGateView(
+        owner_id, year=year, guild_id=guild_id, offset=offset
+    )
+    await interaction.response.edit_message(embed=view._embed(), view=view)
+    view.message = interaction.message
+
+
+class StartTadokuGateView(_OwnerView):
+    """Ask for Tadoku before challenge pick; skip OK (honor / link later)."""
+
+    def __init__(
+        self,
+        owner_id: int,
+        *,
+        year: int,
+        guild_id: str | None,
+        offset: str,
+    ) -> None:
+        super().__init__(owner_id)
+        self.year = year
+        self.guild_id = guild_id
+        self.offset = offset
+
+    def _embed(self) -> discord.Embed:
+        return _start_embed(
+            title="Link Tadoku",
+            description=(
+                f"Timezone **`{self.offset}`** · **{_day_label(self.offset, 0)}**\n\n"
+                "Most challenges verify immersion via **Tadoku**.\n"
+                "Link your account before picking a challenge.\n\n"
+                "Honor-only challenges don't need it — **Skip** is fine.\n"
+                "You can also `/challenge link` later."
+            ),
+        )
+
+    @discord.ui.button(label="Link Tadoku…", style=discord.ButtonStyle.primary, row=0)
+    async def link_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(
+            LinkModal(
+                resume_message=interaction.message,
+                year=self.year,
+                guild_id=self.guild_id,
+                owner_id=self.owner_id,
+            )
+        )
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, row=0)
+    async def skip_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = TierPickView(
+            self.owner_id, year=self.year, guild_id=self.guild_id
+        )
+        await interaction.response.edit_message(
+            embed=_start_tier_embed(
+                year=self.year,
+                note=(
+                    f"Timezone **`{self.offset}`** · Tadoku not linked "
+                    f"(link later if needed)"
+                ),
+            ),
+            view=view,
+        )
+        view.message = interaction.message
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_start_embed(
+                title="Cancelled", description="No challenge started."
+            ),
+            view=None,
+        )
+
+
 class StartTimezoneGateView(_OwnerView):
-    """First step of /challenge start: confirm timezone, then difficulty."""
+    """First step of /challenge start: confirm timezone, then Tadoku / difficulty."""
 
     def __init__(self, owner_id: int, *, year: int, guild_id: str | None) -> None:
         super().__init__(owner_id)
@@ -1806,7 +1961,7 @@ class StartTimezoneGateView(_OwnerView):
                 f"Pick the UTC offset your clock shows **right now**.\n"
                 f"Saved: **`{self.offset}`** → **{today}**\n\n"
                 "This makes **Today** and schedule times correct.\n"
-                "Then: Difficulty → Challenge → Now or Schedule."
+                "Then: Tadoku (if needed) → Difficulty → Challenge → Now or Schedule."
             ),
         )
 
@@ -1843,27 +1998,18 @@ class StartTimezoneGateView(_OwnerView):
         )
 
         async def on_cont(interaction: discord.Interaction) -> None:
-            # Persist current selection even if they only hit Continue
             att_svc.set_tz_offset(
                 str(self.owner_id),
                 self.offset,
                 interaction.user.display_name,
             )
-            view = TierPickView(
-                self.owner_id, year=self.year, guild_id=self.guild_id
+            await _advance_start_after_timezone(
+                interaction,
+                owner_id=self.owner_id,
+                year=self.year,
+                guild_id=self.guild_id,
+                offset=self.offset,
             )
-            await interaction.response.edit_message(
-                embed=_start_embed(
-                    description=(
-                        f"Timezone **`{self.offset}`** · **{_day_label(self.offset, 0)}**\n"
-                        f"**{self.year}** catalog\n"
-                        "1️⃣ Difficulty → 2️⃣ Challenge → 3️⃣ Focus if needed → "
-                        "4️⃣ **Now** or **Schedule**"
-                    ),
-                ),
-                view=view,
-            )
-            view.message = interaction.message
 
         async def on_cancel(interaction: discord.Interaction) -> None:
             self.stop()

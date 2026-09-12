@@ -8,10 +8,24 @@ from pathlib import Path
 from app.challenge_card import (
     DEMO_CHALLENGE_SAMPLES,
     KIND_STYLE,
+    _parse_progress,
     render_all_demo_cards,
     render_challenge_card,
     render_leaderboard_card,
 )
+
+
+def test_parse_progress_thousand_commas():
+    """12,688 / 50,000 must not become 688/50 (old regex bug)."""
+    ratio, label = _parse_progress("12,688 / 50,000 characters · Tadoku")
+    assert ratio is not None
+    assert abs(ratio - 12688 / 50000) < 1e-9
+    assert "12,688" in label and "50,000" in label
+    assert "688 / 50" not in label.replace("12,688 / 50,000", "")
+    r2, _ = _parse_progress("6.2 / 10 volumes")
+    assert r2 is not None and abs(r2 - 0.62) < 1e-9
+    r3, _ = _parse_progress("32.1k / 30k characters")
+    assert r3 is not None and abs(r3 - 32100 / 30000) < 1e-9
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "card_previews"
