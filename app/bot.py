@@ -12,7 +12,7 @@ from app.db import db_session, get_all_settings
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
 from app.services.monthly_digest import run_monthly_digest
-from app.services.rewards import announce, send_user_only
+from app.services.rewards import announce, apply_rewards, send_user_only
 from app.services.verify import parse_iso
 
 logger = logging.getLogger(__name__)
@@ -258,36 +258,108 @@ class ChallengeBot(commands.Bot):
         except Exception as exc:  # noqa: BLE001
             logger.warning("final-hour reminders failed: %s", exc)
 
-    async def _run_status_updates(self) -> int:
-        """Time + Tadoku goal milestone cards for active attempts."""
+    async def _run_status_updates(self, *, force: bool = False) -> int:
+        """Time + Tadoku goal milestone cards; auto-complete when goal_ok."""
         posted = 0
         actives = prog_svc.list_active_attempts()
         for att in actives:
             try:
-                events, meta = await prog_svc.collect_status_events_for_attempt(att)
+                events, meta = await prog_svc.collect_status_events_for_attempt(
+                    att, force=force
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "status collect failed attempt=%s: %s", att.get("id"), exc
                 )
                 continue
+
+            aid = int(att["id"])
+            user = None
+            try:
+                uid = int(att["discord_id"])
+                user = self.get_user(uid) or await self.fetch_user(uid)
+            except (TypeError, ValueError, discord.HTTPException):
+                user = None
+            guild = None
+            gid = att.get("guild_id") or _runtime().get("guild_id")
+            if gid and str(gid).isdigit():
+                guild = self.get_guild(int(gid))
+
+            # Fresh Tadoku poll met the goal → complete (no separate confirm step)
+            if meta.get("goal_ok") and prog_svc.attempt_is_active(aid):
+                try:
+                    result = await att_svc.confirm_attempt(
+                        str(att["discord_id"]),
+                        attempt_id=aid,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "auto-complete failed attempt=%s: %s", aid, exc
+                    )
+                    result = {}
+                if result.get("ok"):
+                    done = result.get("attempt") or att
+                    method = result.get("method") or "tadoku_poll"
+                    content = result.get("content") or att_svc.display_content(done)
+                    detail = None
+                    v = result.get("verify") or {}
+                    if isinstance(v, dict):
+                        detail = v.get("detail")
+                    if guild is not None and isinstance(user, discord.Member):
+                        try:
+                            await apply_rewards(user, tier=done.get("tier") or "easy")
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("auto-complete rewards: %s", exc)
+                    try:
+                        await announce(
+                            self,
+                            kind="complete",
+                            guild=guild,
+                            user=user,
+                            display_name=done.get("display_name")
+                            or att.get("display_name")
+                            or att.get("discord_id"),
+                            title=done.get("title") or "?",
+                            tier=done.get("tier") or "?",
+                            number=int(done.get("number") or 0),
+                            param=done.get("param"),
+                            content=content,
+                            method=method,
+                            detail=detail,
+                            media_filter=done.get("media_filter"),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("auto-complete announce: %s", exc)
+                    meta = dict(meta)
+                    meta["goal_met_hint"] = True
+                    meta["goal_ok"] = False
+                    prog_svc.save_status_meta(aid, meta)
+                    posted += 1
+                    logger.info(
+                        "Auto-completed attempt=%s via Tadoku poll (%s)",
+                        aid,
+                        detail or method,
+                    )
+                    continue
+                logger.info(
+                    "goal_ok but confirm declined attempt=%s: %s",
+                    aid,
+                    result.get("error") or result,
+                )
+
             if not events:
                 continue
             for ev in events:
+                # Skip nudge card if we already tried complete above
+                if ev.mark_goal_met:
+                    meta = prog_svc.apply_event_marks(meta, ev)
+                    prog_svc.save_status_meta(aid, meta)
+                    continue
                 ends_ts = None
                 try:
                     ends_ts = _ts(att["ends_at"])
                 except Exception:  # noqa: BLE001
                     pass
-                user = None
-                try:
-                    uid = int(att["discord_id"])
-                    user = self.get_user(uid) or await self.fetch_user(uid)
-                except (TypeError, ValueError, discord.HTTPException):
-                    user = None
-                guild = None
-                gid = att.get("guild_id") or _runtime().get("guild_id")
-                if gid and str(gid).isdigit():
-                    guild = self.get_guild(int(gid))
                 try:
                     try:
                         dur_h = float(att.get("time_limit_hours") or 0) or None
@@ -314,7 +386,7 @@ class ChallengeBot(commands.Bot):
                     logger.warning("status announce failed: %s", exc)
                     continue
                 meta = prog_svc.apply_event_marks(meta, ev)
-                prog_svc.save_status_meta(int(att["id"]), meta)
+                prog_svc.save_status_meta(aid, meta)
                 posted += 1
         return posted
 

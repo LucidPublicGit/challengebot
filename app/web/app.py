@@ -14,6 +14,7 @@ from app.catalog import list_challenges, upsert_challenges_from_yaml
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, set_settings
 from app.services import attempts as att_svc
+from app.services import progress_status as prog_svc
 
 security = HTTPBasic(auto_error=False)
 
@@ -140,6 +141,16 @@ td .row-actions button:hover{border-color:var(--accent2);color:var(--ink)}
 .filters a:hover{color:var(--ink);text-decoration:none;border-color:var(--accent2)}
 .filters a.on{background:rgba(124,156,255,.16);color:var(--ink);border-color:var(--accent2)}
 .filters a .n{font-variant-numeric:tabular-nums;opacity:.85}
+.poll-bar{
+  display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;justify-content:space-between;
+}
+.poll-bar .poll-meta{display:flex;flex-direction:column;gap:.2rem;min-width:12rem;flex:1 1 14rem}
+.poll-bar .poll-timer{
+  font-variant-numeric:tabular-nums;font-weight:700;font-size:1.05rem;color:var(--ink);
+}
+.poll-bar .poll-timer.due{color:var(--ok)}
+.poll-mini{width:100%;margin-top:.45rem;font-size:.78rem}
+.poll-mini td,.poll-mini th{padding:.22rem .3rem;font-size:.75rem}
 """
 
 
@@ -326,6 +337,8 @@ def create_app(bot=None) -> FastAPI:
     def home(
         filter: str = "all",
         reposted: int = 0,
+        polled: Optional[int] = None,
+        poll_err: str = "",
         _: None = Depends(_auth),
     ):
         # Tabs: all | active (active+scheduled) | completed | voided
@@ -398,8 +411,70 @@ def create_app(bot=None) -> FastAPI:
                 f'<p class="msg">Reposted attempt <b>#{int(reposted)}</b> '
                 "to announce channels.</p>"
             )
+        if polled is not None:
+            flash += (
+                f'<p class="msg">Forced Tadoku poll — posted '
+                f"<b>{int(polled)}</b> status card(s).</p>"
+            )
+        if poll_err:
+            flash += f'<p class="err">{_esc(poll_err)}</p>'
+
+        overview = prog_svc.tadoku_poll_overview()
+        next_iso = overview.get("next_eligible_at") or ""
+        poll_on = overview.get("enabled", True)
+        poll_m = float(overview.get("poll_minutes") or 10)
+        poll_m_s = f"{poll_m:g}"
+        tick_s = int(overview.get("tick_seconds") or 60)
+        poll_rows = []
+        for p in overview.get("attempts") or []:
+            prog = p.get("last_progress")
+            goal = p.get("goal_amount")
+            kind = p.get("goal_kind") or ""
+            if prog is None:
+                prog_s = "—"
+            elif goal:
+                prog_s = f"{prog:g} / {goal:g} {kind}".strip()
+            else:
+                prog_s = f"{prog:g}"
+            last_s = _human_when(p.get("last_poll_at")) if p.get("last_poll_at") else "never"
+            poll_rows.append(
+                "<tr>"
+                f"<td class='mono'>#{p['attempt_id']}</td>"
+                f"<td>{_esc(p.get('name'))}<span class='sub'>{_esc(p.get('title'))}</span></td>"
+                f"<td class='mono'>{_esc(prog_s)}</td>"
+                f"<td class='muted'>{_esc(last_s)}</td>"
+                "</tr>"
+            )
+        poll_table = (
+            "<table class='poll-mini'><thead><tr>"
+            "<th>ID</th><th>Active Tadoku</th><th>Last progress</th><th>Last poll</th>"
+            "</tr></thead><tbody>"
+            + ("".join(poll_rows) or "<tr><td colspan=4 class='muted'>No active Tadoku attempts</td></tr>")
+            + "</tbody></table>"
+        )
+        status_lbl = "on" if poll_on else "off"
         body = f"""
         {flash}
+        <div class="card">
+          <div class="poll-bar">
+            <div class="poll-meta">
+              <h2 style="margin:0">Tadoku status poll</h2>
+              <div class="poll-timer" id="poll-timer" data-next="{_esc(next_iso)}">—</div>
+              <div class="muted">
+                Cadence <b>{_esc(poll_m_s)} min</b> · bot tick every <b>{tick_s}s</b>
+                · auto <b>{status_lbl}</b>
+                <span id="poll-next-abs" class="mono"></span>
+              </div>
+            </div>
+            <form method="post" action="/poll/tadoku">
+              <input type="hidden" name="filter" value="{_esc(filt)}"/>
+              <button type="submit" title="Bypass poll cooldown and fetch Tadoku now">
+                Force Tadoku poll
+              </button>
+            </form>
+          </div>
+          {poll_table}
+        </div>
         <div class="filters">
           {tab("all", "All", n_total)}
           {tab("active", "Active", n_active)}
@@ -420,8 +495,80 @@ def create_app(bot=None) -> FastAPI:
             <tbody>{''.join(tr) or f'<tr><td colspan=7 class="muted">{empty}</td></tr>'}</tbody>
           </table>
         </div>
+        <script>
+        (function(){{
+          var el = document.getElementById('poll-timer');
+          if (!el) return;
+          var nextRaw = el.getAttribute('data-next') || '';
+          var abs = document.getElementById('poll-next-abs');
+          function parseIso(s){{
+            if (!s) return null;
+            var t = Date.parse(s);
+            return isNaN(t) ? null : t;
+          }}
+          var nextMs = parseIso(nextRaw);
+          function fmt(sec){{
+            sec = Math.max(0, Math.floor(sec));
+            var m = Math.floor(sec / 60), s = sec % 60;
+            if (m >= 60) {{
+              var h = Math.floor(m / 60); m = m % 60;
+              return h + 'h ' + m + 'm ' + s + 's';
+            }}
+            return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+          }}
+          function tick(){{
+            if (!nextMs) {{
+              el.textContent = 'No Tadoku attempts to poll';
+              el.classList.remove('due');
+              if (abs) abs.textContent = '';
+              return;
+            }}
+            var left = (nextMs - Date.now()) / 1000;
+            if (abs) abs.textContent = ' · next ' + new Date(nextMs).toLocaleString();
+            if (left <= 0) {{
+              el.textContent = 'Eligible now (next bot tick ≤{tick_s}s)';
+              el.classList.add('due');
+            }} else {{
+              el.textContent = 'Next poll in ' + fmt(left);
+              el.classList.remove('due');
+            }}
+          }}
+          tick();
+          setInterval(tick, 1000);
+        }})();
+        </script>
         """
         return _page("Attempts", body, "/")
+
+    @app.post("/poll/tadoku")
+    async def force_tadoku_poll(
+        filter: str = Form("all"),
+        _: None = Depends(_auth),
+    ):
+        filt = (filter or "all").strip().lower()
+        if filt not in ("all", "active", "completed", "voided"):
+            filt = "all"
+        q = "" if filt == "all" else f"filter={filt}&"
+        bot = getattr(app.state, "bot", None)
+        if bot is None:
+            return RedirectResponse(
+                f"/?{q}poll_err=Bot+not+running+(no+DISCORD_TOKEN)",
+                status_code=303,
+            )
+        if not getattr(bot, "is_ready", lambda: False)():
+            return RedirectResponse(
+                f"/?{q}poll_err=Bot+not+ready+yet",
+                status_code=303,
+            )
+        try:
+            posted = await bot._run_status_updates(force=True)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).replace(" ", "+")[:120]
+            return RedirectResponse(
+                f"/?{q}poll_err={msg}",
+                status_code=303,
+            )
+        return RedirectResponse(f"/?{q}polled={int(posted)}", status_code=303)
 
     @app.get("/attempts/{attempt_id}", response_class=HTMLResponse)
     def attempt_edit(

@@ -87,6 +87,7 @@ def get_status_meta(attempt_id: int) -> dict[str, Any]:
             "time_hits": [],
             "goal_hits": [],
             "goal_met_hint": False,
+            "goal_ok": False,
             "last_post_at": None,
             "last_tadoku_poll_at": None,
             "last_progress": None,
@@ -98,6 +99,7 @@ def get_status_meta(attempt_id: int) -> dict[str, Any]:
     data.setdefault("time_hits", [])
     data.setdefault("goal_hits", [])
     data.setdefault("goal_met_hint", False)
+    data.setdefault("goal_ok", False)
     return data
 
 
@@ -236,6 +238,8 @@ async def check_goal_milestones(
     att: dict,
     meta: dict,
     now: datetime | None = None,
+    *,
+    force: bool = False,
 ) -> list[StatusEvent]:
     """Goal % + goal-met hint. Tadoku-verify + linked only."""
     verify = (att.get("verify") or "tadoku").lower()
@@ -249,7 +253,7 @@ async def check_goal_milestones(
     poll_m = max(1.0, float(settings.status_poll_minutes or 10.0))
     now = _aware(now or _now())
     last_poll = meta.get("last_tadoku_poll_at")
-    if last_poll:
+    if last_poll and not force:
         try:
             lp = _aware(parse_iso(str(last_poll)))
             if (now - lp).total_seconds() < poll_m * 60:
@@ -299,6 +303,7 @@ async def check_goal_milestones(
         return []
 
     meta["last_progress"] = progress
+    meta["goal_ok"] = bool(result.ok)
     ratio = progress / target
     hit_set = set()
     for h in meta.get("goal_hits") or []:
@@ -325,12 +330,13 @@ async def check_goal_milestones(
                 )
             )
 
+    # Bot auto-completes on goal_ok; event is a fallback marker if complete fails
     if result.ok and not meta.get("goal_met_hint"):
         events.append(
             StatusEvent(
                 attempt=att,
                 primary="Goal met",
-                secondary=f"{detail} · run /challenge confirm",
+                secondary=detail,
                 mark_time=[],
                 mark_goal=[],
                 mark_goal_met=True,
@@ -414,7 +420,11 @@ def under_rate_limit(meta: dict, now: datetime | None = None) -> bool:
 
 
 def pick_events_to_post(
-    events: list[StatusEvent], meta: dict, now: datetime | None = None
+    events: list[StatusEvent],
+    meta: dict,
+    now: datetime | None = None,
+    *,
+    force: bool = False,
 ) -> list[StatusEvent]:
     """Rate-limit: at most one post per tick; goal_met always allowed if not hit."""
     if not events:
@@ -432,7 +442,7 @@ def pick_events_to_post(
     events = sorted(events, key=prio)
     # goal_met bypasses rate limit once
     top = events[0]
-    if top.mark_goal_met:
+    if top.mark_goal_met or force:
         return [top]
     if under_rate_limit(meta, now):
         return []
@@ -440,7 +450,10 @@ def pick_events_to_post(
 
 
 async def collect_status_events_for_attempt(
-    att: dict, now: datetime | None = None
+    att: dict,
+    now: datetime | None = None,
+    *,
+    force: bool = False,
 ) -> tuple[list[StatusEvent], dict]:
     """Compute events + updated meta (poll timestamp may be written even if no post)."""
     now = _aware(now or _now())
@@ -448,9 +461,64 @@ async def collect_status_events_for_attempt(
     meta = get_status_meta(aid)
     events: list[StatusEvent] = []
     events.extend(check_time_milestones(att, meta, now))
-    goal_events = await check_goal_milestones(att, meta, now)
+    goal_events = await check_goal_milestones(att, meta, now, force=force)
     events.extend(goal_events)
     # Persist poll time from goal check even if no events
     save_status_meta(aid, meta)
-    to_post = pick_events_to_post(events, meta, now)
+    to_post = pick_events_to_post(events, meta, now, force=force)
     return to_post, meta
+
+
+def tadoku_poll_overview(now: datetime | None = None) -> dict:
+    """Admin UI: poll cadence + per-attempt next eligible Tadoku fetch."""
+    settings = get_settings()
+    poll_m = max(1.0, float(settings.status_poll_minutes or 10.0))
+    now = _aware(now or _now())
+    rows: list[dict] = []
+    next_at: datetime | None = None
+    for att in list_active_attempts():
+        if (att.get("verify") or "tadoku").lower() != "tadoku":
+            continue
+        if not (att.get("tadoku_user_id") or "").strip():
+            continue
+        meta = get_status_meta(int(att["id"]))
+        last_raw = meta.get("last_tadoku_poll_at")
+        last_dt = None
+        if last_raw:
+            try:
+                last_dt = _aware(parse_iso(str(last_raw)))
+            except Exception:  # noqa: BLE001
+                last_dt = None
+        if last_dt is None:
+            eligible = now
+        else:
+            eligible = last_dt + timedelta(minutes=poll_m)
+        if eligible < now:
+            eligible = now
+        if next_at is None or eligible < next_at:
+            next_at = eligible
+        prog = meta.get("last_progress")
+        try:
+            prog_f = float(prog) if prog is not None else None
+        except (TypeError, ValueError):
+            prog_f = None
+        rows.append(
+            {
+                "attempt_id": int(att["id"]),
+                "name": att.get("display_name") or att.get("discord_id"),
+                "title": att.get("title") or "?",
+                "last_poll_at": last_dt.isoformat() if last_dt else None,
+                "next_eligible_at": eligible.isoformat(),
+                "last_progress": prog_f,
+                "goal_amount": float(att.get("goal_amount") or 0) or None,
+                "goal_kind": att.get("goal_kind") or "",
+            }
+        )
+    return {
+        "poll_minutes": poll_m,
+        "tick_seconds": 60,
+        "enabled": bool(settings.status_updates_enabled),
+        "next_eligible_at": next_at.isoformat() if next_at else None,
+        "attempts": rows,
+        "now": now.isoformat(),
+    }
