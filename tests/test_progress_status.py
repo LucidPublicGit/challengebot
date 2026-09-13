@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from app.config import get_settings, merge_runtime
 from app.services import progress_status as ps
+
+# Ignore operator DB settings during unit tests
+ps._runtime = lambda: merge_runtime(get_settings(), {})  # type: ignore[method-assign]
 
 
 def _att(**kwargs):

@@ -12,7 +12,7 @@ from app.challenge_card import (
     render_challenge_card,
     tier_caption_mark,
 )
-from app.config import get_settings, merge_runtime
+from app.config import announce_kind_enabled, get_settings, merge_runtime
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session, get_all_settings
 from app.new_challenger import as_discord_new_challenger, render_new_challenger
@@ -181,9 +181,8 @@ async def send_user_only(
         return None
 
 
-# Which kinds go to the highlights (main) channel
+# Default highlights kinds (overridden by runtime highlight_kinds)
 _HIGHLIGHT_KINDS = frozenset({"start", "complete", "fail"})
-# Log channel gets every kind we announce
 
 
 def _fmt_utc(ts: int | None) -> str:
@@ -418,7 +417,7 @@ async def build_event_card(
     if when_bits:
         caption = f"{caption}\n" + " | ".join(when_bits)
     # Soft roast on fail / time-out; multi-loss tone from expired attempt count
-    if kind in ("fail", "expired"):
+    if kind in ("fail", "expired") and _runtime().get("announce_shame", True):
         uid = getattr(user, "id", None)
         n = failure_count(str(uid)) if uid is not None else 0
         caption = f"{caption}\n{format_shame_caption(kind, n)}"
@@ -458,10 +457,16 @@ async def announce(
     New-challenger banner on start/scheduled (wherever those kinds are sent).
     highlights_only=True skips the log channel (one-off / admin test).
     """
+    rt = _runtime()
+    if not announce_kind_enabled(rt, kind):
+        return False
+
     highlights = await resolve_announce_channel(bot, guild)
     log_ch = await resolve_secondary_announce_channel(bot, guild)
     if highlights is None and log_ch is None:
         return False
+
+    highlight_kinds = frozenset(rt.get("highlight_kinds") or _HIGHLIGHT_KINDS)
 
     # Resolve user object if we only have an id-ish display path
     if user is None and display_name and str(display_name).isdigit():
@@ -514,7 +519,7 @@ async def announce(
     text_fallback = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
 
     cong_path = None
-    if kind == "complete":
+    if kind == "complete" and rt.get("announce_congrats", True):
         # Congrats match on first work title, not the whole multi-line blob
         cong_focus = _items[0] if _items else focus
         try:
@@ -532,7 +537,7 @@ async def announce(
 
     # Start/schedule: NC banner + full challenge card (not the thin "Good luck" chip)
     nc_png: bytes | None = None
-    if kind in ("start", "scheduled"):
+    if kind in ("start", "scheduled") and rt.get("announce_new_challenger", True):
         try:
             av = await avatar_bytes(user)
             nc_png = render_new_challenger(av, tier=tier)
@@ -626,14 +631,15 @@ async def announce(
             logger.warning("announce text fallback failed: %s", exc4)
             return False
 
-    # Highlights: start + complete/fail (congrats on complete)
-    if highlights is not None and kind in _HIGHLIGHT_KINDS:
-        await _send(highlights, with_congrats=(kind == "complete"))
+    want_congrats = kind == "complete" and cong_path is not None
+    # Highlights: configured kinds (default start + complete/fail)
+    if highlights is not None and kind in highlight_kinds:
+        await _send(highlights, with_congrats=want_congrats)
     # Log channel: everything; also attach congrats on complete so it isn't missed
     if not highlights_only and log_ch is not None and (
         highlights is None or log_ch.id != highlights.id
     ):
-        await _send(log_ch, with_congrats=(kind == "complete"))
+        await _send(log_ch, with_congrats=want_congrats)
     elif (
         not highlights_only
         and log_ch is not None
@@ -641,8 +647,8 @@ async def announce(
         and log_ch.id == highlights.id
     ):
         # Same channel configured twice: already sent if highlight kind
-        if kind not in _HIGHLIGHT_KINDS:
-            await _send(log_ch, with_congrats=(kind == "complete"))
+        if kind not in highlight_kinds:
+            await _send(log_ch, with_congrats=want_congrats)
 
     return posted
 

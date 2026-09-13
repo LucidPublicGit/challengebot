@@ -241,8 +241,9 @@ class ChallengeBot(commands.Bot):
                 pass
             await _post("expired", att, ends_at_ts=ends_ts)
 
+        rt = _runtime()
         # Automatic mid-run status (time milestones all; goal milestones Tadoku-only)
-        if get_settings().status_updates_enabled:
+        if rt.get("status_updates_enabled", True):
             try:
                 n = await self._run_status_updates()
                 if n:
@@ -251,12 +252,13 @@ class ChallengeBot(commands.Bot):
                 logger.warning("status updates failed: %s", exc)
 
         # Private ~1h-left nudge (private thread preferred; DM fallback)
-        try:
-            n = await self._run_final_hour_reminders()
-            if n:
-                logger.info("Sent %s final-hour reminder(s)", n)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("final-hour reminders failed: %s", exc)
+        if rt.get("status_final_hour_dm", True):
+            try:
+                n = await self._run_final_hour_reminders()
+                if n:
+                    logger.info("Sent %s final-hour reminder(s)", n)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("final-hour reminders failed: %s", exc)
 
     async def _run_status_updates(self, *, force: bool = False) -> int:
         """Time + Tadoku goal milestone cards; auto-complete when goal_ok."""
@@ -286,7 +288,11 @@ class ChallengeBot(commands.Bot):
                 guild = self.get_guild(int(gid))
 
             # Fresh Tadoku poll met the goal → complete (no separate confirm step)
-            if meta.get("goal_ok") and prog_svc.attempt_is_active(aid):
+            if (
+                _runtime().get("status_auto_complete", True)
+                and meta.get("goal_ok")
+                and prog_svc.attempt_is_active(aid)
+            ):
                 try:
                     result = await att_svc.confirm_attempt(
                         str(att["discord_id"]),

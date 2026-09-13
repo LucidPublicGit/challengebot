@@ -14,26 +14,34 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.config import get_settings, merge_runtime
+from app.config import (
+    DEFAULT_GOAL_FRACS,
+    DEFAULT_TIME_FRACS_LONG,
+    DEFAULT_TIME_FRACS_SHORT,
+    get_settings,
+    merge_runtime,
+)
 from app.db import db_session, get_all_settings, utcnow_iso
 from app.services.verify import parse_iso
 
 logger = logging.getLogger(__name__)
 
-TIME_FRACS_LONG = (0.25, 0.5, 0.75)  # >= 7 day windows
-TIME_FRACS_SHORT = (0.5,)  # day-scale challenges: halfway only
+TIME_FRACS_LONG = DEFAULT_TIME_FRACS_LONG
+TIME_FRACS_SHORT = DEFAULT_TIME_FRACS_SHORT
 TIME_LONG_WINDOW_SEC = 7 * 24 * 3600
-GOAL_FRACS = (0.25, 0.5, 0.75)
+GOAL_FRACS = DEFAULT_GOAL_FRACS
 ONE_H_LEFT = "1h_left"
 FINAL_HOUR_DM = "final_hour_dm"
 GOAL_MET = "goal_met"
-# back-compat alias
 TIME_FRACS = TIME_FRACS_LONG
 
 
 def _runtime() -> dict[str, Any]:
-    with db_session() as conn:
-        return merge_runtime(get_settings(), get_all_settings(conn))
+    try:
+        with db_session() as conn:
+            return merge_runtime(get_settings(), get_all_settings(conn))
+    except Exception:  # noqa: BLE001
+        return merge_runtime(get_settings(), {})
 
 
 def _now() -> datetime:
@@ -123,19 +131,37 @@ def _fmt_remaining(seconds: float) -> str:
 
 def _time_label(frac: float) -> str:
     """Short in-card hero (also caption bold)."""
-    if frac <= 0.26:
+    if abs(frac - 0.25) < 0.03:
         return "Quarter in"
-    if frac <= 0.51:
+    if abs(frac - 0.5) < 0.03:
         return "Halfway"
-    return "Three-quarters"
+    if abs(frac - 0.75) < 0.03:
+        return "Three-quarters"
+    return f"{int(round(frac * 100))}% time"
 
 
 def _goal_label(frac: float) -> str:
-    if frac <= 0.26:
-        return "25% goal"
-    if frac <= 0.51:
+    if abs(frac - 0.5) < 0.03:
         return "Halfway"
-    return "75% goal"
+    return f"{int(round(frac * 100))}% goal"
+
+
+def _final_minutes(rt: dict | None = None) -> float:
+    rt = rt or _runtime()
+    try:
+        m = float(rt.get("status_final_hour_minutes") or 60.0)
+    except (TypeError, ValueError):
+        m = 60.0
+    return max(1.0, m)
+
+
+def _long_window_sec(rt: dict | None = None) -> float:
+    rt = rt or _runtime()
+    try:
+        d = float(rt.get("status_long_window_days") or 7.0)
+    except (TypeError, ValueError):
+        d = 7.0
+    return max(0.1, d) * 24 * 3600
 
 
 def _fmt_qty(x: float) -> str:
@@ -162,6 +188,9 @@ def _time_bar(elapsed: float, total: float, remaining: float, tail: str) -> str:
 
 def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) -> list[StatusEvent]:
     """Time-based events for any verify mode (including honor)."""
+    rt = _runtime()
+    if not rt.get("status_time_milestones", True):
+        return []
     now = _aware(now or _now())
     try:
         started = _aware(parse_iso(att["started_at"]))
@@ -177,7 +206,6 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
         return []
     frac = max(0.0, min(1.0, elapsed / total))
     hits = list(meta.get("time_hits") or [])
-    # normalize floats stored as numbers
     hit_set = set()
     for h in hits:
         if h == ONE_H_LEFT:
@@ -191,7 +219,12 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
     verify = (att.get("verify") or "tadoku").lower()
     honor = verify == "honor"
     events: list[StatusEvent] = []
-    fracs = TIME_FRACS_LONG if total >= TIME_LONG_WINDOW_SEC else TIME_FRACS_SHORT
+    long_sec = _long_window_sec(rt)
+    fracs = (
+        tuple(rt.get("status_time_fracs_long") or TIME_FRACS_LONG)
+        if total >= long_sec
+        else tuple(rt.get("status_time_fracs_short") or TIME_FRACS_SHORT)
+    )
 
     for m in fracs:
         key = round(float(m), 2)
@@ -213,17 +246,20 @@ def check_time_milestones(att: dict, meta: dict, now: datetime | None = None) ->
                 )
             )
 
-    # 1 hour left (only if window longer than 1h)
+    final_m = _final_minutes(rt)
+    final_sec = final_m * 60.0
     if (
-        total > 3600
-        and 0 < remaining <= 3600
+        rt.get("status_final_hour_public", True)
+        and total > final_sec
+        and 0 < remaining <= final_sec
         and ONE_H_LEFT not in hit_set
     ):
         tail = "honor · confirm if you're done" if honor else "final stretch"
+        primary = "Final hour" if abs(final_m - 60.0) < 0.5 else f"{int(final_m)}m left"
         events.append(
             StatusEvent(
                 attempt=att,
-                primary="Final hour",
+                primary=primary,
                 secondary=_time_bar(elapsed, total, remaining, tail),
                 mark_time=[ONE_H_LEFT],
                 mark_goal=[],
@@ -242,6 +278,11 @@ async def check_goal_milestones(
     force: bool = False,
 ) -> list[StatusEvent]:
     """Goal % + goal-met hint. Tadoku-verify + linked only."""
+    rt0 = _runtime()
+    if not rt0.get("status_goal_milestones", True) and not rt0.get(
+        "status_auto_complete", True
+    ):
+        return []
     verify = (att.get("verify") or "tadoku").lower()
     if verify != "tadoku":
         return []
@@ -249,8 +290,7 @@ async def check_goal_milestones(
     if not tadoku_id:
         return []
 
-    settings = get_settings()
-    poll_m = max(1.0, float(settings.status_poll_minutes or 10.0))
+    poll_m = max(1.0, float(rt0.get("status_poll_minutes") or 10.0))
     now = _aware(now or _now())
     last_poll = meta.get("last_tadoku_poll_at")
     if last_poll and not force:
@@ -270,7 +310,7 @@ async def check_goal_milestones(
     except Exception:  # noqa: BLE001
         return []
 
-    rt = _runtime()
+    rt = rt0
     from app.services.verify import evaluate_logs
     from app.tadoku.client import resolve_logs_for_user
 
@@ -315,20 +355,22 @@ async def check_goal_milestones(
     events: list[StatusEvent] = []
     detail = (result.detail or f"{progress:g} / {target:g} {result.unit_label}").strip()
 
-    for m in GOAL_FRACS:
-        key = round(float(m), 2)
-        if ratio + 1e-9 >= m and key not in hit_set:
-            hit_set.add(key)
-            events.append(
-                StatusEvent(
-                    attempt=att,
-                    primary=_goal_label(m),
-                    secondary=detail,
-                    mark_time=[],
-                    mark_goal=[key],
-                    kind="status",
+    if rt.get("status_goal_milestones", True):
+        goal_fracs = tuple(rt.get("status_goal_fracs") or GOAL_FRACS)
+        for m in goal_fracs:
+            key = round(float(m), 2)
+            if ratio + 1e-9 >= m and key not in hit_set:
+                hit_set.add(key)
+                events.append(
+                    StatusEvent(
+                        attempt=att,
+                        primary=_goal_label(m),
+                        secondary=detail,
+                        mark_time=[],
+                        mark_goal=[key],
+                        kind="status",
+                    )
                 )
-            )
 
     # Bot auto-completes on goal_ok; event is a fallback marker if complete fails
     if result.ok and not meta.get("goal_met_hint"):
@@ -380,6 +422,9 @@ def due_final_hour_dm(
     att: dict, meta: dict, now: datetime | None = None
 ) -> bool:
     """True once when ~1h remains on an still-active attempt (DM not yet sent)."""
+    rt = _runtime()
+    if not rt.get("status_final_hour_dm", True):
+        return False
     if meta.get(FINAL_HOUR_DM):
         return False
     if (att.get("status") or "active") != "active":
@@ -392,7 +437,8 @@ def due_final_hour_dm(
         return False
     total = (ends - started).total_seconds()
     remaining = (ends - now).total_seconds()
-    if total <= 3600 or remaining <= 0 or remaining > 3600:
+    final_sec = _final_minutes(rt) * 60.0
+    if total <= final_sec or remaining <= 0 or remaining > final_sec:
         return False
     return True
 
@@ -406,8 +452,8 @@ def mark_final_hour_dm(meta: dict) -> dict:
 
 def under_rate_limit(meta: dict, now: datetime | None = None) -> bool:
     """True if we should skip posting due to min interval."""
-    settings = get_settings()
-    gap = max(1.0, float(settings.status_min_interval_minutes or 12.0)) * 60
+    rt = _runtime()
+    gap = max(1.0, float(rt.get("status_min_interval_minutes") or 12.0)) * 60
     last = meta.get("last_post_at")
     if not last:
         return False
@@ -471,8 +517,8 @@ async def collect_status_events_for_attempt(
 
 def tadoku_poll_overview(now: datetime | None = None) -> dict:
     """Admin UI: poll cadence + per-attempt next eligible Tadoku fetch."""
-    settings = get_settings()
-    poll_m = max(1.0, float(settings.status_poll_minutes or 10.0))
+    rt = _runtime()
+    poll_m = max(1.0, float(rt.get("status_poll_minutes") or 10.0))
     now = _aware(now or _now())
     rows: list[dict] = []
     next_at: datetime | None = None
@@ -517,7 +563,7 @@ def tadoku_poll_overview(now: datetime | None = None) -> dict:
     return {
         "poll_minutes": poll_m,
         "tick_seconds": 60,
-        "enabled": bool(settings.status_updates_enabled),
+        "enabled": bool(rt.get("status_updates_enabled")),
         "next_eligible_at": next_at.isoformat() if next_at else None,
         "attempts": rows,
         "now": now.isoformat(),

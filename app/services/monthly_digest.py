@@ -33,10 +33,23 @@ logger = logging.getLogger(__name__)
 _LAST_KEY = "last_monthly_digest"  # YYYY-MM
 
 
+def _runtime() -> dict[str, Any]:
+    try:
+        with db_session() as conn:
+            return merge_runtime(get_settings(), get_all_settings(conn))
+    except Exception:  # noqa: BLE001
+        return merge_runtime(get_settings(), {})
+
+
 def _tz():
     """Local clock by default. Optional settings: IANA name or UTC±HH[:MM]."""
-    with db_session() as conn:
-        name = (get_setting(conn, "monthly_digest_tz", "") or "").strip()
+    name = str(_runtime().get("monthly_digest_tz") or "").strip()
+    if not name:
+        try:
+            with db_session() as conn:
+                name = (get_setting(conn, "monthly_digest_tz", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            name = ""
     if not name:
         return datetime.now().astimezone().tzinfo or timezone.utc
     try:
@@ -69,7 +82,15 @@ def month_key(dt: datetime) -> str:
 
 
 def is_due(now: datetime | None = None, *, last_key: str | None = None) -> bool:
-    """True once we're at/after the 1st 12:00 local and haven't posted this month."""
+    """True once we're at/after the 1st <hour> local and haven't posted this month."""
+    rt = _runtime()
+    if not rt.get("monthly_digest_enabled", True):
+        return False
+    try:
+        hour = int(float(rt.get("monthly_digest_hour") or 12))
+    except (TypeError, ValueError):
+        hour = 12
+    hour = max(0, min(23, hour))
     d = now_local(now)
     key = month_key(d)
     if last_key is None:
@@ -77,8 +98,8 @@ def is_due(now: datetime | None = None, *, last_key: str | None = None) -> bool:
             last_key = get_setting(conn, _LAST_KEY, "")
     if (last_key or "") >= key:
         return False
-    # Catch-up any day after noon on/after the 1st of this month
-    if d.day >= 1 and (d.day > 1 or d.hour >= 12):
+    # Catch-up any day after configured hour on/after the 1st of this month
+    if d.day >= 1 and (d.day > 1 or d.hour >= hour):
         return True
     return False
 

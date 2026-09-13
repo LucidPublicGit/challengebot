@@ -6,12 +6,14 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.config import get_settings, merge_runtime
 from app.db import db_session, init_db, utcnow_iso
 from app.services import monthly_digest as md
 from app.shame import empty_month_shame, new_year_mod_shame, new_year_welcome
 
 # Fixed offset so Windows without tzdata still runs
 TZ = timezone(timedelta(hours=-5))
+md._runtime = lambda: merge_runtime(get_settings(), {})  # type: ignore[method-assign]
 
 
 def _dt(y, m, d, h=12) -> datetime:

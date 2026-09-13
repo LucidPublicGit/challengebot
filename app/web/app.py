@@ -1025,6 +1025,8 @@ def create_app(bot=None) -> FastAPI:
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(_: None = Depends(_auth)):
+        from app.config import fracs_to_str
+
         settings = get_settings()
         with db_session() as conn:
             dbmap = get_all_settings(conn)
@@ -1032,39 +1034,39 @@ def create_app(bot=None) -> FastAPI:
         roles_json = dbmap.get("reward_roles_json") or json.dumps(
             settings.reward_roles_map(), indent=2
         )
+
+        def bsel(name: str, on: bool) -> str:
+            return (
+                f'<select name="{name}">' 
+                f'<option value="true" {"selected" if on else ""}>true</option>'
+                f'<option value="false" {"" if on else "selected"}>false</option>'
+                f"</select>"
+            )
+
+        hk = ",".join(rt.get("highlight_kinds") or ())
         body = f"""
         <div class="card">
           <form method="post" action="/settings">
+            <h3 style="margin-top:0">Core</h3>
             <div class="grid">
               <div><label>Tadoku contest id</label>
                 <input name="tadoku_contest_id" value="{_esc(rt['tadoku_contest_id'])}"/></div>
               <div><label>Tadoku API base</label>
                 <input name="tadoku_api_base" value="{_esc(rt['tadoku_api_base'])}"/></div>
-              <div><label>Highlights channel (start + complete/fail + congrats)</label>
-                <input name="announce_channel_id" value="{_esc(rt['announce_channel_id'])}"
-                  placeholder="1187153489156124732"/></div>
-              <div><label>Log channel (schedule, start, status, complete/fail, all)</label>
+              <div><label>Highlights channel</label>
+                <input name="announce_channel_id" value="{_esc(rt['announce_channel_id'])}"/></div>
+              <div><label>Log channel</label>
                 <input name="announce_secondary_channel_id"
-                  value="{_esc(rt.get('announce_secondary_channel_id') or '')}"
-                  placeholder="1523503572652916786"/></div>
+                  value="{_esc(rt.get('announce_secondary_channel_id') or '')}"/></div>
               <div><label>Guild id</label>
                 <input name="guild_id" value="{_esc(rt['guild_id'])}"/></div>
               <div class="span-2"><label>Admin role ids</label>
-                <input name="admin_role_ids" value="{_esc(','.join(rt['admin_role_ids']))}"
-                  placeholder="comma-separated snowflakes"/></div>
-              <div><label>Allow re-attempt</label>
-                <select name="allow_reattempt">
-                  <option value="true" {'selected' if rt['allow_reattempt'] else ''}>true</option>
-                  <option value="false" {'selected' if not rt['allow_reattempt'] else ''}>false</option>
-                </select>
-              </div>
+                <input name="admin_role_ids" value="{_esc(','.join(rt['admin_role_ids']))}"/></div>
+              <div><label>Allow re-attempt</label>{bsel('allow_reattempt', rt['allow_reattempt'])}</div>
               <div><label>Allow honor override</label>
-                <select name="allow_honor_override">
-                  <option value="true" {'selected' if rt.get('allow_honor_override', True) else ''}>true</option>
-                  <option value="false" {'selected' if not rt.get('allow_honor_override', True) else ''}>false</option>
-                </select>
+                {bsel('allow_honor_override', rt.get('allow_honor_override', True))}
                 <p class="muted" style="margin:.35rem 0 0">
-                  Users may <code>/challenge failoverride</code> (honor complete) when Tadoku logs fail.
+                  <code>/challenge failoverride</code> when Tadoku fails.
                 </p>
               </div>
               <div><label>Pages / volume</label>
@@ -1073,11 +1075,83 @@ def create_app(bot=None) -> FastAPI:
                 <input name="episode_minutes" value="{_esc(rt['episode_minutes'])}"/></div>
               <div class="span-2"><label>Reward roles JSON</label>
                 <textarea name="reward_roles_json" style="min-height:7rem">{_esc(roles_json)}</textarea>
-                <p class="muted" style="margin:.35rem 0 0">
-                  Keys: easy, medium, hard, ota_master, any_clear, clear_3, clear_10 → role ids.
-                </p>
               </div>
             </div>
+
+            <h3>Status / progress cards</h3>
+            <div class="grid">
+              <div><label>Status updates enabled</label>
+                {bsel('status_updates_enabled', rt.get('status_updates_enabled', True))}</div>
+              <div><label>Auto-complete on goal</label>
+                {bsel('status_auto_complete', rt.get('status_auto_complete', True))}</div>
+              <div><label>Time milestones</label>
+                {bsel('status_time_milestones', rt.get('status_time_milestones', True))}</div>
+              <div><label>Goal milestones</label>
+                {bsel('status_goal_milestones', rt.get('status_goal_milestones', True))}</div>
+              <div><label>Time fracs (long window) %</label>
+                <input name="status_time_fracs_long"
+                  value="{_esc(fracs_to_str(rt.get('status_time_fracs_long') or (0.25,0.5,0.75)))}"
+                  placeholder="25,50,75"/></div>
+              <div><label>Time fracs (short window) %</label>
+                <input name="status_time_fracs_short"
+                  value="{_esc(fracs_to_str(rt.get('status_time_fracs_short') or (0.5,)))}"
+                  placeholder="50"/></div>
+              <div><label>Goal fracs %</label>
+                <input name="status_goal_fracs"
+                  value="{_esc(fracs_to_str(rt.get('status_goal_fracs') or (0.25,0.5,0.75)))}"
+                  placeholder="25,50,75"/></div>
+              <div><label>Long window days</label>
+                <input name="status_long_window_days"
+                  value="{_esc(rt.get('status_long_window_days', 7))}"/></div>
+              <div><label>Poll minutes (Tadoku)</label>
+                <input name="status_poll_minutes"
+                  value="{_esc(rt.get('status_poll_minutes', 10))}"/></div>
+              <div><label>Min interval between posts (min)</label>
+                <input name="status_min_interval_minutes"
+                  value="{_esc(rt.get('status_min_interval_minutes', 12))}"/></div>
+              <div><label>Final stretch public card</label>
+                {bsel('status_final_hour_public', rt.get('status_final_hour_public', True))}</div>
+              <div><label>Final stretch private DM/thread</label>
+                {bsel('status_final_hour_dm', rt.get('status_final_hour_dm', True))}</div>
+              <div><label>Final stretch minutes</label>
+                <input name="status_final_hour_minutes"
+                  value="{_esc(rt.get('status_final_hour_minutes', 60))}"/></div>
+            </div>
+
+            <h3>Announce cards (on/off)</h3>
+            <p class="muted">Failed confirm posts default <strong>off</strong> (mistaken /confirm).</p>
+            <div class="grid">
+              <div><label>start</label>{bsel('announce_start', rt.get('announce_start', True))}</div>
+              <div><label>scheduled</label>{bsel('announce_scheduled', rt.get('announce_scheduled', True))}</div>
+              <div><label>status</label>{bsel('announce_status', rt.get('announce_status', True))}</div>
+              <div><label>complete</label>{bsel('announce_complete', rt.get('announce_complete', True))}</div>
+              <div><label>fail (failed check)</label>{bsel('announce_fail', rt.get('announce_fail', False))}</div>
+              <div><label>expired</label>{bsel('announce_expired', rt.get('announce_expired', True))}</div>
+              <div><label>abandon</label>{bsel('announce_abandon', rt.get('announce_abandon', True))}</div>
+              <div><label>congrats media</label>{bsel('announce_congrats', rt.get('announce_congrats', True))}</div>
+              <div><label>new-challenger banner</label>
+                {bsel('announce_new_challenger', rt.get('announce_new_challenger', True))}</div>
+              <div><label>shame captions</label>{bsel('announce_shame', rt.get('announce_shame', True))}</div>
+              <div class="span-2"><label>Highlight kinds (comma)</label>
+                <input name="highlight_kinds" value="{_esc(hk)}"
+                  placeholder="start,complete,fail"/>
+              </div>
+            </div>
+
+            <h3>Monthly digest</h3>
+            <div class="grid">
+              <div><label>Enabled</label>
+                {bsel('monthly_digest_enabled', rt.get('monthly_digest_enabled', True))}</div>
+              <div><label>Hour (local 0–23)</label>
+                <input name="monthly_digest_hour"
+                  value="{_esc(rt.get('monthly_digest_hour', 12))}"/></div>
+              <div class="span-2"><label>Timezone (IANA or UTC±HH)</label>
+                <input name="monthly_digest_tz"
+                  value="{_esc(rt.get('monthly_digest_tz') or '')}"
+                  placeholder="America/New_York or UTC-5"/>
+              </div>
+            </div>
+
             <div class="actions"><button type="submit">Save settings</button></div>
           </form>
         </div>
@@ -1097,12 +1171,43 @@ def create_app(bot=None) -> FastAPI:
         pages_per_volume: str = Form("180"),
         episode_minutes: str = Form("24"),
         reward_roles_json: str = Form("{}"),
+        status_updates_enabled: str = Form("true"),
+        status_auto_complete: str = Form("true"),
+        status_time_milestones: str = Form("true"),
+        status_goal_milestones: str = Form("true"),
+        status_time_fracs_long: str = Form("25,50,75"),
+        status_time_fracs_short: str = Form("50"),
+        status_goal_fracs: str = Form("25,50,75"),
+        status_long_window_days: str = Form("7"),
+        status_poll_minutes: str = Form("10"),
+        status_min_interval_minutes: str = Form("12"),
+        status_final_hour_public: str = Form("true"),
+        status_final_hour_dm: str = Form("true"),
+        status_final_hour_minutes: str = Form("60"),
+        announce_start: str = Form("true"),
+        announce_scheduled: str = Form("true"),
+        announce_status: str = Form("true"),
+        announce_complete: str = Form("true"),
+        announce_fail: str = Form("false"),
+        announce_expired: str = Form("true"),
+        announce_abandon: str = Form("true"),
+        announce_congrats: str = Form("true"),
+        announce_new_challenger: str = Form("true"),
+        announce_shame: str = Form("true"),
+        highlight_kinds: str = Form("start,complete,fail"),
+        monthly_digest_enabled: str = Form("true"),
+        monthly_digest_hour: str = Form("12"),
+        monthly_digest_tz: str = Form(""),
         _: None = Depends(_auth),
     ):
         try:
             json.loads(reward_roles_json or "{}")
         except json.JSONDecodeError as exc:
             raise HTTPException(400, f"Invalid reward_roles_json: {exc}") from exc
+
+        def b(v: str) -> str:
+            return "true" if str(v).strip().lower() in ("1", "true", "yes", "on") else "false"
+
         with db_session() as conn:
             set_settings(
                 conn,
@@ -1113,11 +1218,38 @@ def create_app(bot=None) -> FastAPI:
                     "announce_secondary_channel_id": announce_secondary_channel_id.strip(),
                     "guild_id": guild_id.strip(),
                     "admin_role_ids": admin_role_ids.strip(),
-                    "allow_reattempt": allow_reattempt.strip().lower(),
-                    "allow_honor_override": allow_honor_override.strip().lower(),
+                    "allow_reattempt": b(allow_reattempt),
+                    "allow_honor_override": b(allow_honor_override),
                     "pages_per_volume": pages_per_volume.strip(),
                     "episode_minutes": episode_minutes.strip(),
                     "reward_roles_json": reward_roles_json.strip() or "{}",
+                    "status_updates_enabled": b(status_updates_enabled),
+                    "status_auto_complete": b(status_auto_complete),
+                    "status_time_milestones": b(status_time_milestones),
+                    "status_goal_milestones": b(status_goal_milestones),
+                    "status_time_fracs_long": status_time_fracs_long.strip(),
+                    "status_time_fracs_short": status_time_fracs_short.strip(),
+                    "status_goal_fracs": status_goal_fracs.strip(),
+                    "status_long_window_days": status_long_window_days.strip(),
+                    "status_poll_minutes": status_poll_minutes.strip(),
+                    "status_min_interval_minutes": status_min_interval_minutes.strip(),
+                    "status_final_hour_public": b(status_final_hour_public),
+                    "status_final_hour_dm": b(status_final_hour_dm),
+                    "status_final_hour_minutes": status_final_hour_minutes.strip(),
+                    "announce_start": b(announce_start),
+                    "announce_scheduled": b(announce_scheduled),
+                    "announce_status": b(announce_status),
+                    "announce_complete": b(announce_complete),
+                    "announce_fail": b(announce_fail),
+                    "announce_expired": b(announce_expired),
+                    "announce_abandon": b(announce_abandon),
+                    "announce_congrats": b(announce_congrats),
+                    "announce_new_challenger": b(announce_new_challenger),
+                    "announce_shame": b(announce_shame),
+                    "highlight_kinds": highlight_kinds.strip(),
+                    "monthly_digest_enabled": b(monthly_digest_enabled),
+                    "monthly_digest_hour": monthly_digest_hour.strip(),
+                    "monthly_digest_tz": monthly_digest_tz.strip(),
                 },
             )
         return RedirectResponse("/settings", status_code=303)

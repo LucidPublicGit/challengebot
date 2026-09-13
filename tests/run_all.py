@@ -23,6 +23,7 @@ MODULES = (
     "tests.test_progress_status",
     "tests.test_shame",
     "tests.test_monthly_digest",
+    "tests.test_runtime_settings",
 )
 
 

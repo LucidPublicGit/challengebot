@@ -64,14 +64,14 @@ Defaults are **dry-run** (`apply=false`) so you can validate without awarding cl
 
 ## Settings (UI or env)
 
-| Key | Meaning |
-|-----|---------|
-| `tadoku_contest_id` | Default Deep Weeb Club 2026 |
-| `allow_reattempt` | Completing the same challenge again |
-| `reward_roles_json` | `{"easy":"roleId","any_clear":"…","clear_5":"…"}` |
-| `announce_channel_id` | Public completion messages |
-| `pages_per_volume` / `episode_minutes` | Heuristics for manga/anime auto-count |
-| `admin_role_ids` | Extra admin roles for `/challenge admin_*` |
+Admin **Settings** page (DB overrides env). Highlights:
+
+| Area | Keys |
+|------|------|
+| Core | `tadoku_contest_id`, channels, `allow_reattempt`, `allow_honor_override`, pages/episode, rewards |
+| Status | milestones on/off, fracs (`25,50,75`), long-window days, poll/interval, final-hour public/DM, auto-complete |
+| Cards | per-kind announce toggles (`announce_fail` **default off**), congrats / new-challenger / shame, highlight kinds |
+| Digest | enabled, hour, timezone |
 
 ## New year
 
