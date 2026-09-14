@@ -286,35 +286,135 @@ def get_attempt(attempt_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def _attempts_where(
+    discord_id: str | None = None,
+    status: str | None = None,
+    statuses: list[str] | None = None,
+    q: str | None = None,
+    challenge_id: str | None = None,
+) -> tuple[str, list[Any]]:
+    """Shared WHERE clause for list/count attempts."""
+    where = " WHERE 1=1"
+    args: list[Any] = []
+    if discord_id:
+        where += " AND a.discord_id=?"
+        args.append(discord_id)
+    if challenge_id:
+        where += " AND a.challenge_id=?"
+        args.append(challenge_id)
+    if statuses:
+        ph = ",".join("?" * len(statuses))
+        where += f" AND a.status IN ({ph})"
+        args.extend(statuses)
+    elif status:
+        where += " AND a.status=?"
+        args.append(status)
+    needle = (q or "").strip()
+    if needle:
+        like = f"%{needle}%"
+        where += (
+            " AND (CAST(a.id AS TEXT) LIKE ? OR a.discord_id LIKE ?"
+            " OR IFNULL(u.display_name,'') LIKE ? OR c.id LIKE ?"
+            " OR IFNULL(c.title,'') LIKE ? OR IFNULL(a.content,'') LIKE ?"
+            " OR IFNULL(a.param,'') LIKE ? OR IFNULL(a.note,'') LIKE ?)"
+        )
+        args.extend([like] * 8)
+    return where, args
+
+
 def list_attempts(
     discord_id: str | None = None,
     status: str | None = None,
     statuses: list[str] | None = None,
     limit: int | None = 50,
+    offset: int | None = None,
+    q: str | None = None,
+    challenge_id: str | None = None,
 ) -> list[dict]:
-    q = (
+    where, args = _attempts_where(
+        discord_id=discord_id,
+        status=status,
+        statuses=statuses,
+        q=q,
+        challenge_id=challenge_id,
+    )
+    sql = (
         "SELECT a.*, c.title, c.tier, c.number, u.display_name, u.tadoku_user_id "
         "FROM attempts a "
         "JOIN challenge_defs c ON c.id = a.challenge_id "
-        "LEFT JOIN users u ON u.discord_id = a.discord_id WHERE 1=1"
+        "LEFT JOIN users u ON u.discord_id = a.discord_id"
+        f"{where} ORDER BY a.id DESC"
+    )
+    q_args = list(args)
+    if limit is not None:
+        sql += " LIMIT ?"
+        q_args.append(int(limit))
+        if offset is not None and int(offset) > 0:
+            sql += " OFFSET ?"
+            q_args.append(int(offset))
+    with db_session() as conn:
+        return [dict(r) for r in conn.execute(sql, q_args).fetchall()]
+
+
+def count_attempts(
+    discord_id: str | None = None,
+    status: str | None = None,
+    statuses: list[str] | None = None,
+    q: str | None = None,
+    challenge_id: str | None = None,
+) -> int:
+    where, args = _attempts_where(
+        discord_id=discord_id,
+        status=status,
+        statuses=statuses,
+        q=q,
+        challenge_id=challenge_id,
+    )
+    sql = (
+        "SELECT COUNT(*) AS n FROM attempts a "
+        "JOIN challenge_defs c ON c.id = a.challenge_id "
+        "LEFT JOIN users u ON u.discord_id = a.discord_id"
+        f"{where}"
+    )
+    with db_session() as conn:
+        row = conn.execute(sql, args).fetchone()
+        return int(row["n"] if row else 0)
+
+
+def list_users(*, q: str | None = None, limit: int | None = 500) -> list[dict]:
+    """Users with optional search + active attempt count."""
+    sql = (
+        "SELECT u.*, "
+        "(SELECT COUNT(*) FROM attempts a WHERE a.discord_id = u.discord_id "
+        " AND a.status IN ('active','scheduled')) AS active_n "
+        "FROM users u WHERE 1=1"
     )
     args: list[Any] = []
-    if discord_id:
-        q += " AND a.discord_id=?"
-        args.append(discord_id)
-    if statuses:
-        ph = ",".join("?" * len(statuses))
-        q += f" AND a.status IN ({ph})"
-        args.extend(statuses)
-    elif status:
-        q += " AND a.status=?"
-        args.append(status)
-    q += " ORDER BY a.id DESC"
+    needle = (q or "").strip()
+    if needle:
+        like = f"%{needle}%"
+        sql += (
+            " AND (u.discord_id LIKE ? OR IFNULL(u.display_name,'') LIKE ?"
+            " OR IFNULL(u.tadoku_user_id,'') LIKE ? OR IFNULL(u.tadoku_name,'') LIKE ?)"
+        )
+        args.extend([like] * 4)
+    sql += " ORDER BY u.updated_at DESC"
     if limit is not None:
-        q += " LIMIT ?"
+        sql += " LIMIT ?"
         args.append(int(limit))
     with db_session() as conn:
-        return [dict(r) for r in conn.execute(q, args).fetchall()]
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
+def attempt_status_counts_for_challenge(challenge_id: str) -> dict[str, int]:
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM attempts WHERE challenge_id=? GROUP BY status",
+            (challenge_id,),
+        ).fetchall()
+    out = {r["status"]: int(r["n"]) for r in rows}
+    out["total"] = sum(out.values())
+    return out
 
 
 def attempt_status_counts(discord_id: str | None = None) -> dict[str, int]:
