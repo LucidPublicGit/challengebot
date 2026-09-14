@@ -42,7 +42,46 @@ def test_lookup_and_verify_modes():
         cleanup_db(path)
 
 
+def test_admin_catalog_crud():
+    from app.bot_commands import _challenge_payload, _next_challenge_number
+    from app.services import attempts as att_svc
+
+    path = setup_tmp_db()
+    try:
+        n = _next_challenge_number(2026, "easy")
+        assert n >= 1
+        cid = f"easy-{n}"
+        r = att_svc.admin_upsert_challenge(
+            {
+                "id": cid,
+                "year": 2026,
+                "tier": "easy",
+                "number": n,
+                "title": "Admin CRUD Probe",
+                "goal_kind": "volumes",
+                "goal_amount": 3,
+                "media_filter": "manga",
+                "verify": "tadoku",
+                "time_limit_hours": 12,
+            }
+        )
+        assert r["ok"], r
+        ch = get_challenge(cid)
+        assert ch is not None and ch["title"] == "Admin CRUD Probe"
+        r2 = att_svc.admin_upsert_challenge(
+            _challenge_payload(ch, title="Renamed", verify="honor")
+        )
+        assert r2["ok"], r2
+        ch2 = get_challenge(cid)
+        assert ch2["title"] == "Renamed" and ch2["verify"] == "honor"
+        att_svc.admin_delete_challenge(cid)
+        assert get_challenge(cid) is None
+    finally:
+        cleanup_db(path)
+
+
 if __name__ == "__main__":
     test_seed_2026_count()
     test_lookup_and_verify_modes()
+    test_admin_catalog_crud()
     print("test_catalog ok")

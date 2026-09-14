@@ -1828,6 +1828,741 @@ class VoidModal(discord.ui.Modal, title="Void attempt"):
         )
 
 
+# ----- admin catalog add / edit / remove -----
+
+_GOAL_KINDS = (
+    "volumes",
+    "episodes",
+    "minutes",
+    "characters",
+    "immersion_hours",
+    "complete_work",
+)
+_MEDIA_FILTERS = (
+    "any",
+    "manga",
+    "shows",
+    "youtube",
+    "vn",
+    "reading",
+    "book",
+)
+
+
+def _admin_only(interaction: discord.Interaction) -> bool:
+    return bool(_bot_helpers().is_bot_admin(interaction))
+
+
+def _next_challenge_number(year: int, tier: str) -> int:
+    items = list_challenges(year=year, tier=tier)
+    return max((int(c["number"]) for c in items), default=0) + 1
+
+
+def _challenge_payload(ch: dict, **overrides: object) -> dict:
+    """Build admin_upsert_challenge dict from a row + field overrides."""
+    base = {
+        "id": ch.get("id"),
+        "year": ch.get("year"),
+        "tier": ch.get("tier"),
+        "number": ch.get("number"),
+        "title": ch.get("title"),
+        "description": ch.get("description") or "",
+        "time_limit_hours": ch.get("time_limit_hours") or 24,
+        "param_label": ch.get("param_label"),
+        "verify": ch.get("verify") or "tadoku",
+        "goal_kind": ch.get("goal_kind"),
+        "goal_amount": ch.get("goal_amount"),
+        "media_filter": ch.get("media_filter") or "any",
+        "allows_concurrent": ch.get("allows_concurrent") or 0,
+        "fixed_param": ch.get("fixed_param"),
+    }
+    base.update(overrides)
+    return base
+
+
+def _catalog_embed(
+    *,
+    title: str,
+    description: str,
+    ch: dict | None = None,
+) -> discord.Embed:
+    emb = discord.Embed(title=title, description=description[:4000], color=0xED4245)
+    if ch:
+        emb.add_field(
+            name="Definition",
+            value=(
+                f"`{ch.get('id')}` · {ch.get('tier')} #{ch.get('number')} · "
+                f"{ch.get('year')}\n"
+                f"**{ch.get('title')}**\n"
+                f"goal `{ch.get('goal_kind')}` {ch.get('goal_amount')} · "
+                f"media `{ch.get('media_filter') or 'any'}` · "
+                f"verify **{ch.get('verify') or 'tadoku'}** · "
+                f"{ch.get('time_limit_hours') or 24}h"
+                + (
+                    f" · param `{ch.get('param_label')}`"
+                    if ch.get("param_label")
+                    else ""
+                )
+                + (
+                    " · concurrent"
+                    if int(ch.get("allows_concurrent") or 0)
+                    else ""
+                )
+            )[:1024],
+            inline=False,
+        )
+        if ch.get("description"):
+            emb.add_field(
+                name="Details", value=str(ch["description"])[:300], inline=False
+            )
+    emb.set_footer(text="Admin only · times out in 3 min")
+    return emb
+
+
+class _AdminCatalogSelect(discord.ui.Select):
+    """Pick a challenge; parent view must implement on_challenge_picked."""
+
+    def __init__(self, challenges: list[dict]) -> None:
+        options = [
+            discord.SelectOption(
+                label=f"#{c['number']} · {c['title']}"[:100],
+                value=str(c["id"]),
+                description=(c.get("description") or c.get("id") or "")[:100] or None,
+            )
+            for c in challenges[:25]
+        ]
+        super().__init__(
+            placeholder="Choose a challenge…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: _AdminPickView = self.view  # type: ignore[assignment]
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        ch = get_challenge(self.values[0])
+        if not ch:
+            await interaction.response.send_message(
+                "Challenge not found.", ephemeral=True
+            )
+            return
+        await view.on_challenge_picked(interaction, ch)
+
+
+class _AdminPickView(_OwnerView):
+    def __init__(
+        self,
+        owner_id: int,
+        *,
+        year: int,
+        tier: str,
+        challenges: list[dict],
+        mode: str,
+    ) -> None:
+        super().__init__(owner_id)
+        self.year = year
+        self.tier = tier
+        self.mode = mode  # edit | remove
+        self.add_item(_AdminCatalogSelect(challenges))
+
+    async def on_challenge_picked(
+        self, interaction: discord.Interaction, ch: dict
+    ) -> None:
+        if self.mode == "remove":
+            conf = AdminRemoveConfirmView(self.owner_id, ch=ch, year=self.year)
+            await interaction.response.edit_message(
+                embed=_catalog_embed(
+                    title="Remove challenge?",
+                    description=(
+                        "Deletes the **catalog row** only. "
+                        "Past attempts keep their challenge id.\n"
+                        "This cannot be undone from Discord."
+                    ),
+                    ch=ch,
+                ),
+                view=conf,
+            )
+            conf.message = interaction.message
+            return
+        edit = AdminEditView(self.owner_id, ch=ch, year=self.year)
+        await interaction.response.edit_message(
+            embed=edit._embed(),
+            view=edit,
+        )
+        edit.message = interaction.message
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=1)
+    async def back(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = AdminCatalogTierView(
+            self.owner_id, year=self.year, mode=self.mode
+        )
+        await interaction.response.edit_message(
+            embed=_catalog_embed(
+                title=f"Admin · {self.mode.title()} challenge",
+                description="Pick a **difficulty**.",
+            ),
+            view=view,
+        )
+        view.message = interaction.message
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_catalog_embed(title="Cancelled", description="No changes."),
+            view=None,
+        )
+
+
+class AdminCatalogTierButton(discord.ui.Button):
+    def __init__(self, tier: str, label: str, style: discord.ButtonStyle) -> None:
+        super().__init__(label=label, style=style)
+        self.tier = tier
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: AdminCatalogTierView = self.view  # type: ignore[assignment]
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        if view.mode == "add":
+            setup = AdminAddSetupView(
+                view.owner_id, year=view.year, tier=self.tier
+            )
+            await interaction.response.edit_message(
+                embed=setup._embed(),
+                view=setup,
+            )
+            setup.message = interaction.message
+            return
+        items = list_challenges(year=view.year, tier=self.tier)
+        if not items:
+            await interaction.response.send_message(
+                f"No **{self.label}** challenges for {view.year}.",
+                ephemeral=True,
+            )
+            return
+        lines = [f"**#{c['number']} {c['title']}** (`{c['id']}`)" for c in items]
+        pick = _AdminPickView(
+            view.owner_id,
+            year=view.year,
+            tier=self.tier,
+            challenges=items,
+            mode=view.mode,
+        )
+        await interaction.response.edit_message(
+            embed=_catalog_embed(
+                title=f"{self.label} · {view.mode}",
+                description="Select one:\n" + "\n".join(lines),
+            ),
+            view=pick,
+        )
+        pick.message = interaction.message
+
+
+class AdminCatalogTierView(_OwnerView):
+    def __init__(self, owner_id: int, *, year: int, mode: str) -> None:
+        super().__init__(owner_id)
+        self.year = year
+        self.mode = mode  # add | edit | remove
+        for tier, label, style in TIER_META:
+            self.add_item(AdminCatalogTierButton(tier, label, style))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_catalog_embed(title="Cancelled", description="No changes."),
+            view=None,
+        )
+
+
+class AdminRemoveConfirmView(_OwnerView):
+    def __init__(self, owner_id: int, *, ch: dict, year: int) -> None:
+        super().__init__(owner_id)
+        self.ch = ch
+        self.year = year
+
+    @discord.ui.button(label="Delete permanently", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        cid = str(self.ch["id"])
+        counts = att_svc.attempt_status_counts_for_challenge(cid)
+        att_svc.admin_delete_challenge(cid)
+        self.stop()
+        n = int(counts.get("total") or 0)
+        await interaction.response.edit_message(
+            embed=_catalog_embed(
+                title="Challenge removed",
+                description=(
+                    f"Deleted `{cid}` from the catalog."
+                    + (f" ({n} historical attempt(s) kept.)" if n else "")
+                ),
+            ),
+            view=None,
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_catalog_embed(title="Cancelled", description="Nothing deleted."),
+            view=None,
+        )
+
+
+class AdminEditModal(discord.ui.Modal, title="Edit challenge"):
+    def __init__(self, owner_id: int, ch: dict, year: int) -> None:
+        super().__init__()
+        self.owner_id = owner_id
+        self.ch = dict(ch)
+        self.year = year
+        self.title_in = discord.ui.TextInput(
+            label="Title",
+            default=str(ch.get("title") or "")[:100],
+            required=True,
+            max_length=100,
+        )
+        self.goal_amount_in = discord.ui.TextInput(
+            label="Goal amount",
+            default=str(ch.get("goal_amount") or "1"),
+            required=True,
+            max_length=20,
+        )
+        self.hours_in = discord.ui.TextInput(
+            label="Time limit (hours)",
+            default=str(ch.get("time_limit_hours") or "24"),
+            required=True,
+            max_length=10,
+        )
+        self.param_in = discord.ui.TextInput(
+            label="Param label (blank = none)",
+            default=str(ch.get("param_label") or ""),
+            required=False,
+            max_length=40,
+            placeholder="series / game / …",
+        )
+        self.desc_in = discord.ui.TextInput(
+            label="Description",
+            default=str(ch.get("description") or "")[:500],
+            required=False,
+            max_length=500,
+            style=discord.TextStyle.paragraph,
+        )
+        for item in (
+            self.title_in,
+            self.goal_amount_in,
+            self.hours_in,
+            self.param_in,
+            self.desc_in,
+        ):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        try:
+            amount = float(str(self.goal_amount_in.value).strip())
+            hours = float(str(self.hours_in.value).strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Goal amount and hours must be numbers.", ephemeral=True
+            )
+            return
+        param = str(self.param_in.value or "").strip() or None
+        r = att_svc.admin_upsert_challenge(
+            _challenge_payload(
+                self.ch,
+                title=str(self.title_in.value).strip(),
+                goal_amount=amount,
+                time_limit_hours=hours,
+                param_label=param,
+                description=str(self.desc_in.value or "").strip(),
+            )
+        )
+        if not r.get("ok"):
+            await interaction.response.send_message(
+                r.get("error") or "Save failed.", ephemeral=True
+            )
+            return
+        ch = get_challenge(str(self.ch["id"])) or self.ch
+        edit = AdminEditView(self.owner_id, ch=ch, year=self.year)
+        await interaction.response.send_message(
+            embed=edit._embed(),
+            view=edit,
+            ephemeral=True,
+        )
+        edit.message = await interaction.original_response()
+
+
+class _AdminEditGoalSelect(discord.ui.Select):
+    def __init__(self, current: str) -> None:
+        options = [
+            discord.SelectOption(label=g, value=g, default=(g == current))
+            for g in _GOAL_KINDS
+        ]
+        super().__init__(
+            placeholder="Goal kind…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: AdminEditView = self.view  # type: ignore[assignment]
+        await view._apply(interaction, goal_kind=self.values[0])
+
+
+class _AdminEditMediaSelect(discord.ui.Select):
+    def __init__(self, current: str) -> None:
+        cur = current if current in _MEDIA_FILTERS else "any"
+        options = [
+            discord.SelectOption(label=m, value=m, default=(m == cur))
+            for m in _MEDIA_FILTERS
+        ]
+        super().__init__(
+            placeholder="Media filter…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: AdminEditView = self.view  # type: ignore[assignment]
+        await view._apply(interaction, media_filter=self.values[0])
+
+
+class AdminEditView(_OwnerView):
+    def __init__(self, owner_id: int, *, ch: dict, year: int) -> None:
+        super().__init__(owner_id, timeout=300)
+        self.ch = dict(ch)
+        self.year = year
+        self.add_item(_AdminEditGoalSelect(str(ch.get("goal_kind") or "volumes")))
+        self.add_item(
+            _AdminEditMediaSelect(str(ch.get("media_filter") or "any"))
+        )
+
+    def _embed(self) -> discord.Embed:
+        return _catalog_embed(
+            title="Edit challenge",
+            description=(
+                "Change goal/media below, or **Edit fields…** for title/amount/hours.\n"
+                "**Verify** / **Concurrent** toggle immediately."
+            ),
+            ch=self.ch,
+        )
+
+    async def _apply(self, interaction: discord.Interaction, **overrides: object) -> None:
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        r = att_svc.admin_upsert_challenge(_challenge_payload(self.ch, **overrides))
+        if not r.get("ok"):
+            await interaction.response.send_message(
+                r.get("error") or "Save failed.", ephemeral=True
+            )
+            return
+        fresh = get_challenge(str(self.ch["id"]))
+        if fresh:
+            self.ch = fresh
+        # Rebuild selects so defaults match saved values
+        new = AdminEditView(self.owner_id, ch=self.ch, year=self.year)
+        await interaction.response.edit_message(embed=new._embed(), view=new)
+        new.message = interaction.message
+
+    @discord.ui.button(
+        label="Edit fields…", style=discord.ButtonStyle.primary, row=2
+    )
+    async def fields(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            AdminEditModal(self.owner_id, self.ch, self.year)
+        )
+
+    @discord.ui.button(
+        label="Toggle verify", style=discord.ButtonStyle.secondary, row=2
+    )
+    async def toggle_verify(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        cur = (self.ch.get("verify") or "tadoku").lower()
+        nxt = "honor" if cur == "tadoku" else "tadoku"
+        await self._apply(interaction, verify=nxt)
+
+    @discord.ui.button(
+        label="Toggle concurrent", style=discord.ButtonStyle.secondary, row=2
+    )
+    async def toggle_concurrent(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        cur = int(self.ch.get("allows_concurrent") or 0)
+        await self._apply(interaction, allows_concurrent=0 if cur else 1)
+
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, row=3)
+    async def done(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            embed=_catalog_embed(
+                title="Saved",
+                description=f"`{self.ch.get('id')}` is up to date.",
+                ch=self.ch,
+            ),
+            view=None,
+        )
+
+
+class _AdminAddGoalSelect(discord.ui.Select):
+    def __init__(self, current: str) -> None:
+        options = [
+            discord.SelectOption(label=g, value=g, default=(g == current))
+            for g in _GOAL_KINDS
+        ]
+        super().__init__(
+            placeholder="Goal kind…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: AdminAddSetupView = self.view  # type: ignore[assignment]
+        view.goal_kind = self.values[0]
+        await interaction.response.edit_message(embed=view._embed(), view=view)
+
+
+class _AdminAddMediaSelect(discord.ui.Select):
+    def __init__(self, current: str) -> None:
+        options = [
+            discord.SelectOption(label=m, value=m, default=(m == current))
+            for m in _MEDIA_FILTERS
+        ]
+        super().__init__(
+            placeholder="Media filter…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: AdminAddSetupView = self.view  # type: ignore[assignment]
+        view.media_filter = self.values[0]
+        await interaction.response.edit_message(embed=view._embed(), view=view)
+
+
+class AdminAddModal(discord.ui.Modal, title="New challenge"):
+    def __init__(self, setup: "AdminAddSetupView") -> None:
+        super().__init__()
+        self.setup = setup
+        nxt = _next_challenge_number(setup.year, setup.tier)
+        self.number_in = discord.ui.TextInput(
+            label="Number (id becomes tier-N)",
+            default=str(nxt),
+            required=True,
+            max_length=4,
+        )
+        self.title_in = discord.ui.TextInput(
+            label="Title",
+            required=True,
+            max_length=100,
+            placeholder="Manga Mini-Marathon",
+        )
+        self.goal_amount_in = discord.ui.TextInput(
+            label="Goal amount",
+            default="1",
+            required=True,
+            max_length=20,
+        )
+        self.hours_in = discord.ui.TextInput(
+            label="Time limit (hours)",
+            default="24",
+            required=True,
+            max_length=10,
+        )
+        self.param_in = discord.ui.TextInput(
+            label="Param label (blank = none)",
+            required=False,
+            max_length=40,
+            placeholder="series / game / …",
+        )
+        for item in (
+            self.number_in,
+            self.title_in,
+            self.goal_amount_in,
+            self.hours_in,
+            self.param_in,
+        ):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        s = self.setup
+        try:
+            number = int(str(self.number_in.value).strip())
+            amount = float(str(self.goal_amount_in.value).strip())
+            hours = float(str(self.hours_in.value).strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Number, goal amount, and hours must be numbers.",
+                ephemeral=True,
+            )
+            return
+        if number < 1:
+            await interaction.response.send_message(
+                "Number must be ≥ 1.", ephemeral=True
+            )
+            return
+        cid = f"{s.tier}-{number}"
+        if get_challenge(cid):
+            await interaction.response.send_message(
+                f"`{cid}` already exists — pick another number or edit it.",
+                ephemeral=True,
+            )
+            return
+        existing = list_challenges(year=s.year, tier=s.tier)
+        if any(int(c["number"]) == number for c in existing):
+            await interaction.response.send_message(
+                f"{s.tier} #{number} already used this year.",
+                ephemeral=True,
+            )
+            return
+        param = str(self.param_in.value or "").strip() or None
+        r = att_svc.admin_upsert_challenge(
+            {
+                "id": cid,
+                "year": s.year,
+                "tier": s.tier,
+                "number": number,
+                "title": str(self.title_in.value).strip(),
+                "description": "",
+                "time_limit_hours": hours,
+                "param_label": param,
+                "verify": s.verify,
+                "goal_kind": s.goal_kind,
+                "goal_amount": amount,
+                "media_filter": s.media_filter,
+                "allows_concurrent": s.allows_concurrent,
+            }
+        )
+        if not r.get("ok"):
+            await interaction.response.send_message(
+                r.get("error") or "Create failed.", ephemeral=True
+            )
+            return
+        ch = get_challenge(cid)
+        # Description optional: open edit fields next if they want — show edit view
+        edit = AdminEditView(s.owner_id, ch=ch or {"id": cid}, year=s.year)
+        await interaction.response.send_message(
+            embed=_catalog_embed(
+                title="Challenge created",
+                description=(
+                    f"Added `{cid}`. Adjust description / options below if needed, "
+                    "then **Done**."
+                ),
+                ch=ch,
+            ),
+            view=edit,
+            ephemeral=True,
+        )
+        edit.message = await interaction.original_response()
+
+
+class AdminAddSetupView(_OwnerView):
+    def __init__(self, owner_id: int, *, year: int, tier: str) -> None:
+        super().__init__(owner_id, timeout=300)
+        self.year = year
+        self.tier = tier
+        self.goal_kind = "volumes"
+        self.media_filter = "any"
+        self.verify = "tadoku"
+        self.allows_concurrent = 0
+        self.add_item(_AdminAddGoalSelect(self.goal_kind))
+        self.add_item(_AdminAddMediaSelect(self.media_filter))
+
+    def _embed(self) -> discord.Embed:
+        nxt = _next_challenge_number(self.year, self.tier)
+        return _catalog_embed(
+            title=f"Add · {self.tier}",
+            description=(
+                f"Year **{self.year}** · next number **#{nxt}** "
+                f"(id `{self.tier}-{nxt}`)\n"
+                f"goal `{self.goal_kind}` · media `{self.media_filter}` · "
+                f"verify **{self.verify}**"
+                + (" · concurrent" if self.allows_concurrent else "")
+                + "\nSet options, then **Continue…**"
+            ),
+        )
+
+    @discord.ui.button(
+        label="Toggle verify", style=discord.ButtonStyle.secondary, row=2
+    )
+    async def toggle_verify(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.verify = "honor" if self.verify == "tadoku" else "tadoku"
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    @discord.ui.button(
+        label="Toggle concurrent", style=discord.ButtonStyle.secondary, row=2
+    )
+    async def toggle_concurrent(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.allows_concurrent = 0 if self.allows_concurrent else 1
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    @discord.ui.button(
+        label="Continue…", style=discord.ButtonStyle.primary, row=3
+    )
+    async def cont(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AdminAddModal(self))
+
+    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=3)
+    async def back(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = AdminCatalogTierView(self.owner_id, year=self.year, mode="add")
+        await interaction.response.edit_message(
+            embed=_catalog_embed(
+                title="Admin · Add challenge",
+                description="Pick a **difficulty** for the new challenge.",
+            ),
+            view=view,
+        )
+        view.message = interaction.message
+
+
 # ----- slash commands -----
 
 
@@ -2655,6 +3390,55 @@ async def challenge_admin(
         ephemeral=True,
     )
     view.message = await interaction.original_response()
+
+
+async def _start_catalog_admin(
+    interaction: discord.Interaction, *, mode: str
+) -> None:
+    if not _admin_only(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    year = _catalog_year()
+    titles = {
+        "add": ("Admin · Add challenge", "Pick a **difficulty** for the new challenge."),
+        "edit": ("Admin · Edit challenge", "Pick a **difficulty**, then the challenge to edit."),
+        "remove": (
+            "Admin · Remove challenge",
+            "Pick a **difficulty**, then the challenge to delete from the catalog.",
+        ),
+    }
+    title, desc = titles[mode]
+    view = AdminCatalogTierView(interaction.user.id, year=year, mode=mode)
+    await interaction.response.send_message(
+        embed=_catalog_embed(title=title, description=desc),
+        view=view,
+        ephemeral=True,
+    )
+    view.message = await interaction.original_response()
+
+
+@challenge_group.command(
+    name="add",
+    description="Admin: add a challenge to the catalog",
+)
+async def challenge_add(interaction: discord.Interaction) -> None:
+    await _start_catalog_admin(interaction, mode="add")
+
+
+@challenge_group.command(
+    name="edit",
+    description="Admin: edit a catalog challenge",
+)
+async def challenge_edit(interaction: discord.Interaction) -> None:
+    await _start_catalog_admin(interaction, mode="edit")
+
+
+@challenge_group.command(
+    name="remove",
+    description="Admin: remove a challenge from the catalog",
+)
+async def challenge_remove(interaction: discord.Interaction) -> None:
+    await _start_catalog_admin(interaction, mode="remove")
 
 
 @challenge_group.command(
