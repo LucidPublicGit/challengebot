@@ -7,7 +7,7 @@ import io
 import re
 from typing import Optional
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 SCALE = 2
 WIDTH = 720
@@ -1595,6 +1595,59 @@ def _render_event_chip(
     return buf.getvalue()
 
 
+def _stroke_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[float, float],
+    text: str,
+    font: ImageFont.ImageFont,
+    fill,
+    *,
+    stroke_fill=(0, 0, 0, 230),
+    stroke_width: int = 3,
+) -> None:
+    try:
+        draw.text(
+            xy,
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill,
+        )
+    except TypeError:
+        x, y = xy
+        for dx, dy in (
+            (-stroke_width, 0),
+            (stroke_width, 0),
+            (0, -stroke_width),
+            (0, stroke_width),
+            (-2, -2),
+            (2, -2),
+            (-2, 2),
+            (2, 2),
+        ):
+            draw.text((x + dx, y + dy), text, font=font, fill=stroke_fill)
+        draw.text(xy, text, font=font, fill=fill)
+
+
+def _bottom_scrim(
+    im: Image.Image, *,
+    strength: int = 245,
+    start_frac: float = 0.40,
+) -> Image.Image:
+    """Darken lower portion so white name/meta pop."""
+    w, h = im.size
+    g = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(g)
+    y0 = int(h * start_frac)
+    span = max(1.0, h - y0)
+    for i in range(y0, h):
+        t = (i - y0) / span
+        a = int(strength * (t**0.85))
+        gd.line((0, i, w, i), fill=(6, 4, 10, min(240, a)))
+    return Image.alpha_composite(im.convert("RGBA"), g)
+
+
 def _render_unified_start(
     *,
     display_name: str,
@@ -1608,13 +1661,17 @@ def _render_unified_start(
     include_challenger: bool = True,
     poster_bytes: Optional[bytes] = None,
 ) -> bytes:
-    """One-box start/scheduled card: optional NC banner + user/challenge meta.
+    """One-image start/scheduled card (Gbar_E_glow).
 
-    No "Started" hero. Double face = NC hole avatar + small circle by name.
+    NC banner full-bleed; name + tier/meta drawn on the art (heavy bottom
+    scrim, tier glow, no pill, no strip under the image).
+    poster_bytes ignored (no series underlay).
     """
     from app.new_challenger import render_new_challenger
 
+    _ = poster_bytes  # API compat; series alpha dropped
     S = SCALE
+    W = WIDTH * S
     display_name = _oneline(display_name)
     challenge_title = _oneline(challenge_title)
     focus = _oneline(focus)
@@ -1622,232 +1679,88 @@ def _render_unified_start(
     schedule_label = _oneline(schedule_label) if schedule_label else None
     tier_key = (tier or "").lower().strip()
     tier_color = TIER_COLOR.get(tier_key, ACCENT_PURPLE)
-    tier_pretty = TIER_LABEL.get(tier_key, (tier or "?").replace("_", " ").title())
-    flair = _tier_flair(tier_key)
+    tier_fill = ACCENT_GOLD if tier_key == "ota_master" else tier_color
+    if tier_key == "ota_master":
+        tlabel = "★ OTA-MASTER"
+    else:
+        tlabel = TIER_LABEL.get(tier_key, (tier or "?").replace("_", " ").title()).upper()
 
-    rail = 4
-    inner_w = WIDTH - MARGIN * 2 - rail
+    bits: list[str] = []
+    if number:
+        bits.append(f"#{int(number)}")
+    if challenge_title:
+        bits.append(challenge_title)
+    if focus:
+        bits.append(focus)
+    if schedule_label:
+        bits.append(schedule_label)
+    elif meta_line:
+        bits.append(meta_line)
+    sub = "  ·  ".join(bits)
 
     nc_im: Image.Image | None = None
     if include_challenger:
         try:
-            # Tier lives on card chrome — no strip under NC art
             nc_png = render_new_challenger(avatar_bytes, tier=None)
         except Exception:  # noqa: BLE001
             nc_png = None
         if nc_png:
             nc_im = Image.open(io.BytesIO(nc_png)).convert("RGBA")
-            nw, nh = nc_im.size
-            tw = inner_w * S
-            if nw != tw:
-                nh = max(1, int(nh * tw / max(nw, 1)))
-                nc_im = nc_im.resize((tw, nh), Image.Resampling.LANCZOS)
-
-    # Poster sits in meta block (right)
-    poster_h_u = 120
-    poster_w_u = round(poster_h_u * 2 / 3)
-    poster = (
-        _poster_image(poster_bytes, poster_w_u * S, poster_h_u * S, 10 * S)
-        if poster_bytes
-        else None
-    )
-    poster_panel_u = (poster_w_u + 14) if poster is not None else 0
-
-    top_pad = 18
-    gap_nc = 14
-    # Meta stack (unscaled)
-    name_block = 48
-    tier_block = 30
-    title_block = 26
-    focus_block = 22 if focus else 0
-    sched_block = 32 if schedule_label else 0
-    meta_block = 24 if meta_line and not schedule_label else (14 if meta_line else 0)
-    footer_block = 26
-    bottom_pad = 12
-
-    meta_h_u = (
-        name_block
-        + tier_block
-        + title_block
-        + focus_block
-        + sched_block
-        + meta_block
-        + footer_block
-        + bottom_pad
-    )
-    if poster is not None:
-        meta_h_u = max(meta_h_u, poster_h_u + footer_block + bottom_pad + 8)
-
-    nc_h_px = nc_im.size[1] if nc_im is not None else 0
-    H_px = top_pad * S + nc_h_px + (gap_nc * S if nc_im is not None else 0) + meta_h_u * S
-    if nc_im is None:
-        H_px = max(H_px, (top_pad + meta_h_u + 8) * S)
-    W_px = WIDTH * S
-
-    img = Image.new("RGBA", (W_px, H_px), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    outer = (0, 0, W_px - 1, H_px - 1)
-    radius = 22 * S
-    draw.rounded_rectangle(outer, radius=radius, fill=BG)
-    _draw_tier_wash(
-        draw,
-        card_w_px=W_px,
-        card_h_px=H_px,
-        tier_color=tier_color,
-        strength=float(flair.get("wash") or 0.06),
-        width_frac=float(flair.get("wash_width") or 0.3),
-    )
-    draw.rounded_rectangle((0, 0, rail * S, H_px - 1), radius=8 * S, fill=tier_color)
-
-    nx = (MARGIN + rail) * S
-    y = top_pad * S
+            if nc_im.size[0] != W:
+                nh = max(1, int(nc_im.size[1] * W / max(nc_im.size[0], 1)))
+                nc_im = nc_im.resize((W, nh), Image.Resampling.LANCZOS)
 
     if nc_im is not None:
-        pad = 3 * S
-        draw.rounded_rectangle(
-            (nx - pad, y - pad, nx + nc_im.size[0] + pad, y + nc_im.size[1] + pad),
-            radius=12 * S,
-            fill=_mix(tier_color, BG, 0.10),
-        )
-        img.paste(nc_im, (nx, y), nc_im)
-        draw.rounded_rectangle(
-            (nx, y, nx + nc_im.size[0] - 1, y + nc_im.size[1] - 1),
-            radius=10 * S,
-            outline=_mix(tier_color, HAIRLINE, 0.4),
-            width=max(1, S),
-        )
-        y += nc_im.size[1] + gap_nc * S
+        canvas = nc_im
+    else:
+        # Go-live / NC off: dark plate only
+        canvas = Image.new("RGBA", (W, 220 * S), (8, 6, 10, 255))
+        if avatar_bytes:
+            av = _circular_avatar(avatar_bytes, 72 * S)
+            canvas.paste(av, (24 * S, 40 * S), av)
 
-    cx = nx
-    right = W_px - MARGIN * S
-    text_right = right - (poster_panel_u * S if poster is not None else 0)
+    # Scrim on the art so overlaid text reads
+    canvas = _bottom_scrim(canvas, strength=250, start_frac=0.40)
+    w, h = canvas.size
 
-    # Name row + small avatar (double face with NC hole)
-    av_s = 40 * S
-    av = _circular_avatar(avatar_bytes, av_s)
-    img.paste(av, (cx, y), av)
-    draw.ellipse(
-        (cx, y, cx + av_s, y + av_s),
-        outline=tier_color,
-        width=max(1, S),
+    name_f = _font(40 * S, bold=True)
+    # On-art, slightly lower than original E (was h-100)
+    name_y = h - 88 * S
+    glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(glow).text(
+        (22 * S, name_y), display_name, font=name_f, fill=(*tier_fill, 180)
     )
-    name_font = _font(22 * S, bold=True)
-    name_x = cx + av_s + 12 * S
-    draw.text(
-        (name_x, y + 6 * S),
-        _truncate(draw, display_name, name_font, text_right - name_x),
-        font=name_font,
-        fill=INK,
+    glow = glow.filter(ImageFilter.GaussianBlur(max(4, 8 * S // 2)))
+    canvas = Image.alpha_composite(canvas, glow)
+    draw = ImageDraw.Draw(canvas)
+    _stroke_text(
+        draw,
+        (22 * S, name_y),
+        display_name,
+        name_f,
+        INK,
+        stroke_width=max(2, 3 * S // 2),
     )
-    y += av_s + 10 * S
 
-    # Tier pill + #
-    pill_font = _font(11 * S, bold=True)
-    tlabel = tier_pretty.upper()
-    if tier_key == "ota_master":
-        tlabel = "★  OTA-MASTER"
-    tpad_x, tpad_y = 10 * S, 4 * S
-    th = pill_font.size + tpad_y * 2
-    tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
-    draw.rounded_rectangle(
-        (cx, y, cx + tw, y + th),
-        radius=th / 2,
-        fill=_mix(tier_color, BG, 0.25),
-        outline=_mix(tier_color, BG, 0.55),
-        width=max(1, S // 2),
+    tf = _font(14 * S, bold=True)
+    tw = draw.textlength(tlabel, font=tf)
+    tx = 22 * S
+    ty = h - 40 * S
+    draw.text((tx, ty), tlabel, font=tf, fill=tier_fill)
+    draw.rectangle(
+        (tx, ty + tf.size + 3 * S, tx + tw, ty + tf.size + 7 * S),
+        fill=tier_fill,
     )
-    draw.text(
-        (cx + tw / 2, y + th / 2),
-        tlabel,
-        font=pill_font,
-        fill=ACCENT_GOLD if tier_key == "ota_master" else tier_color,
-        anchor="mm",
-    )
-    if number:
+    if sub:
+        sf = _font(14 * S, bold=True)
         draw.text(
-            (cx + tw + 10 * S, y + th / 2),
-            f"#{int(number)}",
-            font=_font(13 * S, bold=True),
-            fill=INK_SOFT,
-            anchor="lm",
-        )
-    y += th + 10 * S
-
-    title_font = _font(18 * S, bold=True)
-    draw.text(
-        (cx, y),
-        _truncate(draw, challenge_title, title_font, text_right - cx),
-        font=title_font,
-        fill=INK,
-    )
-    y += 24 * S
-
-    meta_font = _font(14 * S)
-    if focus:
-        draw.text(
-            (cx, y),
-            _truncate(draw, f"Focus · {focus}", meta_font, text_right - cx),
-            font=meta_font,
-            fill=INK_SOFT,
-        )
-        y += 22 * S
-
-    if schedule_label:
-        sf = _font(15 * S, bold=True)
-        sh = sf.size + 12 * S
-        sw = min(
-            text_right - cx,
-            draw.textlength(schedule_label, font=sf) + 20 * S,
-        )
-        draw.rounded_rectangle(
-            (cx, y, cx + sw, y + sh),
-            radius=8 * S,
-            fill=_mix(ACCENT_BLUE, BG, 0.22),
-            outline=_mix(ACCENT_BLUE, BG, 0.5),
-            width=max(1, S // 2),
-        )
-        draw.text(
-            (cx + 10 * S, y + sh / 2),
-            _truncate(draw, schedule_label, sf, sw - 20 * S),
+            (tx + tw + 14 * S, ty + 2 * S),
+            _truncate(draw, sub, sf, W - tx - tw - 36 * S),
             font=sf,
-            fill=ACCENT_BLUE,
-            anchor="lm",
-        )
-        y += sh + 10 * S
-    elif meta_line:
-        tick = 3 * S
-        draw.rectangle((cx, y + 2 * S, cx + tick, y + 18 * S), fill=tier_color)
-        draw.text(
-            (cx + tick + 10 * S, y),
-            _truncate(draw, meta_line, meta_font, text_right - cx - tick - 10 * S),
-            font=meta_font,
-            fill=INK_SOFT,
-        )
-        y += 22 * S
-
-    if poster is not None:
-        px = int(right - poster_w_u * S)
-        # Align poster with top of name row area
-        py = top_pad * S + nc_h_px + (gap_nc * S if nc_im is not None else 0)
-        img.paste(poster, (px, py), poster)
-        draw.rounded_rectangle(
-            (px, py, px + poster_w_u * S - 1, py + poster_h_u * S - 1),
-            radius=10 * S,
-            outline=_mix(tier_color, HAIRLINE, 0.35),
-            width=S,
+            fill=(210, 212, 220),
         )
 
-    foot_f = _font(11 * S)
-    draw.text(
-        (cx, H_px - 18 * S),
-        BRAND_FOOTER,
-        font=foot_f,
-        fill=INK_SOFT,
-    )
-
-    edge = _mix(tier_color, HAIRLINE, float(flair.get("edge") or 0.28))
-    _clip_round(img, outer, radius, edge, max(S, S))
-    out = img.resize((WIDTH, max(1, H_px // S)), Image.Resampling.LANCZOS)
+    out = canvas.resize((WIDTH, max(1, h // S)), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     out.save(buf, format="PNG")
     return buf.getvalue()
@@ -1939,12 +1852,21 @@ def files_as_image_embeds(
     colors: list[int] | None = None,
     chrome: bool = False,
 ):
-    """One embed per file with set_image(attachment://…) so Discord shows them full-size.
+    """Optional embeds that set_image(attachment://…) for each file.
 
-    chrome=False (default): no left color strip — avoids double border with PNG rails.
-    chrome=True: prefer colors[] / color / tier / kind.
+    Default (chrome=False, no color): return [] and let callers send plain
+    image files. Discord still inlines PNGs; Embed+set_image wraps them in
+    a nested box (visible in-channel, gone when you open the image).
+
+    chrome=True (or color/colors set): one embed per file with a color strip.
     """
     import discord
+
+    colored = color is not None or (
+        colors is not None and any(c is not None for c in colors)
+    )
+    if not chrome and not colored:
+        return []
 
     fallback: int | None = None
     if chrome:
