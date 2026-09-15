@@ -581,7 +581,7 @@ def start_attempt(
         if not user or not user.get("tadoku_user_id"):
             return {
                 "ok": False,
-                "error": "Link your Tadoku account first: `/challenge link user_id:<uuid>`.",
+                "error": "Link your Tadoku account first: `/challenge link` (or use **Link Tadoku…** on the start panel).",
             }
 
     now = datetime.now(timezone.utc).replace(microsecond=0)

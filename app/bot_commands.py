@@ -156,8 +156,58 @@ def _start_embed(
         )
         if ch.get("description"):
             embed.add_field(name="Details", value=ch["description"][:300], inline=False)
-    embed.set_footer(text="Only you can use these controls · times out in 3 min")
+    embed.set_footer(text="Only you can use these controls · times out in 10 min")
     return embed
+
+
+def _user_tadoku_linked(discord_id: int | str) -> bool:
+    user = att_svc.get_user(str(discord_id))
+    return bool(user and user.get("tadoku_user_id"))
+
+
+def _challenge_needs_tadoku(ch: dict | None) -> bool:
+    if not ch:
+        return False
+    return (ch.get("verify") or "tadoku").lower() == "tadoku"
+
+
+def _release_view(view: discord.ui.View | None) -> discord.Message | None:
+    """Stop a wizard step and detach its message so timeout can't stomp the next step."""
+    if view is None:
+        return None
+    msg = getattr(view, "message", None)
+    if hasattr(view, "message"):
+        view.message = None  # type: ignore[attr-defined]
+    view.stop()
+    return msg
+
+
+def _bind_view_message(
+    view: discord.ui.View, message: discord.Message | None
+) -> None:
+    if hasattr(view, "message"):
+        view.message = message  # type: ignore[attr-defined]
+
+
+def _when_pick_for(
+    owner_id: int,
+    *,
+    ch: dict,
+    focus: str | None,
+    guild_id: str | None,
+    year: int | None = None,
+    tier: str | None = None,
+    dry_run: bool = False,
+) -> "WhenPickView":
+    return WhenPickView(
+        owner_id,
+        ch=ch,
+        focus=focus,
+        year=int(year if year is not None else ch.get("year") or _catalog_year()),
+        guild_id=guild_id,
+        tier=str(tier if tier is not None else ch.get("tier") or ""),
+        dry_run=dry_run,
+    )
 
 
 async def _finalize_start(
@@ -167,6 +217,7 @@ async def _finalize_start(
     focus: str | None,
     guild_id: str | None,
     starts_at: datetime | None = None,
+    restore_view: discord.ui.View | None = None,
 ) -> None:
     b = _bot_helpers()
     if not interaction.response.is_done():
@@ -181,7 +232,37 @@ async def _finalize_start(
         starts_at=starts_at,
     )
     if not result.get("ok"):
-        await interaction.followup.send(result.get("error") or "Failed.", ephemeral=True)
+        err = result.get("error") or "Failed."
+        ch = get_challenge(challenge_id)
+        # Restore a live panel so "Starting…" with dead buttons is not a dead end.
+        try:
+            if ch is not None:
+                restored = _when_pick_for(
+                    interaction.user.id,
+                    ch=ch,
+                    focus=focus,
+                    guild_id=guild_id,
+                )
+                emb = restored._when_embed()
+                emb.description = (
+                    f"**Couldn’t start:** {err}\n\n" + (emb.description or "")
+                )
+                await interaction.edit_original_response(embed=emb, view=restored)
+                _release_view(restore_view)
+                _bind_view_message(
+                    restored, await interaction.original_response()
+                )
+            elif restore_view is not None:
+                for child in restore_view.children:
+                    child.disabled = False  # type: ignore[attr-defined]
+                await interaction.edit_original_response(view=restore_view)
+        except discord.HTTPException:
+            logger.warning("could not restore start panel after failed start")
+            try:
+                await interaction.followup.send(err, ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return
         return
 
     ch = result["challenge"]
@@ -426,7 +507,8 @@ async def _run_abandon(
 
 
 class _OwnerView(discord.ui.View):
-    def __init__(self, owner_id: int, *, timeout: float = 180) -> None:
+    # Start wizard is multi-step; short timeouts left dead panels after link/advance.
+    def __init__(self, owner_id: int, *, timeout: float = 600) -> None:
         super().__init__(timeout=timeout)
         self.owner_id = owner_id
         self.message: discord.Message | None = None
@@ -441,13 +523,17 @@ class _OwnerView(discord.ui.View):
         return True
 
     async def on_timeout(self) -> None:
+        # Only touch the message if we still own it (handoff clears this).
+        msg = self.message
+        self.message = None
+        if msg is None:
+            return
         for child in self.children:
             child.disabled = True  # type: ignore[attr-defined]
-        if self.message is not None:
-            try:
-                await self.message.edit(view=self)
-            except discord.HTTPException:
-                pass
+        try:
+            await msg.edit(view=self)
+        except discord.HTTPException:
+            pass
 
 
 # ----- start wizard -----
@@ -723,6 +809,7 @@ async def _commit_scheduled_start(
         focus=focus,
         guild_id=guild_id,
         starts_at=None if started_now else starts,
+        restore_view=view,
     )
 
 
@@ -979,10 +1066,11 @@ class ScheduleView(_OwnerView):
                 tier=self.tier,
                 dry_run=self.dry_run,
             )
+            msg = _release_view(self) or interaction.message
             await interaction.response.edit_message(
                 embed=view._when_embed(), view=view
             )
-            view.message = interaction.message
+            _bind_view_message(view, msg)
 
         confirm.callback = on_confirm  # type: ignore[method-assign]
         toggle.callback = on_toggle  # type: ignore[method-assign]
@@ -1022,6 +1110,35 @@ class WhenPickView(_OwnerView):
         self.guild_id = guild_id
         self.tier = tier
         self.dry_run = dry_run
+        self.needs_tadoku_link = (
+            not dry_run
+            and _challenge_needs_tadoku(ch)
+            and not _user_tadoku_linked(owner_id)
+        )
+        if self.needs_tadoku_link:
+            link_btn = discord.ui.Button(
+                label="Link Tadoku…",
+                style=discord.ButtonStyle.primary,
+                row=2,
+            )
+
+            async def on_link(interaction: discord.Interaction) -> None:
+                await interaction.response.send_modal(
+                    LinkModal(
+                        resume_message=interaction.message,
+                        resume_view=self,
+                        year=self.year,
+                        guild_id=self.guild_id,
+                        owner_id=self.owner_id,
+                        resume_ch=self.ch,
+                        resume_focus=self.focus,
+                        resume_tier=self.tier,
+                        dry_run=self.dry_run,
+                    )
+                )
+
+            link_btn.callback = on_link  # type: ignore[method-assign]
+            self.add_item(link_btn)
 
     def _when_embed(self) -> discord.Embed:
         banner = (
@@ -1029,12 +1146,18 @@ class WhenPickView(_OwnerView):
             if self.dry_run
             else ""
         )
+        need = ""
+        if getattr(self, "needs_tadoku_link", False):
+            need = (
+                "**Tadoku required** for this challenge — "
+                "tap **Link Tadoku…** below before starting.\n\n"
+            )
         off = _default_offset_for(self.owner_id)
         today = _day_label(off, 0)
         return _start_embed(
             title=("TEST · " if self.dry_run else "") + "When do you want to start?",
             description=(
-                f"{banner}"
+                f"{banner}{need}"
                 f"**{self.ch['tier']} #{self.ch['number']}: {self.ch['title']}**\n\n"
                 f"Timezone: `{off}` · {today}\n"
                 "**Start now** or **Schedule** a day "
@@ -1047,6 +1170,18 @@ class WhenPickView(_OwnerView):
     async def start_now(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        if (
+            not self.dry_run
+            and _challenge_needs_tadoku(self.ch)
+            and not _user_tadoku_linked(self.owner_id)
+        ):
+            await interaction.response.send_message(
+                "This challenge needs Tadoku linked first. "
+                "Tap **Link Tadoku…** on this panel (or `/challenge link`), "
+                "then **Start now**.",
+                ephemeral=True,
+            )
+            return
         for child in self.children:
             child.disabled = True  # type: ignore[attr-defined]
         if self.dry_run:
@@ -1077,6 +1212,7 @@ class WhenPickView(_OwnerView):
             focus=self.focus,
             guild_id=self.guild_id,
             starts_at=None,
+            restore_view=self,
         )
 
     @discord.ui.button(label="Schedule…", style=discord.ButtonStyle.primary, row=0)
@@ -1094,11 +1230,12 @@ class WhenPickView(_OwnerView):
             exact=False,
             dry_run=self.dry_run,
         )
+        msg = _release_view(self) or interaction.message
         await interaction.response.edit_message(
             embed=view._schedule_embed(),
             view=view,
         )
-        view.message = interaction.message
+        _bind_view_message(view, msg)
 
     @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=1)
     async def back(
@@ -1130,6 +1267,7 @@ class WhenPickView(_OwnerView):
             + _challenge_done_tag(str(c["id"]), done_ids)
             for c in items
         ]
+        msg = _release_view(self) or interaction.message
         await interaction.response.edit_message(
             embed=_start_embed(
                 title=f"{self.tier} challenges",
@@ -1139,7 +1277,7 @@ class WhenPickView(_OwnerView):
             ),
             view=pick,
         )
-        pick.message = interaction.message
+        _bind_view_message(pick, msg)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
     async def cancel(
@@ -1230,11 +1368,12 @@ class ChallengeSelect(discord.ui.Select):
             guild_id=view.guild_id,
             tier=view.tier,
         )
+        msg = _release_view(view) or interaction.message
         await interaction.response.edit_message(
             embed=when._when_embed(),
             view=when,
         )
-        when.message = interaction.message
+        _bind_view_message(when, msg)
 
 
 class ChallengePickView(_OwnerView):
@@ -1259,14 +1398,15 @@ class ChallengePickView(_OwnerView):
     async def back(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        view = TierPickView(self.owner_id, year=self.year, guild_id=self.guild_id)
+        nxt = TierPickView(self.owner_id, year=self.year, guild_id=self.guild_id)
+        msg = _release_view(self) or interaction.message
         await interaction.response.edit_message(
             embed=_start_embed(
                 description="Pick a **difficulty**, then a challenge from the list.",
             ),
-            view=view,
+            view=nxt,
         )
-        view.message = interaction.message
+        _bind_view_message(nxt, msg)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
     async def cancel(
@@ -1327,6 +1467,7 @@ class TierButton(discord.ui.Button):
             challenges=items,
             done_ids=done_ids,
         )
+        msg = _release_view(view) or interaction.message
         await interaction.response.edit_message(
             embed=_start_embed(
                 title=f"{self.label} challenges",
@@ -1336,7 +1477,7 @@ class TierButton(discord.ui.Button):
             ),
             view=pick,
         )
-        pick.message = interaction.message
+        _bind_view_message(pick, msg)
 
 
 class TierPickView(_OwnerView):
@@ -1599,15 +1740,52 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
         self,
         *,
         resume_message: discord.Message | None = None,
+        resume_view: discord.ui.View | None = None,
         year: int | None = None,
         guild_id: str | None = None,
         owner_id: int | None = None,
+        resume_ch: dict | None = None,
+        resume_focus: str | None = None,
+        resume_tier: str | None = None,
+        dry_run: bool = False,
     ) -> None:
         super().__init__()
         self.resume_message = resume_message
+        self.resume_view = resume_view
         self.year = year
         self.guild_id = guild_id
         self.owner_id = owner_id
+        self.resume_ch = resume_ch
+        self.resume_focus = resume_focus
+        self.resume_tier = resume_tier
+        self.dry_run = dry_run
+
+    async def _push_resume_panel(
+        self,
+        interaction: discord.Interaction,
+        *,
+        tip: str,
+        view: discord.ui.View,
+        embed: discord.Embed,
+    ) -> None:
+        # Detach prior wizard step so its timeout cannot disable this panel.
+        owned = _release_view(self.resume_view)
+        msg = self.resume_message or owned
+        await interaction.response.send_message(tip, ephemeral=True)
+        if msg is not None:
+            try:
+                await msg.edit(embed=embed, view=view)
+                _bind_view_message(view, msg)
+                return
+            except discord.HTTPException:
+                logger.warning("could not edit start panel after Tadoku link")
+        try:
+            sent = await interaction.followup.send(
+                embed=embed, view=view, ephemeral=True
+            )
+            _bind_view_message(view, sent)
+        except discord.HTTPException:
+            logger.warning("could not send fallback start panel after Tadoku link")
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         raw = str(self.user_id.value).strip()
@@ -1618,47 +1796,58 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
         )
         if not m:
             await interaction.response.send_message(
-                "Could not find a UUID. Paste your Tadoku user id or profile URL.",
+                "Could not find a UUID. Paste your Tadoku **user id** "
+                "(looks like `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) "
+                "or your full profile URL from tadoku.app.",
                 ephemeral=True,
             )
             return
         name = str(self.display_name.value).strip() or None
         att_svc.link_tadoku(str(interaction.user.id), m.group(0), name)
         linked = m.group(0)
+        owner = self.owner_id if self.owner_id is not None else interaction.user.id
+        year = self.year if self.year is not None else _catalog_year()
+
+        # Resume mid-start "when" step (Skip -> pick Tadoku challenge -> link here).
+        if self.resume_ch is not None:
+            view = _when_pick_for(
+                owner,
+                ch=self.resume_ch,
+                focus=self.resume_focus,
+                guild_id=self.guild_id,
+                year=year,
+                tier=self.resume_tier,
+                dry_run=self.dry_run,
+            )
+            await self._push_resume_panel(
+                interaction,
+                tip=f"Linked Tadoku `{linked}`. Start or schedule below.",
+                view=view,
+                embed=view._when_embed(),
+            )
+            return
+
+        # Resume start wizard at difficulty pick.
         if (
             self.resume_message is not None
-            and self.year is not None
-            and self.owner_id is not None
+            or self.resume_view is not None
+            or self.year is not None
         ):
-            view = TierPickView(
-                self.owner_id, year=self.year, guild_id=self.guild_id
+            view = TierPickView(owner, year=year, guild_id=self.guild_id)
+            await self._push_resume_panel(
+                interaction,
+                tip=f"Linked Tadoku `{linked}`. Pick a difficulty below.",
+                view=view,
+                embed=_start_tier_embed(
+                    year=year, note=f"Tadoku linked · `{linked}`"
+                ),
             )
-            await interaction.response.send_message(
-                f"Linked Tadoku `{linked}`. Pick a difficulty on the start panel.",
-                ephemeral=True,
-            )
-            try:
-                await self.resume_message.edit(
-                    embed=_start_embed(
-                        title="Pick difficulty",
-                        description=(
-                            f"Tadoku linked · **{self.year}** catalog\n"
-                            "1️⃣ Difficulty → 2️⃣ Challenge → 3️⃣ Focus if needed → "
-                            "4️⃣ **Now** or **Schedule**"
-                        ),
-                    ),
-                    view=view,
-                )
-                view.message = self.resume_message
-            except discord.HTTPException:
-                logger.warning("could not advance start panel after Tadoku link")
             return
+
         await interaction.response.send_message(
-            f"Linked Tadoku user `{linked}`.",
+            f"Linked Tadoku user `{linked}`. Use `/challenge start` when ready.",
             ephemeral=True,
         )
-
-
 # ----- admin panel -----
 
 
@@ -2578,10 +2767,11 @@ async def _advance_start_after_timezone(
     year: int,
     guild_id: str | None,
     offset: str,
+    prev_view: discord.ui.View | None = None,
 ) -> None:
     """Timezone done → Tadoku link gate (if needed) → tier pick."""
-    user = att_svc.get_user(str(owner_id))
-    linked = bool(user and user.get("tadoku_user_id"))
+    msg = _release_view(prev_view) or interaction.message
+    linked = _user_tadoku_linked(owner_id)
     note = f"Timezone **`{offset}`** · **{_day_label(offset, 0)}**"
     if linked:
         view = TierPickView(owner_id, year=year, guild_id=guild_id)
@@ -2589,13 +2779,13 @@ async def _advance_start_after_timezone(
             embed=_start_tier_embed(year=year, note=note),
             view=view,
         )
-        view.message = interaction.message
+        _bind_view_message(view, msg)
         return
     view = StartTadokuGateView(
         owner_id, year=year, guild_id=guild_id, offset=offset
     )
     await interaction.response.edit_message(embed=view._embed(), view=view)
-    view.message = interaction.message
+    _bind_view_message(view, msg)
 
 
 class StartTadokuGateView(_OwnerView):
@@ -2633,6 +2823,7 @@ class StartTadokuGateView(_OwnerView):
         await interaction.response.send_modal(
             LinkModal(
                 resume_message=interaction.message,
+                resume_view=self,
                 year=self.year,
                 guild_id=self.guild_id,
                 owner_id=self.owner_id,
@@ -2646,17 +2837,18 @@ class StartTadokuGateView(_OwnerView):
         view = TierPickView(
             self.owner_id, year=self.year, guild_id=self.guild_id
         )
+        msg = _release_view(self) or interaction.message
         await interaction.response.edit_message(
             embed=_start_tier_embed(
                 year=self.year,
                 note=(
                     f"Timezone **`{self.offset}`** · Tadoku not linked "
-                    f"(link later if needed)"
+                    f"(link later if needed — Tadoku challenges will ask again)"
                 ),
             ),
             view=view,
         )
-        view.message = interaction.message
+        _bind_view_message(view, msg)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
     async def cancel_btn(
@@ -2737,6 +2929,7 @@ class StartTimezoneGateView(_OwnerView):
                 year=self.year,
                 guild_id=self.guild_id,
                 offset=self.offset,
+                prev_view=self,
             )
 
         async def on_cancel(interaction: discord.Interaction) -> None:

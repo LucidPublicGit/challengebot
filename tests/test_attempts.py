@@ -22,7 +22,33 @@ def test_start_requires_tadoku_link():
             "u1", tier="easy", number=4, param="VN", guild_id="g"
         )
         assert r["ok"] is False
-        assert "Link" in (r.get("error") or "") or "link" in (r.get("error") or "").lower()
+        err = (r.get("error") or "").lower()
+        assert "link" in err
+        assert "/challenge link" in err
+        assert "user_id:" not in err  # slash cmd is a modal, not a param
+    finally:
+        cleanup_db(path)
+
+
+def test_start_wizard_tadoku_helpers():
+    """Pure helpers that keep the start UI from dead-ending after link."""
+    from unittest.mock import MagicMock
+
+    from app import bot_commands as bc
+
+    path = setup_tmp_db()
+    try:
+        assert bc._challenge_needs_tadoku({"verify": "tadoku"})
+        assert not bc._challenge_needs_tadoku({"verify": "honor"})
+        assert not bc._user_tadoku_linked("wiz")
+        att.link_tadoku("wiz", "11111111-1111-1111-1111-111111111111")
+        assert bc._user_tadoku_linked("wiz")
+        v = MagicMock()
+        v.message = "panel"
+        assert bc._release_view(v) == "panel"
+        assert v.message is None
+        v.stop.assert_called_once()
+        assert bc._release_view(None) is None
     finally:
         cleanup_db(path)
 
