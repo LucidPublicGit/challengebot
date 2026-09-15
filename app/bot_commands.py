@@ -21,11 +21,7 @@ from app.challenge_card import (
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
-from app.new_challenger import (
-    as_discord_new_challenger,
-    list_templates,
-    render_new_challenger,
-)
+from app.new_challenger import list_templates
 from app.services import attempts as att_svc
 from app.services.rewards import (
     announce,
@@ -71,13 +67,9 @@ async def _layout_e_start_files(
     media_filter: str | None = None,
     card_png: bytes | None = None,
     duration_hours: float | None = None,
+    include_challenger: bool | None = None,
 ) -> list:
-    """Start pair: new-challenger banner + full challenge card."""
-    files = []
-    av = await avatar_bytes(user)
-    nc = render_new_challenger(av, tier=tier)
-    if nc:
-        files.append(as_discord_new_challenger(nc))
+    """One unified start/scheduled card (NC composited when include_challenger)."""
     png = card_png
     if png is None:
         png, _ = await build_event_card(
@@ -92,10 +84,11 @@ async def _layout_e_start_files(
             starts_at_ts=starts_at_ts,
             media_filter=media_filter,
             duration_hours=duration_hours,
+            include_challenger=include_challenger,
         )
     if png:
-        files.append(as_discord_file(png, f"{kind}-card.png"))
-    return files
+        return [as_discord_file(png, f"{kind}-card.png")]
+    return []
 
 
 challenge_group = app_commands.Group(
@@ -3517,7 +3510,7 @@ async def challenge_testcards(
 
 @challenge_group.command(
     name="testchallenger",
-    description="Admin: preview start pair (NC banner + full challenge card)",
+    description="Admin: preview unified start card (NC + challenge meta)",
 )
 @app_commands.describe(
     public="If true, post in this channel (default: only you can see)",
@@ -3538,6 +3531,9 @@ async def challenge_testchallenger(
             ephemeral=not public,
         )
         return
+    import time
+
+    ends = int(time.time()) + 86400
     files = await _layout_e_start_files(
         user=interaction.user,
         kind="start",
@@ -3545,18 +3541,20 @@ async def challenge_testchallenger(
         tier="hard",
         number=1,
         focus="preview",
-        ends_at_ts=None,
+        ends_at_ts=ends,
+        duration_hours=24,
+        include_challenger=True,
     )
     if not files:
         await interaction.followup.send(
-            "Failed to render start pair (check templates/hole mask).",
+            "Failed to render unified start card (check templates/hole mask).",
             ephemeral=not public,
         )
         return
     await interaction.followup.send(
         content=(
-            f"**Start pair** preview for {interaction.user.mention}\n"
-            f"Templates: `{len(templates)}` · NC banner + challenge card"
+            f"**Unified start** preview for {interaction.user.mention}\n"
+            f"Templates: `{len(templates)}` · one card"
         ),
         files=files,
         embeds=files_as_image_embeds(files, chrome=False),

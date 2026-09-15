@@ -126,34 +126,26 @@ async def main() -> None:
             print(name, len(nc))
             if i == 0 and tier == "easy":
                 (OUT / "new_challenger_example.png").write_bytes(nc)
-                nc_im = Image.open(io.BytesIO(nc)).convert("RGBA")
-                start_png = await render_challenge_card(
-                    kind="start",
+                from app.challenge_card import render_unified_start_card
+
+                unified = await render_unified_start_card(
                     display_name="Monty",
                     challenge_title="Manga Mini-Marathon",
                     tier="easy",
                     number=1,
                     avatar_bytes=AV,
                     focus="One Piece",
-                    line_primary="Good luck",
-                    line_secondary="24 hours · Ends Sat 28 Mar 18:00 UTC",
-                    footer="",
+                    meta_line="24 hours · Ends 03/28/26 18:00",
+                    include_challenger=True,
                 )
-                start_im = Image.open(io.BytesIO(start_png)).convert("RGBA")
-                if start_im.size[0] != nc_im.size[0]:
-                    nh = max(
-                        1, int(start_im.size[1] * nc_im.size[0] / start_im.size[0])
-                    )
-                    start_im = start_im.resize(
-                        (nc_im.size[0], nh), Image.Resampling.LANCZOS
-                    )
-                # Prod start pair: NC + full Started card
-                pair = _stack_v(nc_im, start_im)
-                _save(OUT / "preview_start_pair.png", pair)
-                _save(OUT / "preview_challenger_plus_card.png", pair)
-                print("preview_start_pair.png", pair.size)
-                # Drop old chip-only preview if present
-                for stale in ("start_chip_example.png",):
+                (OUT / "preview_unified_start.png").write_bytes(unified)
+                (OUT / "unified_start_live.png").write_bytes(unified)
+                print("preview_unified_start.png", len(unified))
+                for stale in (
+                    "start_chip_example.png",
+                    "preview_start_pair.png",
+                    "preview_challenger_plus_card.png",
+                ):
                     sp = OUT / stale
                     if sp.exists():
                         sp.unlink()
@@ -162,7 +154,7 @@ async def main() -> None:
     names = sorted(p.name for p in OUT.glob("*.png"))
     (OUT / "README.txt").write_text(
         "ChallengeTracker card previews (current design)\n"
-        "- preview_start_pair.png — prod start (NC + full Started card)\n"
+        "- preview_unified_start.png — prod start (NC inside one card)\n"
         "- Cleared/Abandoned: stamp-outline; other kinds: soft-glow\n"
         "- Tier side-tick; no corner status pills\n\n"
         "Regenerate: PYTHONPATH=. python scripts/regen_card_previews.py\n\n"

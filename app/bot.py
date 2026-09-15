@@ -206,7 +206,14 @@ class ChallengeBot(commands.Bot):
                 starts_ts = _ts(att["started_at"])
             except Exception:  # noqa: BLE001
                 pass
-            await _post("start", att, ends_at_ts=ends_ts, starts_at_ts=starts_ts)
+            # Go-live after schedule: start card without new-challenger art
+            await _post(
+                "start",
+                att,
+                ends_at_ts=ends_ts,
+                starts_at_ts=starts_ts,
+                include_challenger=False,
+            )
             # Private how-to (ephemeral only exists on slash start; schedule needs this)
             try:
                 uid = int(att["discord_id"])

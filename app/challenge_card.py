@@ -1595,12 +1595,274 @@ def _render_event_chip(
     return buf.getvalue()
 
 
+def _render_unified_start(
+    *,
+    display_name: str,
+    challenge_title: str,
+    tier: str,
+    number: int,
+    avatar_bytes: Optional[bytes],
+    focus: str,
+    meta_line: str = "",
+    schedule_label: str | None = None,
+    include_challenger: bool = True,
+    poster_bytes: Optional[bytes] = None,
+) -> bytes:
+    """One-box start/scheduled card: optional NC banner + user/challenge meta.
+
+    No "Started" hero. Double face = NC hole avatar + small circle by name.
+    """
+    from app.new_challenger import render_new_challenger
+
+    S = SCALE
+    display_name = _oneline(display_name)
+    challenge_title = _oneline(challenge_title)
+    focus = _oneline(focus)
+    meta_line = _oneline(meta_line)
+    schedule_label = _oneline(schedule_label) if schedule_label else None
+    tier_key = (tier or "").lower().strip()
+    tier_color = TIER_COLOR.get(tier_key, ACCENT_PURPLE)
+    tier_pretty = TIER_LABEL.get(tier_key, (tier or "?").replace("_", " ").title())
+    flair = _tier_flair(tier_key)
+
+    rail = 4
+    inner_w = WIDTH - MARGIN * 2 - rail
+
+    nc_im: Image.Image | None = None
+    if include_challenger:
+        try:
+            # Tier lives on card chrome — no strip under NC art
+            nc_png = render_new_challenger(avatar_bytes, tier=None)
+        except Exception:  # noqa: BLE001
+            nc_png = None
+        if nc_png:
+            nc_im = Image.open(io.BytesIO(nc_png)).convert("RGBA")
+            nw, nh = nc_im.size
+            tw = inner_w * S
+            if nw != tw:
+                nh = max(1, int(nh * tw / max(nw, 1)))
+                nc_im = nc_im.resize((tw, nh), Image.Resampling.LANCZOS)
+
+    # Poster sits in meta block (right)
+    poster_h_u = 120
+    poster_w_u = round(poster_h_u * 2 / 3)
+    poster = (
+        _poster_image(poster_bytes, poster_w_u * S, poster_h_u * S, 10 * S)
+        if poster_bytes
+        else None
+    )
+    poster_panel_u = (poster_w_u + 14) if poster is not None else 0
+
+    top_pad = 18
+    gap_nc = 14
+    # Meta stack (unscaled)
+    name_block = 48
+    tier_block = 30
+    title_block = 26
+    focus_block = 22 if focus else 0
+    sched_block = 32 if schedule_label else 0
+    meta_block = 24 if meta_line and not schedule_label else (14 if meta_line else 0)
+    footer_block = 26
+    bottom_pad = 12
+
+    meta_h_u = (
+        name_block
+        + tier_block
+        + title_block
+        + focus_block
+        + sched_block
+        + meta_block
+        + footer_block
+        + bottom_pad
+    )
+    if poster is not None:
+        meta_h_u = max(meta_h_u, poster_h_u + footer_block + bottom_pad + 8)
+
+    nc_h_px = nc_im.size[1] if nc_im is not None else 0
+    H_px = top_pad * S + nc_h_px + (gap_nc * S if nc_im is not None else 0) + meta_h_u * S
+    if nc_im is None:
+        H_px = max(H_px, (top_pad + meta_h_u + 8) * S)
+    W_px = WIDTH * S
+
+    img = Image.new("RGBA", (W_px, H_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    outer = (0, 0, W_px - 1, H_px - 1)
+    radius = 22 * S
+    draw.rounded_rectangle(outer, radius=radius, fill=BG)
+    _draw_tier_wash(
+        draw,
+        card_w_px=W_px,
+        card_h_px=H_px,
+        tier_color=tier_color,
+        strength=float(flair.get("wash") or 0.06),
+        width_frac=float(flair.get("wash_width") or 0.3),
+    )
+    draw.rounded_rectangle((0, 0, rail * S, H_px - 1), radius=8 * S, fill=tier_color)
+
+    nx = (MARGIN + rail) * S
+    y = top_pad * S
+
+    if nc_im is not None:
+        pad = 3 * S
+        draw.rounded_rectangle(
+            (nx - pad, y - pad, nx + nc_im.size[0] + pad, y + nc_im.size[1] + pad),
+            radius=12 * S,
+            fill=_mix(tier_color, BG, 0.10),
+        )
+        img.paste(nc_im, (nx, y), nc_im)
+        draw.rounded_rectangle(
+            (nx, y, nx + nc_im.size[0] - 1, y + nc_im.size[1] - 1),
+            radius=10 * S,
+            outline=_mix(tier_color, HAIRLINE, 0.4),
+            width=max(1, S),
+        )
+        y += nc_im.size[1] + gap_nc * S
+
+    cx = nx
+    right = W_px - MARGIN * S
+    text_right = right - (poster_panel_u * S if poster is not None else 0)
+
+    # Name row + small avatar (double face with NC hole)
+    av_s = 40 * S
+    av = _circular_avatar(avatar_bytes, av_s)
+    img.paste(av, (cx, y), av)
+    draw.ellipse(
+        (cx, y, cx + av_s, y + av_s),
+        outline=tier_color,
+        width=max(1, S),
+    )
+    name_font = _font(22 * S, bold=True)
+    name_x = cx + av_s + 12 * S
+    draw.text(
+        (name_x, y + 6 * S),
+        _truncate(draw, display_name, name_font, text_right - name_x),
+        font=name_font,
+        fill=INK,
+    )
+    y += av_s + 10 * S
+
+    # Tier pill + #
+    pill_font = _font(11 * S, bold=True)
+    tlabel = tier_pretty.upper()
+    if tier_key == "ota_master":
+        tlabel = "★  OTA-MASTER"
+    tpad_x, tpad_y = 10 * S, 4 * S
+    th = pill_font.size + tpad_y * 2
+    tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
+    draw.rounded_rectangle(
+        (cx, y, cx + tw, y + th),
+        radius=th / 2,
+        fill=_mix(tier_color, BG, 0.25),
+        outline=_mix(tier_color, BG, 0.55),
+        width=max(1, S // 2),
+    )
+    draw.text(
+        (cx + tw / 2, y + th / 2),
+        tlabel,
+        font=pill_font,
+        fill=ACCENT_GOLD if tier_key == "ota_master" else tier_color,
+        anchor="mm",
+    )
+    if number:
+        draw.text(
+            (cx + tw + 10 * S, y + th / 2),
+            f"#{int(number)}",
+            font=_font(13 * S, bold=True),
+            fill=INK_SOFT,
+            anchor="lm",
+        )
+    y += th + 10 * S
+
+    title_font = _font(18 * S, bold=True)
+    draw.text(
+        (cx, y),
+        _truncate(draw, challenge_title, title_font, text_right - cx),
+        font=title_font,
+        fill=INK,
+    )
+    y += 24 * S
+
+    meta_font = _font(14 * S)
+    if focus:
+        draw.text(
+            (cx, y),
+            _truncate(draw, f"Focus · {focus}", meta_font, text_right - cx),
+            font=meta_font,
+            fill=INK_SOFT,
+        )
+        y += 22 * S
+
+    if schedule_label:
+        sf = _font(15 * S, bold=True)
+        sh = sf.size + 12 * S
+        sw = min(
+            text_right - cx,
+            draw.textlength(schedule_label, font=sf) + 20 * S,
+        )
+        draw.rounded_rectangle(
+            (cx, y, cx + sw, y + sh),
+            radius=8 * S,
+            fill=_mix(ACCENT_BLUE, BG, 0.22),
+            outline=_mix(ACCENT_BLUE, BG, 0.5),
+            width=max(1, S // 2),
+        )
+        draw.text(
+            (cx + 10 * S, y + sh / 2),
+            _truncate(draw, schedule_label, sf, sw - 20 * S),
+            font=sf,
+            fill=ACCENT_BLUE,
+            anchor="lm",
+        )
+        y += sh + 10 * S
+    elif meta_line:
+        tick = 3 * S
+        draw.rectangle((cx, y + 2 * S, cx + tick, y + 18 * S), fill=tier_color)
+        draw.text(
+            (cx + tick + 10 * S, y),
+            _truncate(draw, meta_line, meta_font, text_right - cx - tick - 10 * S),
+            font=meta_font,
+            fill=INK_SOFT,
+        )
+        y += 22 * S
+
+    if poster is not None:
+        px = int(right - poster_w_u * S)
+        # Align poster with top of name row area
+        py = top_pad * S + nc_h_px + (gap_nc * S if nc_im is not None else 0)
+        img.paste(poster, (px, py), poster)
+        draw.rounded_rectangle(
+            (px, py, px + poster_w_u * S - 1, py + poster_h_u * S - 1),
+            radius=10 * S,
+            outline=_mix(tier_color, HAIRLINE, 0.35),
+            width=S,
+        )
+
+    foot_f = _font(11 * S)
+    draw.text(
+        (cx, H_px - 18 * S),
+        BRAND_FOOTER,
+        font=foot_f,
+        fill=INK_SOFT,
+    )
+
+    edge = _mix(tier_color, HAIRLINE, float(flair.get("edge") or 0.28))
+    _clip_round(img, outer, radius, edge, max(S, S))
+    out = img.resize((WIDTH, max(1, H_px // S)), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 async def render_event_chip(**kwargs) -> bytes:
     return await asyncio.to_thread(_render_event_chip, **kwargs)
 
 
 async def render_challenge_card(**kwargs) -> bytes:
     return await asyncio.to_thread(_render_challenge, **kwargs)
+
+
+async def render_unified_start_card(**kwargs) -> bytes:
+    return await asyncio.to_thread(_render_unified_start, **kwargs)
 
 
 async def render_leaderboard_card(**kwargs) -> bytes:

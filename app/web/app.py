@@ -1630,7 +1630,7 @@ def create_app(bot=None) -> FastAPI:
             <div class="grid"><div class="span-2">
               {_bool_check('announce_start', rt.get('announce_start', True), 'start')}
               {_bool_check('announce_scheduled', rt.get('announce_scheduled', True), 'scheduled')}
-              {_bool_check('announce_status', rt.get('announce_status', True), 'status')}
+              {_bool_check('announce_status', rt.get('announce_status', False), 'status')}
               {_bool_check('announce_complete', rt.get('announce_complete', True), 'complete')}
               {_bool_check('announce_fail', rt.get('announce_fail', False), 'fail (failed check)')}
               {_bool_check('announce_expired', rt.get('announce_expired', True), 'expired')}

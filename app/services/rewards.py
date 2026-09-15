@@ -10,14 +10,19 @@ from app.challenge_card import (
     avatar_bytes,
     files_as_image_embeds,
     render_challenge_card,
+    render_unified_start_card,
     tier_caption_mark,
 )
 from app.config import announce_kind_enabled, get_settings, merge_runtime
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session, get_all_settings
-from app.new_challenger import as_discord_new_challenger, render_new_challenger
 from app.poster import fetch_poster
-from app.services.attempts import completion_counts, display_content, failure_count
+from app.services.attempts import (
+    completion_counts,
+    display_content,
+    failure_count,
+    get_tz_offset,
+)
 from app.shame import format_shame_caption
 
 logger = logging.getLogger(__name__)
@@ -185,6 +190,34 @@ async def send_user_only(
 _HIGHLIGHT_KINDS = frozenset({"start", "complete", "fail"})
 
 
+def _parse_offset_tz(offset: str):
+    """Fixed UTC offset string → datetime.timezone (no DST)."""
+    from datetime import timedelta, timezone
+    import re
+
+    raw = (offset or "+00:00").strip().replace(" ", "") or "+00:00"
+    if raw.upper().startswith("UTC"):
+        raw = raw[3:] or "+00:00"
+    m = re.fullmatch(r"([+-])(\d{1,2})(?::?(\d{2}))?", raw)
+    if not m:
+        return timezone.utc
+    sign = 1 if m.group(1) == "+" else -1
+    hours = int(m.group(2))
+    mins = int(m.group(3) or "0")
+    return timezone(timedelta(minutes=sign * (hours * 60 + mins)))
+
+
+def _fmt_short_local(ts: int | None, offset: str | None = None) -> str:
+    """Short wall time in user offset: MM/DD/YY HH:MM."""
+    if not ts:
+        return ""
+    from datetime import datetime, timezone
+
+    tz = _parse_offset_tz(offset or "+00:00")
+    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(tz)
+    return dt.strftime("%m/%d/%y %H:%M")
+
+
 def _fmt_utc(ts: int | None) -> str:
     """Absolute UTC stamp for PNG cards (ASCII only — card fonts vary)."""
     if not ts:
@@ -270,8 +303,14 @@ async def build_event_card(
     poster_bytes: Optional[bytes] = None,
     skip_image: bool = False,
     duration_hours: float | None = None,
+    include_challenger: bool | None = None,
+    tz_offset: str | None = None,
 ) -> tuple[Optional[bytes], str]:
-    """Return (png_bytes|None, short_caption). Caption uses <t:> for local TZ."""
+    """Return (png_bytes|None, short_caption).
+
+    start/scheduled → one unified card (NC inside when include_challenger).
+    Caption omitted when the card already holds the facts (mention-only ping).
+    """
     name = (
         getattr(user, "display_name", None)
         or display_name
@@ -283,25 +322,85 @@ async def build_event_card(
     focus_items = parse_content_items(focus)
     dur = _duration_from_window(duration_hours, starts_at_ts, ends_at_ts)
 
+    # Resolve wall-clock offset for short local dates on start/scheduled cards
+    off = (tz_offset or "").strip()
+    if not off and user is not None and getattr(user, "id", None) is not None:
+        try:
+            off = get_tz_offset(str(user.id))
+        except Exception:  # noqa: BLE001
+            off = "+00:00"
+    if not off:
+        off = "+00:00"
+
+    # --- Unified start / scheduled (one box; no "Started" hero) ---
+    if kind in ("start", "scheduled") and not skip_image:
+        with_nc = (
+            True
+            if kind == "scheduled"
+            else (True if include_challenger is None else bool(include_challenger))
+        )
+        # Honor announce_new_challenger kill-switch
+        if with_nc and not _runtime().get("announce_new_challenger", True):
+            with_nc = False
+
+        schedule_label = None
+        meta_line = ""
+        if kind == "scheduled":
+            when = _fmt_short_local(starts_at_ts, off) or _fmt_utc(starts_at_ts)
+            schedule_label = f"Scheduled for {when}" if when else "Scheduled"
+            if dur:
+                meta_line = dur  # still useful under the pill? keep off card body via pill only
+                # duration lives on schedule caption area as secondary bit in pill path:
+                # append to schedule label if short
+                if dur and when:
+                    schedule_label = f"Scheduled for {when} · {dur}"
+        else:
+            ends_s = _fmt_short_local(ends_at_ts, off)
+            bits = [b for b in (dur, f"Ends {ends_s}" if ends_s else "") if b]
+            meta_line = " · ".join(bits) or "Window open"
+
+        focus_one = focus_items[0] if focus_items else (focus.split("\n")[0].strip() if focus else "")
+        poster = poster_bytes
+        if poster is None and focus_one:
+            try:
+                poster = await fetch_poster(focus_one, media_filter)
+            except Exception:  # noqa: BLE001
+                poster = None
+        av = await avatar_bytes(user)
+        try:
+            png = await render_unified_start_card(
+                display_name=name,
+                challenge_title=title,
+                tier=tier,
+                number=int(number or 0),
+                avatar_bytes=av,
+                focus=focus_one if len(focus_items) <= 1 else ", ".join(focus_items[:4]),
+                meta_line=meta_line if kind == "start" else "",
+                schedule_label=schedule_label,
+                include_challenger=with_nc,
+                poster_bytes=poster,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("unified start card failed: %s", exc)
+            png = None
+
+        # Card already has name/title/focus/times — mention only (ping), else empty
+        caption = user.mention if user is not None else ""
+        return png, caption
+
     primary = ""
     secondary = ""
     footer = ""
     if kind == "start":
+        # skip_image path / fallback text only
         primary = "Good luck"
-        bits = [b for b in (dur, _ts_line("Ends", ends_at_ts) or "Window open") if b]
-        secondary = " · ".join(bits)
+        ends_s = _fmt_short_local(ends_at_ts, off)
+        bits = [b for b in (dur, f"Ends {ends_s}" if ends_s else _ts_line("Ends", ends_at_ts)) if b]
+        secondary = " · ".join(bits) or "Window open"
     elif kind == "scheduled":
         primary = "Queued to start"
-        a, b = _fmt_utc(starts_at_ts), _fmt_utc(ends_at_ts)
-        if a and b:
-            window = f"{a.removesuffix(' UTC')} -> {b}"
-        elif a:
-            window = f"Starts {a}"
-        elif b:
-            window = f"Ends {b}"
-        else:
-            window = ""
-        bits = [b for b in (dur, window) if b]
+        when = _fmt_short_local(starts_at_ts, off) or _fmt_utc(starts_at_ts)
+        bits = [b for b in (dur, f"Scheduled for {when}" if when else "") if b]
         secondary = " · ".join(bits)
     elif kind == "complete":
         primary = "Cleared"
@@ -445,6 +544,7 @@ async def announce(
     line_secondary: Optional[str] = None,
     duration_hours: float | None = None,
     highlights_only: bool = False,
+    include_challenger: bool | None = None,
 ) -> bool:
     """Post lifecycle cards to configured announce channels.
 
@@ -452,9 +552,10 @@ async def announce(
       ANNOUNCE_CHANNEL_ID (highlights):
         start, complete, fail — congrats gif/frame on complete only here
       ANNOUNCE_SECONDARY_CHANNEL_ID (log):
-        scheduled, start, active/status, complete, fail, abandon, expired, …
+        scheduled, start, complete, fail, abandon, expired, …
 
-    New-challenger banner on start/scheduled (wherever those kinds are sent).
+    start/scheduled: one unified PNG (NC embedded when include_challenger).
+    Go-live after schedule: kind=start + include_challenger=False (no NC).
     highlights_only=True skips the log channel (one-off / admin test).
     """
     rt = _runtime()
@@ -475,8 +576,6 @@ async def announce(
         except (TypeError, ValueError, discord.HTTPException):
             user = None
 
-    # Status milestones: full card with hero + time/goal bar (kind=status)
-    need_card = True
     png: bytes | None = None
     caption: str | None = None
     try:
@@ -498,6 +597,7 @@ async def announce(
             media_filter=media_filter,
             skip_image=False,
             duration_hours=duration_hours,
+            include_challenger=include_challenger,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("announce card build failed (%s): %s", kind, exc)
@@ -518,6 +618,13 @@ async def announce(
         extra = ""
     text_fallback = f"{who} · **{kind}** · **{tier} #{number}: {title}**{extra}"
 
+    # start/scheduled: card is self-contained — keep caption only if it adds info
+    # (mention ping is the only extra; empty caption → image-only post)
+    if kind in ("start", "scheduled"):
+        body_default = (caption or "").strip() or None
+    else:
+        body_default = (caption or text_fallback).strip() or text_fallback
+
     cong_path = None
     if kind == "complete" and rt.get("announce_congrats", True):
         # Congrats match on first work title, not the whole multi-line blob
@@ -535,29 +642,16 @@ async def announce(
                 (cong_focus or "")[:80],
             )
 
-    # Start/schedule: NC banner + full challenge card (not the thin "Good luck" chip)
-    nc_png: bytes | None = None
-    if kind in ("start", "scheduled") and rt.get("announce_new_challenger", True):
-        try:
-            av = await avatar_bytes(user)
-            nc_png = render_new_challenger(av, tier=tier)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("new_challenger render failed: %s", exc)
-            nc_png = None
-
     posted = False
 
     def _build_files(*, with_congrats: bool) -> list:
         """Fresh discord.File objects (single-use streams)."""
         files = []
-        if nc_png is not None:
-            # Same pattern as start: PNG bytes + short name + embed set_image
-            files.append(as_discord_new_challenger(nc_png))
+        # NC is composited into the unified start/scheduled PNG — no second file
         if png is not None:
             files.append(as_discord_file(png, f"{kind}-card.png"))
         if with_congrats and cong_path is not None:
             try:
-                # congrats.png / congrats.gif — embed via attachment:// like new-challenger
                 files.append(
                     as_discord_framed_congrats(
                         cong_path,
@@ -575,10 +669,10 @@ async def announce(
         with_congrats: bool,
     ) -> bool:
         nonlocal posted
-        body = caption or text_fallback
+        body = body_default
 
         async def _try_send(files: list, *, content: str | None) -> bool:
-            """Match new-challenger: every file gets an image embed (incl. GIF)."""
+            """One embed per file so Discord shows images full-size (one box)."""
             if not files and not content:
                 return False
             if not files:
@@ -591,7 +685,7 @@ async def announce(
             await channel.send(**kw)
             return True
 
-        # 1) card + congrats together (full-size embeds like new-challenger)
+        # 1) card (+ optional congrats) together
         try:
             if await _try_send(_build_files(with_congrats=with_congrats), content=body):
                 posted = True
@@ -656,12 +750,10 @@ async def announce(
 def announce_kind_for_status(status: str, *, with_challenger: bool = False) -> str:
     """Map attempt.status → announce kind.
 
-    with_challenger=True forces start (new-challenger banner + start card)
-    useful for re-skinning an active attempt with the new design pair.
+    with_challenger=True forces start/scheduled unified card (NC on start).
     """
     st = (status or "").lower().strip()
     if with_challenger and st in ("active", "scheduled"):
-        # scheduled keeps scheduled card + challenger; active uses start pair
         if st == "scheduled":
             return "scheduled"
         return "start"
@@ -723,6 +815,12 @@ async def repost_attempt_announce(
         dur_h = float(attempt.get("time_limit_hours") or 0) or None
     except (TypeError, ValueError):
         dur_h = None
+    # Active + with_challenger → immediate-start (NC). Scheduled always NC.
+    inc_nc: bool | None = None
+    if kind == "start":
+        inc_nc = True if with_challenger else False
+    elif kind == "scheduled":
+        inc_nc = True
     return await announce(
         bot,
         kind=kind,
@@ -740,6 +838,7 @@ async def repost_attempt_announce(
         media_filter=attempt.get("media_filter"),
         duration_hours=dur_h,
         highlights_only=highlights_only,
+        include_challenger=inc_nc,
     )
 
 
