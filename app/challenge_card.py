@@ -1660,11 +1660,13 @@ def _render_unified_start(
     schedule_label: str | None = None,
     include_challenger: bool = True,
     poster_bytes: Optional[bytes] = None,
+    name_tier: str | None = None,
 ) -> bytes:
     """One-image start/scheduled card (Gbar_E_glow).
 
-    NC banner full-bleed; name + tier/meta drawn on the art (heavy bottom
-    scrim, tier glow, no pill, no strip under the image).
+    NC banner full-bleed; name + challenge tier/meta on the art.
+    name_tier = highest tier the user has *cleared* (colors the display name).
+    tier = challenge being started (colors the tier label under the name).
     poster_bytes ignored (no series underlay).
     """
     from app.new_challenger import render_new_challenger
@@ -1684,6 +1686,15 @@ def _render_unified_start(
         tlabel = "★ OTA-MASTER"
     else:
         tlabel = TIER_LABEL.get(tier_key, (tier or "?").replace("_", " ").title()).upper()
+
+    # Name themed by best clear (not the challenge just started)
+    nk = (name_tier or "").lower().strip()
+    if nk in TIER_COLOR:
+        name_fill = ACCENT_GOLD if nk == "ota_master" else TIER_COLOR[nk]
+        name_glow = name_fill
+    else:
+        name_fill = INK
+        name_glow = ACCENT_PURPLE
 
     bits: list[str] = []
     if number:
@@ -1728,7 +1739,7 @@ def _render_unified_start(
     name_y = h - 88 * S
     glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     ImageDraw.Draw(glow).text(
-        (22 * S, name_y), display_name, font=name_f, fill=(*tier_fill, 180)
+        (22 * S, name_y), display_name, font=name_f, fill=(*name_glow, 200)
     )
     glow = glow.filter(ImageFilter.GaussianBlur(max(4, 8 * S // 2)))
     canvas = Image.alpha_composite(canvas, glow)
@@ -1738,8 +1749,8 @@ def _render_unified_start(
         (22 * S, name_y),
         display_name,
         name_f,
-        INK,
-        stroke_width=max(2, 3 * S // 2),
+        name_fill,
+        stroke_width=max(2, S),
     )
 
     tf = _font(14 * S, bold=True)
@@ -1747,12 +1758,14 @@ def _render_unified_start(
     tx = 22 * S
     ty = h - 40 * S
     draw.text((tx, ty), tlabel, font=tf, fill=tier_fill)
+    # Thin underline (thick bar read as "blocks" next to the name row)
     draw.rectangle(
-        (tx, ty + tf.size + 3 * S, tx + tw, ty + tf.size + 7 * S),
+        (tx, ty + tf.size + 2 * S, tx + tw, ty + tf.size + 4 * S),
         fill=tier_fill,
     )
     if sub:
-        sf = _font(14 * S, bold=True)
+        # Regular weight — bold CJK fallback can tofu on some hosts
+        sf = _font(14 * S, bold=False)
         draw.text(
             (tx + tw + 14 * S, ty + 2 * S),
             _truncate(draw, sub, sf, W - tx - tw - 36 * S),

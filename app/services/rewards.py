@@ -367,6 +367,14 @@ async def build_event_card(
             except Exception:  # noqa: BLE001
                 poster = None
         av = await avatar_bytes(user)
+        name_tier = None
+        if user is not None and getattr(user, "id", None) is not None:
+            try:
+                from app.services import attempts as att_svc
+
+                name_tier = att_svc.highest_completed_tier(str(user.id))
+            except Exception:  # noqa: BLE001
+                name_tier = None
         try:
             png = await render_unified_start_card(
                 display_name=name,
@@ -379,6 +387,7 @@ async def build_event_card(
                 schedule_label=schedule_label,
                 include_challenger=with_nc,
                 poster_bytes=poster,
+                name_tier=name_tier,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("unified start card failed: %s", exc)

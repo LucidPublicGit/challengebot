@@ -123,16 +123,36 @@ def _hole_mask(im: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]
     mp = mask.load()
     for x, y in best:
         mp[x, y] = 255
+    # Close gaps — checkerboard detect often leaves a hollow ring (smooth gray center)
+    mask = mask.filter(ImageFilter.MaxFilter(15))
+    mask = mask.filter(ImageFilter.MinFilter(11))
     mask = mask.filter(ImageFilter.MaxFilter(9))
-    mask = mask.filter(ImageFilter.MinFilter(5))
-    mask = mask.filter(ImageFilter.MaxFilter(5))
     bbox = mask.getbbox()
     if not bbox:
         raise ValueError("empty hole bbox")
+    # Fill enclosed voids (center of hole missed by busy-neighborhood test)
+    cx = (bbox[0] + bbox[2]) // 2
+    cy = (bbox[1] + bbox[3]) // 2
+    if mask.getpixel((cx, cy)) < 128:
+        ImageDraw.floodfill(mask, (cx, cy), 255)
+    # Soft ellipse union so avatar always has a solid disk to fill
+    ell = Image.new("L", (w, h), 0)
+    pad = max(4, min(bbox[2] - bbox[0], bbox[3] - bbox[1]) // 12)
+    ImageDraw.Draw(ell).ellipse(
+        (bbox[0] + pad, bbox[1] + pad, bbox[2] - pad, bbox[3] - pad),
+        fill=255,
+    )
+    mask = ImageChops.lighter(mask, ell)
+    bbox = mask.getbbox() or bbox
     return mask, bbox
 
 
-def _avatar_image(avatar_bytes: Optional[bytes], size: int) -> Image.Image:
+def _avatar_image(
+    avatar_bytes: Optional[bytes],
+    size: int,
+    *,
+    circular: bool = True,
+) -> Image.Image:
     src: Image.Image | None
     if avatar_bytes:
         try:
@@ -146,9 +166,18 @@ def _avatar_image(avatar_bytes: Optional[bytes], size: int) -> Image.Image:
         d = ImageDraw.Draw(src)
         d.ellipse((4, 4, size - 5, size - 5), fill=(120, 128, 160, 255))
     else:
-        src = src.resize((size, size), Image.Resampling.LANCZOS)
+        # Cover-fit square (no letterbox) so hole never shows empty corners
+        w, h = src.size
+        side0 = max(w, h, 1)
+        canvas = Image.new("RGBA", (side0, side0), (40, 42, 48, 255))
+        canvas.paste(src, ((side0 - w) // 2, (side0 - h) // 2), src)
+        src = canvas.resize((size, size), Image.Resampling.LANCZOS)
+    if not circular:
+        return src
     circ = Image.new("L", (size, size), 0)
     ImageDraw.Draw(circ).ellipse((0, 0, size - 1, size - 1), fill=255)
+    # Soft edge — hard circle looks blocky against jagged hole art
+    circ = circ.filter(ImageFilter.GaussianBlur(max(1, size // 64)))
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     out.paste(src, (0, 0), circ)
     return out
@@ -266,26 +295,41 @@ def render_new_challenger(
         return None
 
     x0, y0, x1, y1 = bbox
-    bw, bh = x1 - x0, y1 - y0
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    # Fill the whole hole bbox (not a smaller circle) so checkerboard never shows
     side = max(bw, bh, 64)
-    av = _avatar_image(avatar_bytes, side)
-    scale = max(bw / side, bh / side) * 1.08
-    nw, nh = max(1, int(side * scale)), max(1, int(side * scale))
-    av = av.resize((nw, nh), Image.Resampling.LANCZOS)
+    # Slight overscale so jagged hole edges still sample avatar pixels
+    side = max(side, int(max(bw, bh) * 1.12))
+    av = _avatar_image(avatar_bytes, side, circular=False)
+
+    # Soft hole mask — binary Max/Min edges read as blocky pixels
+    hole_bin = hole.point(lambda p: 255 if p > 128 else 0)
+    feather = max(2, min(bw, bh) // 40)
+    hole_soft = hole_bin.filter(ImageFilter.GaussianBlur(feather))
+
+    # Kill template checkerboard inside hole first (solid underfill)
+    under = Image.new("RGBA", base_rgb.size, (0, 0, 0, 0))
+    # average-ish dark from avatar center
+    sample = av.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    fill_rgb = sample[:3] if isinstance(sample, tuple) else (40, 42, 48)
+    under_solid = Image.new("RGBA", base_rgb.size, (*fill_rgb, 255))
+    under.paste(under_solid, (0, 0), hole_soft)
+
+    ax = x0 + (bw - side) // 2
+    ay = y0 + (bh - side) // 2
+    av_layer = Image.new("RGBA", base_rgb.size, (0, 0, 0, 0))
+    av_layer.paste(av, (ax, ay))
+    # Soft hole alpha only — square avatar fill, no circle crop leftovers
+    av_layer.putalpha(hole_soft)
 
     canvas = Image.new("RGBA", base_rgb.size, (0, 0, 0, 255))
     canvas.paste(base_rgb, (0, 0))
-    ax = x0 + (bw - nw) // 2
-    ay = y0 + (bh - nh) // 2
-    av_layer = Image.new("RGBA", base_rgb.size, (0, 0, 0, 0))
-    av_layer.paste(av, (ax, ay), av)
-    hole_a = hole.point(lambda p: 255 if p > 128 else 0)
-    av_a = av_layer.split()[-1]
-    av_layer.putalpha(ImageChops.multiply(av_a, hole_a))
+    canvas = Image.alpha_composite(canvas, under)
     canvas = Image.alpha_composite(canvas, av_layer)
 
+    # Template art on top everywhere except the (soft) hole
     overlay = base_rgb.convert("RGBA")
-    inv = hole.point(lambda p: 0 if p > 128 else 255)
+    inv = ImageChops.invert(hole_soft)
     overlay.putalpha(inv)
     canvas = Image.alpha_composite(canvas, overlay)
 
