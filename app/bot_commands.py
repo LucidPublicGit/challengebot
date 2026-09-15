@@ -3609,19 +3609,22 @@ async def challenge_testcongrats(
         method="test",
         detail="preview only",
     )
-    files = [
-        as_discord_file(png, "complete-card.png"),
-        as_discord_framed_congrats(
-            path, tier=tier, title="Congrats preview", number=0
-        ),
-    ]
+    card = as_discord_file(png, "complete-card.png")
+    cong = as_discord_framed_congrats(
+        path, tier=tier, title="Congrats preview", number=0
+    )
     await interaction.followup.send(
         content=(
             f"{caption}\n"
             f"Congrats file: `{path.name}`\n"
             f"tier=`{tier}` content=`{content or '—'}` mark=`{mark}`"
         ),
-        files=files,
-        embeds=files_as_image_embeds(files, kind="complete", tier=tier),
+        files=[card],
+        embeds=files_as_image_embeds([card], chrome=False),
+        ephemeral=True,
+    )
+    await interaction.followup.send(
+        files=[cong],
+        embeds=files_as_image_embeds([cong], chrome=False),
         ephemeral=True,
     )

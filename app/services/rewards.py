@@ -559,7 +559,7 @@ async def announce(
 
     Channel routing (defaults / env):
       ANNOUNCE_CHANNEL_ID (highlights):
-        start, complete, fail — congrats gif/frame on complete only here
+        start, complete, fail — congrats on complete as a 2nd message (not multi-attach)
       ANNOUNCE_SECONDARY_CHANNEL_ID (log):
         scheduled, start, complete, fail, abandon, expired, …
 
@@ -681,7 +681,7 @@ async def announce(
         body = body_default
 
         async def _try_send(files: list, *, content: str | None) -> bool:
-            """One embed per file so Discord shows images full-size (one box)."""
+            """Plain attachments (no embed chrome). One image per message."""
             if not files and not content:
                 return False
             if not files:
@@ -694,40 +694,33 @@ async def announce(
             await channel.send(**kw)
             return True
 
-        # 1) card (+ optional congrats) together
-        try:
-            if await _try_send(_build_files(with_congrats=with_congrats), content=body):
-                posted = True
-                return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "announce multi-file failed #%s (%s): %s — splitting",
-                getattr(channel, "id", "?"),
-                kind,
-                exc,
-            )
-
-        # 2) card, then congrats as its own embedded message
-        try:
-            await _try_send(_build_files(with_congrats=False), content=body)
-            if with_congrats and cong_path is not None:
+        async def _send_congrats_followup() -> None:
+            # Own message so Discord doesn't grid card+gif side-by-side
+            if not (with_congrats and cong_path is not None):
+                return
+            try:
                 await _try_send(_build_files(with_congrats=True)[-1:], content=None)
+            except Exception as exc_c:  # noqa: BLE001
+                logger.warning("congrats follow-up failed: %s", exc_c)
+
+        # Card message, then congrats on a second message (never multi-attach)
+        try:
+            if not await _try_send(_build_files(with_congrats=False), content=body):
+                raise RuntimeError("empty announce payload")
+            await _send_congrats_followup()
             posted = True
             return True
         except Exception as exc2:  # noqa: BLE001
             logger.warning(
-                "announce split failed #%s: %s",
+                "announce card failed #%s (%s): %s — text fallback",
                 getattr(channel, "id", "?"),
+                kind,
                 exc2,
             )
 
         try:
             await channel.send(text_fallback)
-            if with_congrats and cong_path is not None:
-                try:
-                    await _try_send(_build_files(with_congrats=True)[-1:], content=None)
-                except Exception as exc3:  # noqa: BLE001
-                    logger.warning("congrats-only send failed: %s", exc3)
+            await _send_congrats_followup()
             posted = True
             return True
         except discord.HTTPException as exc4:
