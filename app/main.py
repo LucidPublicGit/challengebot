@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 
+import discord
 import uvicorn
 
 from app.bot import build_bot
@@ -20,24 +20,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger("challengetracker")
 
+_BACKOFF_MIN = 5.0
+_BACKOFF_MAX = 120.0
+_TOKEN_SLEEP = 300.0
+
+
+async def _close_bot(bot: discord.Client | None) -> None:
+    if bot is None:
+        return
+    try:
+        if not bot.is_closed():
+            await bot.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("error closing Discord client", exc_info=True)
+
 
 async def run() -> None:
     settings = get_settings()
     init_db(settings.database_path)
     try:
         n = upsert_challenges_from_yaml(settings.challenge_catalog, replace_year=False)
-        logger.info("Catalog seed/upsert: %s challenges from %s", n, settings.challenge_catalog)
+        logger.info(
+            "Catalog seed/upsert: %s challenges from %s", n, settings.challenge_catalog
+        )
     except FileNotFoundError:
         logger.warning("Catalog file missing: %s", settings.challenge_catalog)
     expired = expire_overdue()
     if expired:
         logger.info("Startup expired %s attempt(s)", len(expired))
 
-    bot = None
-    if settings.discord_token:
-        bot = build_bot()
-
-    app = create_app(bot=bot)
+    # Bot is attached later — web reads app.state.bot dynamically.
+    app = create_app(bot=None)
     config = uvicorn.Config(
         app,
         host=settings.ui_host,
@@ -46,15 +59,56 @@ async def run() -> None:
         loop="asyncio",
     )
     server = uvicorn.Server(config)
-    web_task = asyncio.create_task(server.serve(), name="admin-web")
 
-    bot_task = None
-    if bot is not None:
+    async def run_web() -> None:
+        await server.serve()
 
-        async def run_bot() -> None:
-            async with bot:
-                await bot.start(settings.discord_token)
+    async def run_bot() -> None:
+        """Keep the admin UI up if the gateway dies. discord.py close() is one-shot."""
+        delay = _BACKOFF_MIN
+        token = settings.discord_token
+        while True:
+            await _close_bot(getattr(app.state, "bot", None))
+            b = build_bot()
+            app.state.bot = b
+            became_ready = asyncio.Event()
 
+            async def _mark_ready() -> None:
+                await b.wait_until_ready()
+                became_ready.set()
+
+            marker = asyncio.create_task(_mark_ready())
+            try:
+                async with b:
+                    await b.start(token)
+                logger.warning("Discord bot.start returned; retry in %.0fs", delay)
+            except asyncio.CancelledError:
+                raise
+            except discord.LoginFailure:
+                logger.exception(
+                    "Discord login failed (check DISCORD_TOKEN); retry in %.0fs",
+                    _TOKEN_SLEEP,
+                )
+                await asyncio.sleep(_TOKEN_SLEEP)
+                delay = _BACKOFF_MIN
+                continue
+            except Exception:
+                logger.exception("Discord bot error; retry in %.0fs", delay)
+            finally:
+                marker.cancel()
+                try:
+                    await marker
+                except asyncio.CancelledError:
+                    pass
+            if became_ready.is_set():
+                delay = _BACKOFF_MIN
+            await asyncio.sleep(delay)
+            if not became_ready.is_set():
+                delay = min(delay * 2.0, _BACKOFF_MAX)
+
+    web_task = asyncio.create_task(run_web(), name="admin-web")
+    bot_task: asyncio.Task | None = None
+    if settings.discord_token:
         bot_task = asyncio.create_task(run_bot(), name="discord-bot")
         logger.info("Discord bot starting")
     else:
@@ -62,22 +116,16 @@ async def run() -> None:
             "DISCORD_TOKEN empty — admin UI only. Set token in .env and rebuild/restart."
         )
 
-    tasks = {web_task}
-    if bot_task:
-        tasks.add(bot_task)
-
-    done, pending = await asyncio.wait(
-        tasks,
-        return_when=asyncio.FIRST_EXCEPTION,
-    )
-    for t in done:
-        if t.exception():
-            logger.error("Task failed: %s", t.exception())
-    for t in pending:
-        t.cancel()
-    server.should_exit = True
-    if bot is not None and not bot.is_closed:
-        await bot.close()
+    try:
+        await web_task
+    finally:
+        if bot_task is not None and not bot_task.done():
+            bot_task.cancel()
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
+        await _close_bot(getattr(app.state, "bot", None))
 
 
 def main() -> None:

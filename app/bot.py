@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 
 from app.bot_commands import challenge_group
 from app.config import get_settings, merge_runtime
+from app.discord_http import patch_discord_http, user_id_from_bot_token
 from app.db import db_session, get_all_settings
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
@@ -129,12 +130,29 @@ def is_bot_admin(interaction: discord.Interaction) -> bool:
     return bool(member_roles & allowed)
 
 
+def _application_id() -> int | None:
+    settings = get_settings()
+    raw = (settings.discord_client_id or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    if settings.discord_token:
+        try:
+            return int(user_id_from_bot_token(settings.discord_token))
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 class ChallengeBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.members = True
         intents.guilds = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            application_id=_application_id(),
+        )
         self.tree_synced = False
 
     async def setup_hook(self) -> None:
@@ -488,4 +506,5 @@ class ChallengeBot(commands.Bot):
 
 
 def build_bot() -> ChallengeBot:
+    patch_discord_http()
     return ChallengeBot()
