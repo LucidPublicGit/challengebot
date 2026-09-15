@@ -8,11 +8,18 @@ from pathlib import Path
 from app.challenge_card import (
     DEMO_CHALLENGE_SAMPLES,
     KIND_STYLE,
+    _oneline,
     _parse_progress,
     render_all_demo_cards,
     render_challenge_card,
     render_leaderboard_card,
 )
+
+
+def test_oneline_strips_emoji_tofu():
+    # windchime global_name: two emoji became .notdef boxes beside the name
+    assert _oneline("windchime \U0001f390\U0001f9ff") == "windchime"
+    assert _oneline("魔法少女") == "魔法少女"
 
 
 def test_parse_progress_thousand_commas():
