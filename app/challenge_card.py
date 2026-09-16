@@ -1014,23 +1014,29 @@ def _render_leaderboard(
     entries: list[dict],
     footer: str = "",
 ) -> bytes:
-    """entries: {rank, name, score, avatar?, best_tier?}.
+    """entries: {rank, name, clears|score, points?, fails?, avatar?, best_tier?}.
 
     best_tier = highest challenge tier the user has cleared (themes row border/ring).
+    Right side: PTS · CLR · F (points bold = sort key).
     """
     S = SCALE
     accent = ACCENT_PURPLE
-    W = 560
+    W = 580
     row_h = 44
     top_h = 52
     margin = 28
     header = 72
+    # Fixed right stat columns (right edges, logical px) — PTS · CLR · F
+    col_f = W - margin          # fails right edge
+    col_c = col_f - 44          # clears right edge
+    col_p = col_c - 52          # points right edge
+    stats_left = col_p - 36     # name must stop before points
     body = 0
     for e in entries:
         body += top_h if int(e.get("rank") or 99) <= 3 else row_h
         body += 2
     if not footer:
-        footer = f"{BRAND_FOOTER}  ·  row color = best tier cleared"
+        footer = f"{BRAND_FOOTER}  ·  sorted by points"
     elif BRAND_FOOTER.lower() not in footer.lower():
         footer = f"{footer}  ·  {BRAND_FOOTER}"
     foot = 28
@@ -1054,18 +1060,13 @@ def _render_leaderboard(
 
     draw.text(
         (margin * S, 22 * S),
-        _truncate(draw, _oneline(title), _font(22 * S, bold=True), (W - 2 * margin) * S),
+        _truncate(draw, _oneline(title), _font(22 * S, bold=True), (stats_left - margin) * S),
         font=_font(22 * S, bold=True),
         fill=INK,
     )
-    uf = _font(12 * S, bold=True)
-    draw.text(
-        ((W - margin) * S, 28 * S),
-        "CLEARS",
-        font=uf,
-        fill=INK_SOFT,
-        anchor="rt",
-    )
+    uf = _font(11 * S, bold=True)
+    for label, x in (("PTS", col_p), ("CLR", col_c), ("F", col_f)):
+        draw.text((x * S, 28 * S), label, font=uf, fill=INK_SOFT, anchor="rt")
     draw.line(
         (margin * S, (header - 10) * S, (W - margin) * S, (header - 10) * S),
         fill=HAIRLINE,
@@ -1074,15 +1075,23 @@ def _render_leaderboard(
 
     medals = {1: (214, 175, 84), 2: (183, 189, 201), 3: (200, 143, 92)}
     y = header
-    score_font_top = _font(18 * S, bold=True)
-    score_font = _font(16 * S, bold=True)
+    pts_font_top = _font(18 * S, bold=True)
+    pts_font = _font(16 * S, bold=True)
+    sec_font = _font(13 * S)
+    fail_font = _font(13 * S)
     for e in entries:
         rank = int(e.get("rank") or 0)
         is_top = 1 <= rank <= 3
         rh = top_h if is_top else row_h
         mid = (y + rh / 2) * S
         name = _oneline(str(e.get("name") or "?"))
-        score = str(e.get("score") or "0")
+        clears = e.get("clears")
+        if clears is None:
+            clears = e.get("score") or 0
+        points = e.get("points")
+        if points is None:
+            points = e.get("score") or 0
+        fails = e.get("fails") or 0
         best = (e.get("best_tier") or "").lower().strip()
         tier_c = TIER_COLOR.get(best) if best else None
         flair = _tier_flair(best) if best else None
@@ -1162,10 +1171,25 @@ def _render_leaderboard(
         else:
             draw.ellipse((ax, ay, ax + d, ay + d), outline=ring, width=ring_w)
 
-        sf = score_font_top if is_top else score_font
-        score_fill = ACCENT_GOLD if best == "ota_master" else INK
-        draw.text(((W - margin) * S, mid), score, font=sf, fill=score_fill, anchor="rm")
-        sw = draw.textlength(score, font=sf)
+        # Stats: points (bold) · clears · fails
+        pf = pts_font_top if is_top else pts_font
+        pts_fill = ACCENT_GOLD if best == "ota_master" else INK
+        draw.text((col_p * S, mid), str(int(points)), font=pf, fill=pts_fill, anchor="rm")
+        draw.text(
+            (col_c * S, mid),
+            str(int(clears)),
+            font=sec_font,
+            fill=INK_SOFT,
+            anchor="rm",
+        )
+        fail_fill = ACCENT_RED if int(fails) > 0 else INK_SOFT
+        draw.text(
+            (col_f * S, mid),
+            str(int(fails)),
+            font=fail_font,
+            fill=fail_fill,
+            anchor="rm",
+        )
 
         # Mini tier pill after name area
         name_x = margin + 40 + 32 + 12
@@ -1197,7 +1221,7 @@ def _render_leaderboard(
             tier_pill_w = tw + 8 * S
 
         name_x_px = name_x * S + tier_pill_w
-        name_max = (W - margin) * S - name_x_px - sw - 20 * S
+        name_max = stats_left * S - name_x_px - 8 * S
         draw.text(
             (name_x_px, mid),
             _truncate(draw, name, nf, name_max),
@@ -1205,18 +1229,6 @@ def _render_leaderboard(
             fill=INK,
             anchor="lm",
         )
-
-        # subtle leader dots between name and score
-        trunc = _truncate(draw, name, nf, name_max)
-        dots_x0 = name_x_px + draw.textlength(trunc, font=nf) + 10 * S
-        dots_x1 = (W - margin) * S - sw - 12 * S
-        if dots_x1 - dots_x0 > 24 * S:
-            dy = mid
-            x = dots_x0
-            dot_c = _mix(tier_c, HAIRLINE, 0.35) if tier_c else HAIRLINE
-            while x < dots_x1:
-                draw.ellipse((x, dy - S, x + 2 * S, dy + S), fill=dot_c)
-                x += 6 * S
 
         y += rh + 2
 
@@ -2109,33 +2121,55 @@ async def render_all_demo_cards(
     )
     out.append(("userinfo", ui))
     lb = await render_leaderboard_card(
-        title="Challenge clears",
+        title="Challenge board",
         entries=[
             {
                 "rank": 1,
                 "name": "Alice",
-                "score": 12,
+                "clears": 12,
+                "points": 28,
+                "fails": 1,
                 "avatar": demo_avatar_png((214, 175, 84)),
                 "best_tier": "ota_master",
             },
             {
                 "rank": 2,
                 "name": "Bob",
-                "score": 7,
+                "clears": 7,
+                "points": 18,
+                "fails": 0,
                 "avatar": demo_avatar_png((183, 189, 201)),
                 "best_tier": "hard",
             },
             {
                 "rank": 3,
                 "name": "Cara",
-                "score": 5,
+                "clears": 5,
+                "points": 9,
+                "fails": 2,
                 "avatar": demo_avatar_png((200, 143, 92)),
                 "best_tier": "medium",
             },
-            {"rank": 4, "name": "Dan", "score": 3, "avatar": None, "best_tier": "easy"},
-            {"rank": 5, "name": "Eve", "score": 1, "avatar": None, "best_tier": None},
+            {
+                "rank": 4,
+                "name": "Dan",
+                "clears": 3,
+                "points": 3,
+                "fails": 0,
+                "avatar": None,
+                "best_tier": "easy",
+            },
+            {
+                "rank": 5,
+                "name": "Eve",
+                "clears": 1,
+                "points": 1,
+                "fails": 4,
+                "avatar": None,
+                "best_tier": None,
+            },
         ],
-        footer="5 ranked · clears",
+        footer="5 ranked · by points",
     )
     out.append(("leaderboard", lb))
     return out

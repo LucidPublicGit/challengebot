@@ -3449,7 +3449,10 @@ async def challenge_timezone(interaction: discord.Interaction) -> None:
     view.message = await interaction.original_response()
 
 
-@challenge_group.command(name="leaderboard", description="Top scorers (by challenge tier)")
+@challenge_group.command(
+    name="leaderboard",
+    description="Top points (then clears, fewer fails)",
+)
 async def challenge_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
     rows = att_svc.top_completers(15)
@@ -3477,15 +3480,20 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
             {
                 "rank": i + 1,
                 "name": name,
-                "score": int(r["n"]),
+                "clears": int(r.get("clears") or 0),
+                "points": int(r.get("points") or r.get("n") or 0),
+                "fails": int(r.get("fails") or 0),
                 "avatar": av,
                 "best_tier": best_map.get(uid),
             }
         )
     png = await render_leaderboard_card(
-        title="Challenge points",
+        title="Challenge board",
         entries=entries,
-        footer=f"{len(entries)} ranked · ota-master 4 · hard 3 · medium 2 · easy 1",
+        footer=(
+            f"{len(entries)} ranked · by points · "
+            "ota 4 · hard 3 · med 2 · easy 1"
+        ),
     )
     lb = as_discord_file(png, "leaderboard-card.png")
     await interaction.followup.send(

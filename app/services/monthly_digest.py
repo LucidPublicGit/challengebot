@@ -157,7 +157,9 @@ async def _build_leaderboard_entries(
             {
                 "rank": i + 1,
                 "name": name,
-                "score": int(r["n"]),
+                "clears": int(r.get("clears") or 0),
+                "points": int(r.get("points") or r.get("n") or 0),
+                "fails": int(r.get("fails") or 0),
                 "avatar": av,
                 "best_tier": best_map.get(uid),
             }
@@ -195,9 +197,12 @@ async def run_monthly_digest(bot: discord.Client) -> Optional[str]:
             else:
                 entries = await _build_leaderboard_entries(bot, rows)
                 png = await render_leaderboard_card(
-                    title=f"{month_label} · points",
+                    title=f"{month_label} · board",
                     entries=entries,
-                    footer=f"{len(entries)} ranked · ota-master 4 · hard 3 · medium 2 · easy 1",
+                    footer=(
+                        f"{len(entries)} ranked · by points · "
+                        "ota 4 · hard 3 · med 2 · easy 1"
+                    ),
                 )
                 lb = as_discord_file(png, "monthly-leaderboard.png")
                 caption = f"📊 **Monthly leaderboard · {month_label}**"

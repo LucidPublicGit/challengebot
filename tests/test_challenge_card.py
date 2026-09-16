@@ -221,10 +221,24 @@ def test_challenge_card_png():
 def test_leaderboard_card_png():
     png = asyncio.run(
         render_leaderboard_card(
-            title="Challenge clears",
+            title="Challenge board",
             entries=[
-                {"rank": 1, "name": "Alice", "score": 12, "avatar": None},
-                {"rank": 2, "name": "Bob", "score": 7, "avatar": None},
+                {
+                    "rank": 1,
+                    "name": "Alice",
+                    "clears": 12,
+                    "points": 28,
+                    "fails": 1,
+                    "avatar": None,
+                },
+                {
+                    "rank": 2,
+                    "name": "Bob",
+                    "clears": 7,
+                    "points": 14,
+                    "fails": 0,
+                    "avatar": None,
+                },
             ],
             footer="2 ranked",
         )

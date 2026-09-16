@@ -26,6 +26,8 @@ _MINUTE_UNITS = {
     "minute",
     "minutes",
     "min",
+    "dense minute",
+    "dense minutes",
     "minute (high density)",
     "minutes_high_density",
     "minute_high_density",
@@ -44,7 +46,9 @@ def _tags(log: dict) -> set[str]:
             name = t.get("name") or t.get("tag") or ""
         else:
             name = str(t)
-        out.add(name.strip().lower())
+        n = name.strip().lower().lstrip("#")
+        if n:
+            out.add(n)
     return out
 
 
@@ -239,7 +243,20 @@ def _media_match(log: dict, media_filter: str) -> bool:
             w in desc for w in ("anime", "drama", "variety", "jdrama")
         )
     if mf == "youtube":
-        return has("youtube", "youtube:video") or "youtube" in desc
+        # Live Tadoku tags: youtube, #youtube, online video, video, vtuber;
+        # many logs only put a youtu.be / youtube.com URL in the description.
+        if has(
+            "youtube",
+            "youtube:video",
+            "online video",
+            "online_video",
+            "video",
+            "vtuber",
+        ):
+            return True
+        if "youtube" in desc or "youtu.be" in desc:
+            return True
+        return False
     if mf in ("vn", "visual_novel"):
         return has("vn", "visual novel", "visual_novel") or "vn" in tags
     if mf == "book":

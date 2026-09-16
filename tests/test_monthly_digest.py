@@ -55,17 +55,26 @@ def test_top_completers_and_total():
                     " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (cid, 2026, tier, num, "T", "", 24, None, "tadoku", "pages", 10, "any"),
                 )
-            # u1: two easy (2 pts); u2: one ota_master (4 pts) beats clear count
+            # u1: two easy (2 clears, 2 pts); u2: one ota (1 clear, 4 pts)
+            # board orders by points first → u2 leads
             for did, cid in (("u1", "c1"), ("u1", "c1"), ("u2", "c2")):
                 conn.execute(
                     "INSERT INTO attempts(discord_id,challenge_id,status,started_at,ends_at)"
                     " VALUES(?,?,?,?,?)",
                     (did, cid, "completed", now, now),
                 )
+            conn.execute(
+                "INSERT INTO attempts(discord_id,challenge_id,status,started_at,ends_at)"
+                " VALUES(?,?,?,?,?)",
+                ("u2", "c1", "expired", now, now),
+            )
         assert att.total_completions() == 3
         top = att.top_completers(10)
-        assert top[0]["discord_id"] == "u2" and int(top[0]["n"]) == 4
-        assert top[1]["discord_id"] == "u1" and int(top[1]["n"]) == 2
+        assert top[0]["discord_id"] == "u2"
+        assert int(top[0]["clears"]) == 1 and int(top[0]["points"]) == 4
+        assert int(top[0]["fails"]) == 1
+        assert top[1]["discord_id"] == "u1"
+        assert int(top[1]["clears"]) == 2 and int(top[1]["points"]) == 2
         assert att.challenge_points("u2") == 4
         st = att.leaderboard_standing("u2")
         assert st["rank"] == 1 and st["ranked"] == 2

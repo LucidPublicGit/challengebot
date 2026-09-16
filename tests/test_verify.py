@@ -117,6 +117,52 @@ def test_minutes_youtube():
     assert r.ok
 
 
+def test_youtube_tadoku_tags_and_urls():
+    """Real Tadoku shapes: #youtube, online video, youtu.be, dense minute."""
+    logs = [
+        {
+            "id": "a",
+            "amount": 60,
+            "unit_name": "Minute",
+            "tags": ["#youtube"],
+            "description": "https://youtu.be/abc",
+            "activity": {"name": "Listening"},
+        },
+        {
+            "id": "b",
+            "amount": 50,
+            "unit_name": "Minute",
+            "tags": ["online video"],
+            "description": "vtuber clip",
+            "activity": {"name": "Listening"},
+        },
+        {
+            "id": "c",
+            "amount": 40,
+            "unit_name": "Dense minute",
+            "tags": ["video"],
+            "description": "gameplay",
+            "activity": {"name": "Listening"},
+        },
+        {
+            "id": "d",
+            "duration_seconds": 30 * 60,
+            "tags": ["anime"],
+            "description": "show ep",
+            "activity": {"name": "Listening"},
+        },
+    ]
+    r = evaluate_logs(
+        logs,
+        goal_kind="minutes",
+        goal_amount=150,
+        media_filter="youtube",
+    )
+    assert r.ok, r.detail
+    assert r.progress == 150.0
+    assert set(r.matched_log_ids) == {"a", "b", "c"}
+
+
 def test_volumes_from_pages():
     logs = [
         {
