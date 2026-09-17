@@ -1258,13 +1258,14 @@ def _render_userinfo(
     best_tier: str | None = None,
     by_tier: dict | None = None,
     fails: int = 0,
+    active: list | None = None,
     completed: list | None = None,
     tadoku_linked: bool = False,
     footer: str = "",
 ) -> bytes:
-    """Profile card: points/clears/rank + completed challenge list.
+    """Profile card: points/clears/rank + open + completed lists.
 
-    completed entries: {title, tier, number?}  (content ignored if present)
+    active/completed entries: {title, tier, number?, status?}
     by_tier: {easy/medium/hard/ota_master: count}
     """
     S = SCALE
@@ -1275,6 +1276,7 @@ def _render_userinfo(
     best_c = TIER_COLOR.get(best, accent) if best else accent
     flair = _tier_flair(best) if best else None
     sec_color = _flair_secondary(flair) if flair else None
+    active = list(active or [])
     completed = list(completed or [])
     by_tier = by_tier or {}
 
@@ -1282,10 +1284,18 @@ def _render_userinfo(
     header = 118
     stats_h = 64
     tier_h = 36 if any(by_tier.get(t) for t in TIER_LABEL) else 0
-    list_hdr = 28 if completed else 0
     row_h = 34
+    active_hdr = 28 if active else 0
+    list_hdr = 28 if completed else 0
     empty_h = 28 if not completed else 0
-    body = stats_h + tier_h + list_hdr + (len(completed) * row_h if completed else empty_h)
+    body = (
+        stats_h
+        + tier_h
+        + active_hdr
+        + len(active) * row_h
+        + list_hdr
+        + (len(completed) * row_h if completed else empty_h)
+    )
     if not footer:
         footer = BRAND_FOOTER
     elif BRAND_FOOTER.lower() not in footer.lower():
@@ -1499,16 +1509,9 @@ def _render_userinfo(
             px += tw + 8 * S
         y += tier_h
 
-    # Completed list
-    if completed:
-        draw.text(
-            (margin * S, y * S),
-            "COMPLETED",
-            font=_font(11 * S, bold=True),
-            fill=INK_SOFT,
-        )
-        y += list_hdr
-        for e in completed:
+    def _draw_rows(entries: list, *, title_fill=INK) -> None:
+        nonlocal y
+        for e in entries:
             tier = (e.get("tier") or "").lower().strip()
             tc = TIER_COLOR.get(tier, HAIRLINE)
             row_flair = _tier_flair(tier) if tier in TIER_COLOR else None
@@ -1517,8 +1520,10 @@ def _render_userinfo(
             num = e.get("number")
             if num is not None and str(num).strip() != "":
                 title = f"#{num} {title}"
+            st = (e.get("status") or "").lower().strip()
+            if st == "scheduled":
+                title = f"{title} · sched"
             mid = (y + row_h / 2) * S
-            # left tier tick
             draw.rounded_rectangle(
                 ((margin - 2) * S, y * S + 4 * S, (margin + 3) * S, (y + row_h) * S - 4 * S),
                 radius=2 * S,
@@ -1554,10 +1559,31 @@ def _render_userinfo(
                 (tx * S, mid),
                 _truncate(draw, title, _font(13 * S), max_title),
                 font=_font(13 * S),
-                fill=INK,
+                fill=title_fill,
                 anchor="lm",
             )
             y += row_h
+
+    if active:
+        draw.text(
+            (margin * S, y * S),
+            "ACTIVE",
+            font=_font(11 * S, bold=True),
+            fill=INK_SOFT,
+        )
+        y += active_hdr
+        _draw_rows(active, title_fill=ACCENT_GREEN)
+
+    # Completed list
+    if completed:
+        draw.text(
+            (margin * S, y * S),
+            "COMPLETED",
+            font=_font(11 * S, bold=True),
+            fill=INK_SOFT,
+        )
+        y += list_hdr
+        _draw_rows(completed)
     else:
         draw.text(
             (margin * S, y * S + 4 * S),
@@ -2086,6 +2112,20 @@ async def render_all_demo_cards(
         by_tier={"easy": 2, "medium": 1, "hard": 2, "ota_master": 1},
         fails=1,
         tadoku_linked=True,
+        active=[
+            {
+                "title": "VN 50k",
+                "tier": "medium",
+                "number": 3,
+                "status": "active",
+            },
+            {
+                "title": "Shows Sprint",
+                "tier": "easy",
+                "number": 2,
+                "status": "scheduled",
+            },
+        ],
         completed=[
             {
                 "title": "Manga Mini-Marathon",

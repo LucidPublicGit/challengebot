@@ -3504,7 +3504,7 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
 
 @challenge_group.command(
     name="userinfo",
-    description="Profile: clears, points, rank, completed list",
+    description="Profile: active challenges, clears, points, rank",
 )
 @app_commands.describe(user="Member to look up (default: you)")
 async def challenge_userinfo(
@@ -3520,6 +3520,16 @@ async def challenge_userinfo(
     fails = att_svc.failure_count(tid)
     db_user = att_svc.get_user(tid)
     tadoku_linked = bool(db_user and db_user.get("tadoku_user_id"))
+    opens = att_svc.open_attempts(tid)
+    active = [
+        {
+            "title": a.get("title") or "?",
+            "tier": a.get("tier") or "",
+            "number": a.get("number"),
+            "status": a.get("status") or "active",
+        }
+        for a in opens
+    ]
     done = att_svc.list_attempts(discord_id=tid, status="completed", limit=100)
     completed = [
         {
@@ -3543,6 +3553,7 @@ async def challenge_userinfo(
         best_tier=best,
         by_tier=counts,
         fails=fails,
+        active=active,
         completed=completed,
         tadoku_linked=tadoku_linked,
     )
@@ -3555,6 +3566,15 @@ async def challenge_userinfo(
         bits.append(f"Rank **#{standing['rank']}** / {standing['ranked']}")
     if best:
         bits.append(f"Best tier **{best.replace('_', '-')}**")
+    if active:
+        n_act = sum(1 for a in active if a.get("status") != "scheduled")
+        n_sch = len(active) - n_act
+        open_bits = []
+        if n_act:
+            open_bits.append(f"Active **{n_act}**")
+        if n_sch:
+            open_bits.append(f"Scheduled **{n_sch}**")
+        bits.append(" · ".join(open_bits))
     await interaction.followup.send(
         content=" · ".join(bits),
         file=f,
