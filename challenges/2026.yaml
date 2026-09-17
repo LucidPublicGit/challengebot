@@ -11,7 +11,7 @@ challenges:
     goal_kind: volumes
     goal_amount: 5
     media_filter: manga
-    description: Read at least 5 full manga volumes in one day.
+    description: Read at least 5 full manga volumes within 24 hours.
 
   - id: easy-2
     tier: easy
@@ -24,7 +24,7 @@ challenges:
     goal_amount: 8
     media_filter: shows
     description: >-
-      Watch at least 8 episodes of anime, drama, variety, or other shows in one day.
+      Watch at least 8 episodes of anime, drama, variety, or other shows within 24 hours.
 
   - id: easy-3
     tier: easy
@@ -36,7 +36,7 @@ challenges:
     goal_kind: minutes
     goal_amount: 180
     media_filter: youtube
-    description: Watch at least 3 hours of Japanese YouTube content in one day.
+    description: Watch at least 3 hours of Japanese YouTube content within 24 hours.
 
   - id: easy-4
     tier: easy
@@ -48,7 +48,7 @@ challenges:
     goal_kind: characters
     goal_amount: 30000
     media_filter: vn
-    description: Read at least 30,000 Japanese characters from a visual novel in one day.
+    description: Read at least 30,000 Japanese characters from a visual novel within 24 hours.
 
   - id: easy-5
     tier: easy
@@ -75,7 +75,7 @@ challenges:
     goal_kind: volumes
     goal_amount: 10
     media_filter: manga
-    description: Read at least 10 full manga volumes in one day.
+    description: Read at least 10 full manga volumes within 24 hours.
 
   - id: medium-2
     tier: medium
@@ -88,7 +88,7 @@ challenges:
     goal_amount: 15
     media_filter: shows
     description: >-
-      Watch at least 15 episodes of anime, drama, variety, or other shows in one day.
+      Watch at least 15 episodes of anime, drama, variety, or other shows within 24 hours.
 
   - id: medium-3
     tier: medium
@@ -100,7 +100,7 @@ challenges:
     goal_kind: minutes
     goal_amount: 360
     media_filter: youtube
-    description: Watch at least 6 hours of Japanese YouTube content in one day.
+    description: Watch at least 6 hours of Japanese YouTube content within 24 hours.
 
   - id: medium-4
     tier: medium
@@ -112,7 +112,7 @@ challenges:
     goal_kind: characters
     goal_amount: 50000
     media_filter: vn
-    description: Read at least 50,000 Japanese characters from a visual novel in one day.
+    description: Read at least 50,000 Japanese characters from a visual novel within 24 hours.
 
   - id: medium-5
     tier: medium
@@ -180,14 +180,14 @@ challenges:
   - id: hard-1
     tier: hard
     number: 1
-    title: Novel in a Day
+    title: Novel in 24 Hours
     param_label: book
     time_limit_hours: 24
     verify: honor
     goal_kind: complete_work
     goal_amount: 1
     media_filter: book
-    description: Read one complete Japanese novel from front to back in a single day.
+    description: Read one complete Japanese novel from front to back within 24 hours.
 
   - id: hard-2
     tier: hard
@@ -199,7 +199,7 @@ challenges:
     goal_kind: volumes
     goal_amount: 15
     media_filter: manga
-    description: Read at least 15 full manga volumes in one day.
+    description: Read at least 15 full manga volumes within 24 hours.
 
   - id: hard-3
     tier: hard
@@ -212,7 +212,7 @@ challenges:
     goal_amount: 20
     media_filter: shows
     description: >-
-      Watch at least 20 episodes of anime, drama, variety, or other shows in one day.
+      Watch at least 20 episodes of anime, drama, variety, or other shows within 24 hours.
 
   - id: hard-4
     tier: hard
@@ -224,32 +224,34 @@ challenges:
     goal_kind: characters
     goal_amount: 100000
     media_filter: vn
-    description: Read at least 100,000 Japanese characters from a visual novel in one day.
+    description: Read at least 100,000 Japanese characters from a visual novel within 24 hours.
 
   - id: hard-5
     tier: hard
     number: 5
-    title: 8-Hour Immersion Day
+    title: 8-Hour Immersion (24 Hours)
     param_label: null
     time_limit_hours: 24
     verify: honor
     goal_kind: immersion_hours
     goal_amount: 8
     media_filter: any
-    description: Complete at least 8 hours of immersion in any combination of approved media.
+    description: >-
+      Complete at least 8 hours of immersion in any combination of approved media
+      within 24 hours.
 
   # Ota-Master
   - id: ota-1
     tier: ota_master
     number: 1
-    title: 200k Reading Day
+    title: 200k Reading (24 Hours)
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: characters
     goal_amount: 200000
     media_filter: reading
-    description: Read at least 200,000 Japanese characters in one day.
+    description: Read at least 200,000 Japanese characters within 24 hours.
 
   - id: ota-2
     tier: ota_master
@@ -261,7 +263,7 @@ challenges:
     goal_kind: volumes
     goal_amount: 25
     media_filter: manga
-    description: Read at least 25 full manga volumes in one day.
+    description: Read at least 25 full manga volumes within 24 hours.
 
   - id: ota-3
     tier: ota_master
@@ -274,16 +276,18 @@ challenges:
     goal_amount: 30
     media_filter: shows
     description: >-
-      Watch at least 30 episodes of anime, drama, variety, or other shows in one day.
+      Watch at least 30 episodes of anime, drama, variety, or other shows within 24 hours.
 
   - id: ota-4
     tier: ota_master
     number: 4
-    title: 12-Hour Immersion Day
+    title: 12-Hour Immersion (24 Hours)
     param_label: null
     time_limit_hours: 24
     verify: honor
     goal_kind: immersion_hours
     goal_amount: 12
     media_filter: any
-    description: Complete at least 12 hours of immersion in any combination of approved media.
+    description: >-
+      Complete at least 12 hours of immersion in any combination of approved media
+      within 24 hours.

@@ -2010,7 +2010,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
     },
     "status": {
         "display_name": "PatChatGC",
-        "challenge_title": "12-Hour Immersion Day",
+        "challenge_title": "12-Hour Immersion (24 Hours)",
         "tier": "ota_master",
         "number": 4,
         "focus": "",
@@ -2108,12 +2108,12 @@ async def render_all_demo_cards(
                 "number": 1,
             },
             {
-                "title": "Immersion Day",
+                "title": "Immersion (24 Hours)",
                 "tier": "hard",
                 "number": 3,
             },
             {
-                "title": "12-Hour Immersion Day",
+                "title": "12-Hour Immersion (24 Hours)",
                 "tier": "ota_master",
                 "number": 1,
             },
