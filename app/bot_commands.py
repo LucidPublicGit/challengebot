@@ -3156,6 +3156,58 @@ async def challenge_status(
 
 
 @challenge_group.command(
+    name="active",
+    description="List active and scheduled challenges",
+)
+@app_commands.describe(user="Member to check (default: you)")
+async def challenge_active(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+) -> None:
+    b = _bot_helpers()
+    target = user or interaction.user
+    self_view = target.id == interaction.user.id
+    opens = att_svc.open_attempts(str(target.id))
+    if not opens:
+        msg = (
+            "No open challenges. Use `/challenge start`."
+            if self_view
+            else f"**{target.display_name}** has no open challenges."
+        )
+        await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    lines = [f"**Open challenges** — {target.display_name}"]
+    for a in opens:
+        focus = att_svc.display_content(a)
+        focus_s = f" · _{focus}_" if focus else ""
+        conc = (
+            " · concurrent"
+            if att_svc.challenge_allows_concurrent(a)
+            else ""
+        )
+        if a.get("status") == "scheduled":
+            when = b._ts(a["started_at"])
+            lines.append(
+                f"`#{a['id']}` scheduled **{a['title']}**"
+                f"{focus_s}{conc} (starts <t:{when}:R>)"
+            )
+        else:
+            ends = b._ts(a["ends_at"])
+            lines.append(
+                f"`#{a['id']}` active **{a['title']}**"
+                f"{focus_s}{conc} (ends <t:{ends}:R>)"
+            )
+    if self_view and len(opens) > 1:
+        lines.append(
+            "Use `attempt_id` on `/challenge confirm` / `/challenge abandon`."
+        )
+    await interaction.response.send_message(
+        "\n".join(lines)[:1900], ephemeral=True
+    )
+
+
+@challenge_group.command(
     name="confirm",
     description="Confirm active challenge (Tadoku check runs immediately)",
 )
