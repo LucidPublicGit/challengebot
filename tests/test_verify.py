@@ -185,6 +185,32 @@ def test_volumes_from_pages():
     assert abs(r.progress - 5.0) < 0.01
 
 
+def test_shows_minutes_accepts_movies():
+    logs = [
+        {
+            "id": "1",
+            "duration_seconds": 90 * 60,
+            "tags": ["movie"],
+            "description": "Ghibli film",
+        },
+        {
+            "id": "2",
+            "duration_seconds": 90 * 60,
+            "tags": ["anime"],
+            "description": "Show binge",
+        },
+    ]
+    r = evaluate_logs(
+        logs,
+        goal_kind="minutes",
+        goal_amount=180,
+        media_filter="shows",
+    )
+    assert r.ok, r.detail
+    assert r.progress == 180.0
+    assert set(r.matched_log_ids) == {"1", "2"}
+
+
 def test_episodes_unit():
     logs = [
         {
@@ -327,7 +353,7 @@ def test_synthetic_pass_fail():
 def test_synthetic_volumes_and_episodes():
     for kind, amount, media in (
         ("volumes", 5, "manga"),
-        ("episodes", 8, "shows"),
+        ("minutes", 180, "shows"),
         ("minutes", 180, "youtube"),
         ("immersion_hours", 8, "any"),
     ):

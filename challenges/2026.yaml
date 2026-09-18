@@ -20,11 +20,12 @@ challenges:
     param_label: null
     time_limit_hours: 24
     verify: tadoku
-    goal_kind: episodes
-    goal_amount: 8
+    goal_kind: minutes
+    goal_amount: 180
     media_filter: shows
     description: >-
-      Watch at least 8 episodes of anime, drama, variety, or other shows within 24 hours.
+      Watch at least 3 hours of anime, drama, variety, movies, or other shows
+      within 24 hours. Any titles and episode counts count toward timed logs.
 
   - id: easy-3
     tier: easy
@@ -80,15 +81,16 @@ challenges:
   - id: medium-2
     tier: medium
     number: 2
-    title: Shows 15
+    title: Shows 6h
     param_label: null
     time_limit_hours: 24
     verify: tadoku
-    goal_kind: episodes
-    goal_amount: 15
+    goal_kind: minutes
+    goal_amount: 360
     media_filter: shows
     description: >-
-      Watch at least 15 episodes of anime, drama, variety, or other shows within 24 hours.
+      Watch at least 6 hours of anime, drama, variety, movies, or other shows
+      within 24 hours. Any titles and episode counts count toward timed logs.
 
   - id: medium-3
     tier: medium
@@ -204,15 +206,16 @@ challenges:
   - id: hard-3
     tier: hard
     number: 3
-    title: Shows 20
+    title: Shows 8h
     param_label: null
     time_limit_hours: 24
     verify: tadoku
-    goal_kind: episodes
-    goal_amount: 20
+    goal_kind: minutes
+    goal_amount: 480
     media_filter: shows
     description: >-
-      Watch at least 20 episodes of anime, drama, variety, or other shows within 24 hours.
+      Watch at least 8 hours of anime, drama, variety, movies, or other shows
+      within 24 hours. Any titles and episode counts count toward timed logs.
 
   - id: hard-4
     tier: hard
@@ -268,15 +271,16 @@ challenges:
   - id: ota-3
     tier: ota_master
     number: 3
-    title: Shows 30
+    title: Shows 12h
     param_label: null
     time_limit_hours: 24
     verify: tadoku
-    goal_kind: episodes
-    goal_amount: 30
+    goal_kind: minutes
+    goal_amount: 720
     media_filter: shows
     description: >-
-      Watch at least 30 episodes of anime, drama, variety, or other shows within 24 hours.
+      Watch at least 12 hours of anime, drama, variety, movies, or other shows
+      within 24 hours. Any titles and episode counts count toward timed logs.
 
   - id: ota-4
     tier: ota_master

@@ -2026,7 +2026,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
     },
     "expired": {
         "display_name": "Monty",
-        "challenge_title": "Shows 15",
+        "challenge_title": "Shows 6h",
         "tier": "medium",
         "number": 2,
         "focus": "Dungeon Meshi",

@@ -256,11 +256,21 @@ def _media_match(log: dict, media_filter: str) -> bool:
     if mf == "manga":
         return has("manga") or "manga" in desc
     if mf in ("anime", "shows", "show"):
-        # anime kept as alias; shows = anime/drama/variety/tv/etc.
+        # anime kept as alias; shows = anime/drama/variety/tv/movie/etc.
         return has(
-            "anime", "drama", "variety", "tv", "show", "shows", "jdrama"
+            "anime",
+            "drama",
+            "variety",
+            "tv",
+            "show",
+            "shows",
+            "jdrama",
+            "movie",
+            "movies",
+            "film",
         ) or any(
-            w in desc for w in ("anime", "drama", "variety", "jdrama")
+            w in desc
+            for w in ("anime", "drama", "variety", "jdrama", "movie", "film")
         )
     if mf == "youtube":
         # Live Tadoku tags: youtube, #youtube, online video, video, vtuber;
