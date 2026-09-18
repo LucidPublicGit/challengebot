@@ -207,6 +207,34 @@ def test_episodes_unit():
     assert r.progress == 8
 
 
+def test_episodes_range_marker():
+    logs = [
+        {
+            "id": "1",
+            "tags": ["anime"],
+            "description": "Show S01E01-E08",
+            "activity": "listening",
+        }
+    ]
+    r = evaluate_logs(
+        logs,
+        goal_kind="episodes",
+        goal_amount=8,
+        media_filter="shows",
+        param="Show",
+    )
+    assert r.ok, r.detail
+    assert r.progress == 8
+
+    r2 = evaluate_logs(
+        [{"id": "2", "tags": ["anime"], "description": "Show E03"}],
+        goal_kind="episodes",
+        goal_amount=8,
+        media_filter="shows",
+    )
+    assert r2.progress == 1
+
+
 def test_immersion_hours():
     logs = [
         {

@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 _EP_RE = re.compile(r"[Ss]?\d{0,2}[Ee](?P<ep>\d{1,3})")
+# E01-E08, S01E01–E08, S01E01-S01E08, E1 to E8
+_EP_RANGE_RE = re.compile(
+    r"[Ss]?\d{0,2}[Ee](?P<a>\d{1,3})\s*(?:[-–—~]+|\bto\b)\s*"
+    r"(?:[Ss]?\d{0,2}[Ee])?(?P<b>\d{1,3})",
+    re.I,
+)
 _VOL_RE = re.compile(
     r"(?:Vol\.?|Volume|v|第)\s*(?P<vol>\d{1,4})",
     re.I,
@@ -34,6 +40,20 @@ _MINUTE_UNITS = {
 }
 _VOLUME_UNITS = {"volume", "volumes", "vol", "vols"}
 _EPISODE_UNITS = {"episode", "episodes", "ep", "eps"}
+
+
+def _episodes_from_description(desc: str) -> float:
+    """Count episodes from E-markers; ranges like E01-E08 count as a band."""
+    if not desc:
+        return 0.0
+    m = _EP_RANGE_RE.search(desc)
+    if m:
+        a, b = int(m.group("a")), int(m.group("b"))
+        lo, hi = (a, b) if a <= b else (b, a)
+        return float(hi - lo + 1)
+    if _EP_RE.search(desc):
+        return 1.0
+    return 0.0
 
 
 def _tags(log: dict) -> set[str]:
@@ -513,12 +533,12 @@ def evaluate_logs(
                 eps += amt
                 used.append(str(log.get("id") or ""))
                 continue
-            m = _EP_RE.search(desc)
-            if m:
+            n_ep = _episodes_from_description(desc)
+            if n_ep > 0:
                 key = desc.strip().lower()
                 if key not in seen_ep_keys:
                     seen_ep_keys.add(key)
-                    eps += 1.0
+                    eps += n_ep
                     used.append(str(log.get("id") or ""))
                 continue
             mins = _duration_minutes(log)
