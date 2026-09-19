@@ -7,8 +7,21 @@ from datetime import datetime, timedelta, timezone
 from app.config import get_settings, merge_runtime
 from app.services import progress_status as ps
 
-# Ignore operator DB settings during unit tests
-ps._runtime = lambda: merge_runtime(get_settings(), {})  # type: ignore[method-assign]
+# Ignore operator DB/env toggles during unit tests
+def _test_rt():
+    rt = merge_runtime(get_settings(), {})
+    rt.update(
+        status_time_milestones=True,
+        status_goal_milestones=True,
+        status_final_hour_public=True,
+        status_final_hour_dm=True,
+        status_updates_enabled=True,
+        status_poll_minutes=2.0,
+    )
+    return rt
+
+
+ps._runtime = _test_rt  # type: ignore[method-assign]
 
 
 def _att(**kwargs):
@@ -133,3 +146,42 @@ def test_pick_events_rate_limit_and_goal_met_bypass():
     # goal_met bypasses
     out = ps.pick_events_to_post([time_ev, goal_met], meta, t0 + timedelta(minutes=2))
     assert len(out) == 1 and out[0].mark_goal_met
+
+
+def test_effective_poll_minutes_budget_scale():
+    rt = {"status_poll_minutes": 2.0}
+    assert ps.effective_poll_minutes(rt, 1) == 2.0
+    assert ps.effective_poll_minutes(rt, 3) == 6.0
+    assert ps.effective_poll_minutes(rt, 10) == 15.0  # cap
+    assert ps.effective_poll_minutes(rt, 0) == 2.0  # treat as 1
+
+
+def test_progress_display_from_status_json():
+    assert ps.progress_display({"verify": "honor"}) == "—"
+    att = {
+        "verify": "tadoku",
+        "tadoku_user_id": "x",
+        "status": "active",
+        "goal_amount": 50,
+        "goal_kind": "reading",
+        "status_json": '{"last_progress": 12.5}',
+    }
+    assert ps.progress_display(att) == "12.5 / 50 reading"
+    snap = ps.progress_snapshot(att)
+    assert snap["pct"] == 25
+    assert snap["label"] == "12.5 / 50 reading"
+    assert ps.card_progress_secondary(att) == "12.5 / 50 reading"
+    assert (
+        ps.progress_display(
+            {
+                "verify": "tadoku",
+                "tadoku_user_id": "x",
+                "status": "active",
+                "goal_amount": 720,
+                "goal_kind": "minutes",
+                "status_json": None,
+            }
+        )
+        == "— / 720 minutes"
+    )
+    assert ps.progress_snapshot({"verify": "tadoku", "status": "active", "goal_amount": 10}) == {}

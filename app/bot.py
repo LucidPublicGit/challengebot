@@ -266,17 +266,16 @@ class ChallengeBot(commands.Bot):
                 pass
             await _post("expired", att, ends_at_ts=ends_ts)
 
-        rt = _runtime()
-        # Automatic mid-run status (time milestones all; goal milestones Tadoku-only)
-        if rt.get("status_updates_enabled", True):
-            try:
-                n = await self._run_status_updates()
-                if n:
-                    logger.info("Posted %s active status update(s)", n)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("status updates failed: %s", exc)
+        # Tadoku poll + auto-complete always; Discord status cards gated inside
+        try:
+            n = await self._run_status_updates()
+            if n:
+                logger.info("Posted %s active status update(s)", n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("status updates failed: %s", exc)
 
         # Private ~1h-left nudge (private thread preferred; DM fallback)
+        rt = _runtime()
         if rt.get("status_final_hour_dm", True):
             try:
                 n = await self._run_final_hour_reminders()
@@ -289,10 +288,13 @@ class ChallengeBot(commands.Bot):
         """Time + Tadoku goal milestone cards; auto-complete when goal_ok."""
         posted = 0
         actives = prog_svc.list_active_attempts()
+        poll_m = prog_svc.effective_poll_minutes(
+            _runtime(), prog_svc.count_tadoku_poll_targets(actives)
+        )
         for att in actives:
             try:
                 events, meta = await prog_svc.collect_status_events_for_attempt(
-                    att, force=force
+                    att, force=force, poll_minutes=poll_m
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -380,11 +382,15 @@ class ChallengeBot(commands.Bot):
 
             if not events:
                 continue
+            # Cards off: still polled/meta saved above; don't post or burn milestones
+            cards_on = bool(_runtime().get("status_updates_enabled", True))
             for ev in events:
                 # Skip nudge card if we already tried complete above
                 if ev.mark_goal_met:
                     meta = prog_svc.apply_event_marks(meta, ev)
                     prog_svc.save_status_meta(aid, meta)
+                    continue
+                if not cards_on:
                     continue
                 ends_ts = None
                 try:

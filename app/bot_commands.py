@@ -23,6 +23,7 @@ from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
 from app.new_challenger import list_templates
 from app.services import attempts as att_svc
+from app.services import progress_status as prog_svc
 from app.services.rewards import (
     announce,
     announce_completion,
@@ -3028,8 +3029,10 @@ async def challenge_status(
                 )
             else:
                 ends = b._ts(a["ends_at"])
+                snap = prog_svc.progress_snapshot(a)
+                prog_s = f" · **{snap['pct']}%**" if snap else ""
                 bits.append(
-                    f"`#{a['id']}` active **{a['title']}**{focus_s}{conc} "
+                    f"`#{a['id']}` active **{a['title']}**{focus_s}{conc}{prog_s} "
                     f"(ends <t:{ends}:R>)"
                 )
         lines.append("**Open challenges**\n" + "\n".join(bits))
@@ -3039,6 +3042,7 @@ async def challenge_status(
         )
         if active:
             ends = b._ts(active["ends_at"])
+            prog_line = prog_svc.card_progress_secondary(active)
             png, caption = await build_event_card(
                 kind="active",
                 user=target,
@@ -3049,6 +3053,7 @@ async def challenge_status(
                 content=att_svc.display_content(active),
                 ends_at_ts=ends,
                 detail=b.confirm_howto(active, attempt_id=int(active["id"])),
+                line_secondary=prog_line or None,
                 media_filter=active.get("media_filter"),
             )
             files.append(as_discord_file(png, "active-card.png"))
@@ -3060,6 +3065,7 @@ async def challenge_status(
             if self_view
             else f"Ends <t:{ends}:R>"
         )
+        prog_line = prog_svc.card_progress_secondary(active)
         png, caption = await build_event_card(
             kind="active",
             user=target,
@@ -3070,6 +3076,7 @@ async def challenge_status(
             content=att_svc.display_content(active),
             ends_at_ts=ends,
             detail=detail,
+            line_secondary=prog_line or None,
             media_filter=active.get("media_filter"),
         )
         files.append(as_discord_file(png, "active-card.png"))
@@ -3573,15 +3580,19 @@ async def challenge_userinfo(
     db_user = att_svc.get_user(tid)
     tadoku_linked = bool(db_user and db_user.get("tadoku_user_id"))
     opens = att_svc.open_attempts(tid)
-    active = [
-        {
+    active = []
+    for a in opens:
+        row = {
             "title": a.get("title") or "?",
             "tier": a.get("tier") or "",
             "number": a.get("number"),
             "status": a.get("status") or "active",
         }
-        for a in opens
-    ]
+        snap = prog_svc.progress_snapshot(a)
+        if snap:
+            row["progress_pct"] = snap["pct"]
+            row["progress_label"] = snap["label"]
+        active.append(row)
     done = att_svc.list_attempts(discord_id=tid, status="completed", limit=100)
     completed = [
         {

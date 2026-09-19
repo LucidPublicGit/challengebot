@@ -1509,7 +1509,7 @@ def _render_userinfo(
             px += tw + 8 * S
         y += tier_h
 
-    def _draw_rows(entries: list, *, title_fill=INK) -> None:
+    def _draw_rows(entries: list, *, title_fill=INK, show_progress: bool = False) -> None:
         nonlocal y
         for e in entries:
             tier = (e.get("tier") or "").lower().strip()
@@ -1554,7 +1554,27 @@ def _render_userinfo(
                 anchor="mm",
             )
             tx = margin + 10 + tw / S + 8
-            max_title = (W - margin - tx) * S
+            # Optional % on the right (active rows only when we have a poll cache)
+            pct_s = ""
+            pct_w = 0.0
+            if show_progress:
+                pct = e.get("progress_pct")
+                if pct is not None:
+                    try:
+                        pct_s = f"{int(round(float(pct)))}%"
+                    except (TypeError, ValueError):
+                        pct_s = ""
+                if pct_s:
+                    pf = _font(12 * S, bold=True)
+                    pct_w = draw.textlength(pct_s, font=pf) + 4 * S
+                    draw.text(
+                        ((W - margin) * S, mid),
+                        pct_s,
+                        font=pf,
+                        fill=title_fill,
+                        anchor="rm",
+                    )
+            max_title = (W - margin - tx) * S - pct_w - (8 * S if pct_s else 0)
             draw.text(
                 (tx * S, mid),
                 _truncate(draw, title, _font(13 * S), max_title),
@@ -1572,7 +1592,7 @@ def _render_userinfo(
             fill=INK_SOFT,
         )
         y += active_hdr
-        _draw_rows(active, title_fill=ACCENT_GREEN)
+        _draw_rows(active, title_fill=ACCENT_GREEN, show_progress=True)
 
     # Completed list
     if completed:

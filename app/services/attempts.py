@@ -339,7 +339,8 @@ def list_attempts(
         challenge_id=challenge_id,
     )
     sql = (
-        "SELECT a.*, c.title, c.tier, c.number, u.display_name, u.tadoku_user_id "
+        "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, c.goal_amount, "
+        "u.display_name, u.tadoku_user_id "
         "FROM attempts a "
         "JOIN challenge_defs c ON c.id = a.challenge_id "
         "LEFT JOIN users u ON u.discord_id = a.discord_id"

@@ -110,7 +110,7 @@ class Settings:
     episode_minutes: float = 24.0
     # Status / progress (public mid-run cards off by default — start + clear only)
     status_updates_enabled: bool = False
-    status_poll_minutes: float = 10.0
+    status_poll_minutes: float = 2.0  # 1-user Tadoku poll interval; scales × N
     status_min_interval_minutes: float = 12.0
     status_time_milestones: bool = False
     status_goal_milestones: bool = False
@@ -188,7 +188,7 @@ def get_settings() -> Settings:
         pages_per_volume=_env_float("PAGES_PER_VOLUME", 180.0),
         episode_minutes=_env_float("EPISODE_MINUTES", 24.0),
         status_updates_enabled=_env_bool("STATUS_UPDATES_ENABLED", False),
-        status_poll_minutes=_env_float("STATUS_POLL_MINUTES", 10.0),
+        status_poll_minutes=_env_float("STATUS_POLL_MINUTES", 2.0),
         status_min_interval_minutes=_env_float("STATUS_MIN_INTERVAL_MINUTES", 12.0),
         status_time_milestones=_env_bool("STATUS_TIME_MILESTONES", False),
         status_goal_milestones=_env_bool("STATUS_GOAL_MILESTONES", False),

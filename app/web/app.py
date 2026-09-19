@@ -189,10 +189,11 @@ td .row-actions button:hover,.btn.tiny:hover{border-color:var(--accent2);color:v
   display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;justify-content:space-between;
 }
 .poll-bar .poll-meta{display:flex;flex-direction:column;gap:.2rem;min-width:12rem;flex:1 1 14rem}
-.poll-bar .poll-timer{
-  font-variant-numeric:tabular-nums;font-weight:700;font-size:1.05rem;color:var(--ink);
+.poll-timer{
+  font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem;color:var(--ink);
 }
-.poll-bar .poll-timer.due{color:var(--ok)}
+.poll-timer.due{color:var(--ok)}
+details.block > summary .poll-timer{margin-left:auto}
 .poll-mini{width:100%;margin-top:.45rem;font-size:.78rem}
 .poll-mini td,.poll-mini th{padding:.22rem .3rem;font-size:.75rem}
 details.block{
@@ -646,6 +647,7 @@ def create_app(bot=None) -> FastAPI:
             )
             uname = _esc(a.get("display_name") or a["discord_id"])
             hot = " class='row-hot'" if st in ("active", "scheduled") else ""
+            prog_s = prog_svc.progress_display(a)
             tr.append(
                 f"<tr{hot}>"
                 f"<td class='mono'><a href='/attempts/{a['id']}'>{a['id']}</a></td>"
@@ -654,6 +656,7 @@ def create_app(bot=None) -> FastAPI:
                 f"<td><a href='/challenges/{_esc(a['challenge_id'])}'>{_esc(a['tier'])} #{a['number']}</a>"
                 f"<span class='sub'>{_esc(a['title'])}</span></td>"
                 f"<td class='truncate' title='{_esc(att_svc.display_content(a))}'>{content}</td>"
+                f"<td class='mono'>{_esc(prog_s)}</td>"
                 f"<td><span class='badge {_esc(a['status'])}'>{_esc(a['status'])}</span></td>"
                 f"<td class='muted'>{_attempt_when_cell(a)}</td>"
                 f"<td><div class='row-actions'>"
@@ -701,8 +704,11 @@ def create_app(bot=None) -> FastAPI:
         overview = prog_svc.tadoku_poll_overview()
         next_iso = overview.get("next_eligible_at") or ""
         poll_on = overview.get("enabled", True)
-        poll_m = float(overview.get("poll_minutes") or 10)
+        poll_m = float(overview.get("poll_minutes") or 2)
+        poll_base = float(overview.get("poll_base_minutes") or poll_m)
         poll_m_s = f"{poll_m:g}"
+        poll_base_s = f"{poll_base:g}"
+        n_targets = int(overview.get("n_targets") or 0)
         tick_s = int(overview.get("tick_seconds") or 60)
         poll_attempts = overview.get("attempts") or []
         poll_rows = []
@@ -735,7 +741,7 @@ def create_app(bot=None) -> FastAPI:
             )
             + "</tbody></table>"
         )
-        status_lbl = "on" if poll_on else "off"
+        cards_lbl = "on" if poll_on else "off"
         poll_open = " open" if poll_attempts else ""
         pages = max(1, (total_matched + limit - 1) // limit) if total_matched else 1
         page_n = min(page_n, pages)
@@ -761,32 +767,38 @@ def create_app(bot=None) -> FastAPI:
                 f"</div>"
             )
 
+        # JS Date.parse is happier with Z than +00:00
+        next_attr = (next_iso or "").replace("+00:00", "Z")
         body = f"""
         {flash}
+        <div class="block monitor" style="padding:.55rem .85rem;margin-bottom:.65rem">
+          <div class="poll-bar">
+            <div class="poll-meta">
+              <div class="poll-timer" id="poll-timer" data-next="{_esc(next_attr)}">—</div>
+              <div class="muted">
+                Tadoku poll · cadence <b>{_esc(poll_m_s)} min</b>
+                ({_esc(poll_base_s)}×{max(n_targets, 1)} user{'s' if max(n_targets, 1) != 1 else ''}, cap 15)
+                · tick <b>{tick_s}s</b>
+                · Discord cards <b>{cards_lbl}</b>
+                <span id="poll-next-abs" class="mono"></span>
+              </div>
+            </div>
+            <form method="post" action="/poll/tadoku">
+              <input type="hidden" name="filter" value="{_esc(filt)}"/>
+              <input type="hidden" name="q" value="{_esc(needle)}"/>
+              <input type="hidden" name="page" value="{page_n}"/>
+              <button type="submit" title="Bypass poll cooldown and fetch Tadoku now">
+                Force Tadoku poll
+              </button>
+            </form>
+          </div>
+        </div>
         <details class="block monitor"{poll_open}>
           <summary>
-            Tadoku status poll
-            <span class="pill">auto <b>{status_lbl}</b></span>
+            Active Tadoku targets
             <span class="pill"><b>{len(poll_attempts)}</b> active</span>
           </summary>
           <div class="block-body">
-            <div class="poll-bar">
-              <div class="poll-meta">
-                <div class="poll-timer" id="poll-timer" data-next="{_esc(next_iso)}">—</div>
-                <div class="muted">
-                  Cadence <b>{_esc(poll_m_s)} min</b> · bot tick every <b>{tick_s}s</b>
-                  <span id="poll-next-abs" class="mono"></span>
-                </div>
-              </div>
-              <form method="post" action="/poll/tadoku">
-                <input type="hidden" name="filter" value="{_esc(filt)}"/>
-                <input type="hidden" name="q" value="{_esc(needle)}"/>
-                <input type="hidden" name="page" value="{page_n}"/>
-                <button type="submit" title="Bypass poll cooldown and fetch Tadoku now">
-                  Force Tadoku poll
-                </button>
-              </form>
-            </div>
             {poll_table}
           </div>
         </details>
@@ -814,7 +826,7 @@ def create_app(bot=None) -> FastAPI:
           <span class="pill muted">/ focuses search · Repost = new card to channels</span>
         </div>
         <div class="card" style="padding:0;overflow:auto">
-          {"<table><thead><tr><th>ID</th><th>User</th><th>Challenge</th><th>Content</th><th>Status</th><th>When</th><th>Actions</th></tr></thead><tbody>" + "".join(tr) + "</tbody></table>" if tr else empty_body}
+          {"<table><thead><tr><th>ID</th><th>User</th><th>Challenge</th><th>Content</th><th>Progress</th><th>Status</th><th>When</th><th>Actions</th></tr></thead><tbody>" + "".join(tr) + "</tbody></table>" if tr else empty_body}
         </div>
         {pager}
         <script>
@@ -846,9 +858,9 @@ def create_app(bot=None) -> FastAPI:
               return;
             }}
             var left = (nextMs - Date.now()) / 1000;
-            if (abs) abs.textContent = ' · next ' + new Date(nextMs).toLocaleString();
+            if (abs) abs.textContent = ' · ' + new Date(nextMs).toLocaleString();
             if (left <= 0) {{
-              el.textContent = 'Eligible now (next bot tick ≤{tick_s}s)';
+              el.textContent = 'Poll due — next tick ≤{tick_s}s';
               el.classList.add('due');
             }} else {{
               el.textContent = 'Next poll in ' + fmt(left);
@@ -1592,7 +1604,7 @@ def create_app(bot=None) -> FastAPI:
         status_sec = f"""
             <div class="grid">
               <div class="span-2">
-                {_bool_check('status_updates_enabled', rt.get('status_updates_enabled', True), 'Status updates enabled')}
+                {_bool_check('status_updates_enabled', rt.get('status_updates_enabled', True), 'Discord status cards (Tadoku poll always runs)')}
                 {_bool_check('status_auto_complete', rt.get('status_auto_complete', True), 'Auto-complete on goal')}
                 {_bool_check('status_time_milestones', rt.get('status_time_milestones', True), 'Time milestones')}
                 {_bool_check('status_goal_milestones', rt.get('status_goal_milestones', True), 'Goal milestones')}
@@ -1614,9 +1626,10 @@ def create_app(bot=None) -> FastAPI:
               <div><label>Long window days</label>
                 <input name="status_long_window_days"
                   value="{_esc(rt.get('status_long_window_days', 7))}"/></div>
-              <div><label>Poll minutes (Tadoku)</label>
+              <div><label>Poll minutes (1 active user)</label>
                 <input name="status_poll_minutes"
-                  value="{_esc(rt.get('status_poll_minutes', 10))}"/></div>
+                  value="{_esc(rt.get('status_poll_minutes', 2))}"/>
+                <p class="muted" style="margin:.25rem 0 0">Scales × active Tadoku users (cap 15 min).</p></div>
               <div><label>Min interval between posts (min)</label>
                 <input name="status_min_interval_minutes"
                   value="{_esc(rt.get('status_min_interval_minutes', 12))}"/></div>
@@ -1713,7 +1726,7 @@ def create_app(bot=None) -> FastAPI:
         status_time_fracs_short: str = Form("50"),
         status_goal_fracs: str = Form("25,50,75"),
         status_long_window_days: str = Form("7"),
-        status_poll_minutes: str = Form("10"),
+        status_poll_minutes: str = Form("2"),
         status_min_interval_minutes: str = Form("12"),
         status_final_hour_public: str = Form("false"),
         status_final_hour_dm: str = Form("false"),

@@ -34,6 +34,8 @@ ONE_H_LEFT = "1h_left"
 FINAL_HOUR_DM = "final_hour_dm"
 GOAL_MET = "goal_met"
 TIME_FRACS = TIME_FRACS_LONG
+# Budget scale: interval = base * N_active, capped (1 user → base, default 2 min)
+STATUS_POLL_MAX_MINUTES = 15.0
 
 
 def _runtime() -> dict[str, Any]:
@@ -83,6 +85,125 @@ def list_active_attempts() -> list[dict]:
             "ORDER BY a.id ASC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def is_tadoku_poll_target(att: dict) -> bool:
+    if (att.get("verify") or "tadoku").lower() != "tadoku":
+        return False
+    return bool((att.get("tadoku_user_id") or "").strip())
+
+
+def count_tadoku_poll_targets(attempts: list[dict] | None = None) -> int:
+    rows = attempts if attempts is not None else list_active_attempts()
+    return sum(1 for a in rows if is_tadoku_poll_target(a))
+
+
+def effective_poll_minutes(
+    rt: dict | None = None,
+    n_targets: int | None = None,
+) -> float:
+    """Tadoku poll cadence: base × active targets, clamped to [base, 15].
+
+    ``status_poll_minutes`` is the 1-user interval (default 2).
+    """
+    rt = rt or _runtime()
+    try:
+        base = float(rt.get("status_poll_minutes") or 2.0)
+    except (TypeError, ValueError):
+        base = 2.0
+    base = max(1.0, base)
+    if n_targets is None:
+        n_targets = count_tadoku_poll_targets()
+    n = max(1, int(n_targets))
+    return min(STATUS_POLL_MAX_MINUTES, base * n)
+
+
+def _goal_suffix(att: dict) -> tuple[float, str]:
+    try:
+        goal_f = float(att.get("goal_amount") or 0)
+    except (TypeError, ValueError):
+        goal_f = 0.0
+    kind = (att.get("goal_kind") or "").strip()
+    return goal_f, kind
+
+
+def _fmt_progress(prog_f: float, goal_f: float, kind: str) -> str:
+    if goal_f > 0:
+        s = f"{prog_f:g} / {goal_f:g}"
+        return f"{s} {kind}".strip() if kind else s
+    return f"{prog_f:g}"
+
+
+def _status_meta_from_att(att: dict) -> dict[str, Any]:
+    raw = att.get("status_json")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def progress_snapshot(att: dict) -> dict[str, Any]:
+    """Cached goal progress from last Tadoku poll.
+
+    Returns {} or {ratio, pct, label, progress, goal, kind}.
+    """
+    if (att.get("verify") or "tadoku").lower() != "tadoku":
+        return {}
+    if (att.get("status") or "").lower() == "scheduled":
+        return {}
+    goal_f, kind = _goal_suffix(att)
+    if goal_f <= 0:
+        return {}
+    meta = _status_meta_from_att(att)
+    prog = meta.get("last_progress")
+    if prog is None:
+        return {}
+    try:
+        prog_f = float(prog)
+    except (TypeError, ValueError):
+        return {}
+    ratio = prog_f / goal_f
+    pct = int(round(100.0 * ratio))
+    return {
+        "ratio": ratio,
+        "pct": pct,
+        "label": _fmt_progress(prog_f, goal_f, kind),
+        "progress": prog_f,
+        "goal": goal_f,
+        "kind": kind,
+    }
+
+
+def progress_display(att: dict) -> str:
+    """Cached log total for admin tables (from status_json last poll)."""
+    if (att.get("verify") or "tadoku").lower() != "tadoku":
+        return "—"
+    linked = bool((att.get("tadoku_user_id") or "").strip())
+    st = (att.get("status") or "").lower()
+    goal_f, kind = _goal_suffix(att)
+    snap = progress_snapshot(att)
+    if snap:
+        return str(snap["label"])
+    if not linked and st in ("active", "scheduled"):
+        return "unlinked"
+    if st == "active" and linked:
+        # Pending first poll — still show target so column isn't blank
+        if goal_f > 0:
+            s = f"— / {goal_f:g}"
+            return f"{s} {kind}".strip() if kind else s
+        return "pending"
+    return "—"
+
+
+def card_progress_secondary(att: dict) -> str:
+    """'X / Y unit' for challenge cards (_parse_progress); empty if unknown."""
+    snap = progress_snapshot(att)
+    return str(snap["label"]) if snap else ""
 
 
 def get_status_meta(attempt_id: int) -> dict[str, Any]:
@@ -276,13 +397,10 @@ async def check_goal_milestones(
     now: datetime | None = None,
     *,
     force: bool = False,
+    poll_minutes: float | None = None,
 ) -> list[StatusEvent]:
-    """Goal % + goal-met hint. Tadoku-verify + linked only."""
+    """Fetch Tadoku progress; optional goal % cards + goal_ok for auto-complete."""
     rt0 = _runtime()
-    if not rt0.get("status_goal_milestones", True) and not rt0.get(
-        "status_auto_complete", True
-    ):
-        return []
     verify = (att.get("verify") or "tadoku").lower()
     if verify != "tadoku":
         return []
@@ -290,7 +408,13 @@ async def check_goal_milestones(
     if not tadoku_id:
         return []
 
-    poll_m = max(1.0, float(rt0.get("status_poll_minutes") or 10.0))
+    if poll_minutes is not None:
+        try:
+            poll_m = max(1.0, float(poll_minutes))
+        except (TypeError, ValueError):
+            poll_m = effective_poll_minutes(rt0)
+    else:
+        poll_m = effective_poll_minutes(rt0)
     now = _aware(now or _now())
     last_poll = meta.get("last_tadoku_poll_at")
     if last_poll and not force:
@@ -500,6 +624,7 @@ async def collect_status_events_for_attempt(
     now: datetime | None = None,
     *,
     force: bool = False,
+    poll_minutes: float | None = None,
 ) -> tuple[list[StatusEvent], dict]:
     """Compute events + updated meta (poll timestamp may be written even if no post)."""
     now = _aware(now or _now())
@@ -507,7 +632,9 @@ async def collect_status_events_for_attempt(
     meta = get_status_meta(aid)
     events: list[StatusEvent] = []
     events.extend(check_time_milestones(att, meta, now))
-    goal_events = await check_goal_milestones(att, meta, now, force=force)
+    goal_events = await check_goal_milestones(
+        att, meta, now, force=force, poll_minutes=poll_minutes
+    )
     events.extend(goal_events)
     # Persist poll time from goal check even if no events
     save_status_meta(aid, meta)
@@ -518,15 +645,17 @@ async def collect_status_events_for_attempt(
 def tadoku_poll_overview(now: datetime | None = None) -> dict:
     """Admin UI: poll cadence + per-attempt next eligible Tadoku fetch."""
     rt = _runtime()
-    poll_m = max(1.0, float(rt.get("status_poll_minutes") or 10.0))
     now = _aware(now or _now())
+    targets = [a for a in list_active_attempts() if is_tadoku_poll_target(a)]
+    n_targets = len(targets)
+    try:
+        base_m = max(1.0, float(rt.get("status_poll_minutes") or 2.0))
+    except (TypeError, ValueError):
+        base_m = 2.0
+    poll_m = effective_poll_minutes(rt, n_targets if n_targets else 1)
     rows: list[dict] = []
     next_at: datetime | None = None
-    for att in list_active_attempts():
-        if (att.get("verify") or "tadoku").lower() != "tadoku":
-            continue
-        if not (att.get("tadoku_user_id") or "").strip():
-            continue
+    for att in targets:
         meta = get_status_meta(int(att["id"]))
         last_raw = meta.get("last_tadoku_poll_at")
         last_dt = None
@@ -562,6 +691,8 @@ def tadoku_poll_overview(now: datetime | None = None) -> dict:
         )
     return {
         "poll_minutes": poll_m,
+        "poll_base_minutes": base_m,
+        "n_targets": n_targets,
         "tick_seconds": 60,
         "enabled": bool(rt.get("status_updates_enabled")),
         "next_eligible_at": next_at.isoformat() if next_at else None,
