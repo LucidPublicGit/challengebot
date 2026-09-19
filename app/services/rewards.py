@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
 
 import discord
@@ -229,6 +230,23 @@ def _fmt_utc(ts: int | None) -> str:
     return f"{dt.strftime('%a')} {dt.day} {dt.strftime('%b')} {dt.strftime('%H:%M')} UTC"
 
 
+def _fmt_time_left(ends_at_ts: int | None) -> str:
+    """Short remaining window for active/status cards ('3h 12m left')."""
+    if ends_at_ts is None:
+        return ""
+    try:
+        rem = int(ends_at_ts) - int(time.time())
+    except (TypeError, ValueError):
+        return ""
+    if rem <= 0:
+        return "ended"
+    h = rem // 3600
+    m = (rem % 3600) // 60
+    if h > 0:
+        return f"{h}h {m}m left"
+    return f"{m}m left"
+
+
 def _ts_line(label: str, ts: int | None) -> str:
     stamp = _fmt_utc(ts)
     return f"{label} {stamp}" if stamp else ""
@@ -435,8 +453,8 @@ async def build_event_card(
         elif detail:
             secondary = str(detail)[:90]
         else:
-            bits = [b for b in (dur, _ts_line("Ends", ends_at_ts) or "Window open") if b]
-            secondary = " · ".join(bits)
+            # Time left is a dedicated card slot; don't also stuff Ends/duration here
+            secondary = ""
     else:
         primary = kind.replace("_", " ").title()
         secondary = (detail or "")[:90]
@@ -445,9 +463,13 @@ async def build_event_card(
         primary = str(line_primary).strip()[:80] or primary
     if line_secondary:
         secondary = str(line_secondary).strip()[:90] or secondary
-        # If caller overrode secondary but we have duration, keep duration visible
-        if dur and kind in ("start", "scheduled", "active") and dur not in secondary:
+        # Total duration on start/scheduled only — active/status use time_left slot
+        if dur and kind in ("start", "scheduled") and dur not in secondary:
             secondary = f"{dur} · {secondary}"
+
+    time_left = ""
+    if kind in ("active", "status"):
+        time_left = _fmt_time_left(ends_at_ts)
 
     png: Optional[bytes] = None
     if not skip_image:
@@ -475,6 +497,7 @@ async def build_event_card(
             line_secondary=secondary,
             footer=footer,
             poster_bytes=poster,
+            time_left=time_left,
         )
 
     mention = user.mention if user is not None else name

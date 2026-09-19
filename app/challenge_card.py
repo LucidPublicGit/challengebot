@@ -317,6 +317,26 @@ def _draw_corner_brackets(
     draw.rectangle((x1 - W, y1 - L, x1, y1), fill=color)
 
 
+_TIME_LEFT_RE = re.compile(
+    r"(?<![\w/])(\d+h\s+\d+m left|\d+m left)(?![\w/])",
+    re.IGNORECASE,
+)
+
+
+def _peel_time_left(text: str) -> tuple[str, str]:
+    """Pull '3h 12m left' out of a meta string so it can sit in its own slot."""
+    text = (text or "").strip()
+    if not text:
+        return "", ""
+    m = _TIME_LEFT_RE.search(text)
+    if not m:
+        return "", text
+    left = m.group(1).strip()
+    rest = (text[: m.start()] + text[m.end() :]).strip(" ·•|-")
+    rest = re.sub(r"\s*·\s*·\s*", " · ", rest).strip(" ·")
+    return left, rest
+
+
 def _parse_progress(text: str) -> tuple[Optional[float], str]:
     """If secondary has 'X / Y', return (ratio 0..1+, 'frac[ unit] · meta')."""
     text = _oneline(text)
@@ -607,13 +627,14 @@ def _render_challenge(
     cleared_style: str = "",
     # None = auto: stamp_outline for complete/abandon only; glow for all other kinds
     hero_style: str | None = None,
+    time_left: str = "",
 ) -> bytes:
     """
     Layout:
       [av]  NAME
             [TIER PILL] #N
             title · focus (if no poster)
-      [ outcome: hero status + meta / progress ]
+      [ outcome: hero + progress bar; time left is its own right-side slot ]
       optional cover on the right
     """
     S = SCALE
@@ -654,9 +675,18 @@ def _render_challenge(
         progress_disp = ""
         outcome_meta = line_secondary
 
+    # Dedicated time-left slot (explicit arg wins; else peel from meta)
+    time_left = _oneline(time_left or "")
+    if not time_left:
+        peeled, outcome_meta = _peel_time_left(outcome_meta)
+        time_left = peeled
+    else:
+        _, outcome_meta = _peel_time_left(outcome_meta)
+
     # Always show in-card status hero (Started / Cleared / …) — no corner pill
     has_outcome = True
     has_progress = progress_ratio is not None
+    has_time_left = bool(time_left)
     hero_label = HERO_STATUS.get(kind, (badge or "Event").title())
     # complete: Cleared; status milestones: Halfway / Final hour / …
     if kind in ("complete", "status") and line_primary:
@@ -700,8 +730,9 @@ def _render_challenge(
         "stamp",
     )
     if has_progress:
-        outcome_h = 90 if _tall else 82
-    elif outcome_meta or line_secondary or line_primary:
+        # Extra foot row when time left sits opposite the progress fraction
+        outcome_h = (96 if has_time_left else 90) if _tall else (88 if has_time_left else 82)
+    elif has_time_left or outcome_meta or line_secondary or line_primary:
         outcome_h = (78 if _tall else 70) if terminal else (72 if _tall else 64)
     else:
         outcome_h = 62 if _tall else 54
@@ -888,13 +919,12 @@ def _render_challenge(
         }:
             meta_bits.append(lp)
         if has_progress and progress_disp:
-            bit = progress_disp
+            # Progress amount lives top-right; don't also cram it into meta
             if outcome_meta:
-                bit = f"{progress_disp} · {outcome_meta}"
-            meta_bits.append(bit)
+                meta_bits.append(outcome_meta)
         elif outcome_meta:
             meta_bits.append(outcome_meta)
-        elif line_secondary and not has_progress:
+        elif line_secondary and not has_progress and not has_time_left:
             meta_bits.append(line_secondary)
         meta_line = " · ".join(dict.fromkeys(meta_bits))  # stable unique
 
@@ -920,10 +950,12 @@ def _render_challenge(
             tw=tw,
             S=S,
             kind=kind,
-            has_progress=has_progress,
+            # Reserve right column for progress amount and/or time left
+            has_progress=has_progress or has_time_left,
         )
 
-        if has_progress:
+        # Top-right: goal progress amount (exclusive slot)
+        if has_progress and progress_disp:
             sf = _font(15 * S, bold=True)
             draw.text(
                 (right - 14 * S, y + 10 * S + 26 * S / 2),
@@ -932,6 +964,18 @@ def _render_challenge(
                 fill=INK,
                 anchor="rm",
             )
+        elif has_time_left:
+            # No progress bar → time left shares the top-right hero column
+            sf = _font(15 * S, bold=True)
+            draw.text(
+                (right - 14 * S, y + 10 * S + 26 * S / 2),
+                _truncate(draw, time_left, sf, tw * 0.42),
+                font=sf,
+                fill=INK_SOFT,
+                anchor="rm",
+            )
+
+        if has_progress:
             bar_x0, bar_x1 = tx, right - 14 * S
             bar_y0 = y + 48 * S
             bar_y1 = bar_y0 + 8 * S
@@ -948,7 +992,7 @@ def _render_challenge(
                     radius=4 * S,
                     fill=tier_color,
                 )
-            # Foot: soft meta only (no second copy of the X / Y fraction)
+            # Foot: left = soft meta; right = time left (never stacked on progress amt)
             foot_bits: list[str] = []
             if lp and lp.lower() not in {
                 hero_label.lower(),
@@ -960,17 +1004,33 @@ def _render_challenge(
             if outcome_meta:
                 foot_bits.append(outcome_meta)
             foot = " · ".join(dict.fromkeys(foot_bits))
+            foot_y = bar_y1 + 8 * S
+            if has_time_left:
+                tl_f = _font(13 * S, bold=True)
+                tl_w = draw.textlength(time_left, font=tl_f)
+                draw.text(
+                    (right - 14 * S, foot_y),
+                    time_left,
+                    font=tl_f,
+                    fill=INK_SOFT,
+                    anchor="rm",
+                )
+                foot_max = max(40.0, tw - tl_w - 16 * S)
+            else:
+                foot_max = tw
             if foot:
                 draw.text(
-                    (tx, bar_y1 + 8 * S),
-                    _truncate(draw, foot, _font(13 * S), tw),
+                    (tx, foot_y),
+                    _truncate(draw, foot, _font(13 * S), foot_max),
                     font=_font(13 * S),
                     fill=INK_SOFT,
                 )
         elif meta_line:
+            # Leave room on the right if time left already claimed top-right
+            meta_max = tw * (0.55 if has_time_left else 1.0)
             draw.text(
                 (tx, y + 46 * S),
-                _truncate(draw, meta_line, _font(14 * S), tw),
+                _truncate(draw, meta_line, _font(14 * S), meta_max),
                 font=_font(14 * S),
                 fill=INK_SOFT,
             )
@@ -2011,7 +2071,8 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "number": 4,
         "focus": "Steins;Gate",
         "line_primary": "In progress",
-        "line_secondary": "24 hours · Ends Sat 28 Mar 18:00 UTC",
+        "line_secondary": "12.5k / 30k characters",
+        "time_left": "4h 12m left",
         "footer": "",
     },
     "complete": {
@@ -2062,9 +2123,9 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "focus": "",
         "line_primary": "Halfway",
         "line_secondary": (
-            "12 / 24 hours · 11h 59m left · honor · still running · "
-            "confirm when finished"
+            "12 / 24 hours · honor · still running · confirm when finished"
         ),
+        "time_left": "11h 59m left",
         "footer": "",
     },
 }

@@ -34,6 +34,17 @@ def test_parse_progress_thousand_commas():
     r3, _ = _parse_progress("32.1k / 30k characters")
     assert r3 is not None and abs(r3 - 32100 / 30000) < 1e-9
 
+
+def test_peel_time_left():
+    from app.challenge_card import _peel_time_left
+
+    left, rest = _peel_time_left("12 / 24 hours · 11h 59m left · honor")
+    assert left == "11h 59m left"
+    assert "left" not in rest.lower()
+    assert "12 / 24 hours" in rest
+    assert "honor" in rest
+    assert _peel_time_left("no timer here") == ("", "no timer here")
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "card_previews"
 
