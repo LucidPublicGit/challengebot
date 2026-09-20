@@ -835,11 +835,20 @@ def create_app(bot=None) -> FastAPI:
           if (!el) return;
           var nextRaw = el.getAttribute('data-next') || '';
           var abs = document.getElementById('poll-next-abs');
+          var tickS = {tick_s};
+          var FLASH = ['reposted','polled','poll_err','saved'];
           function parseIso(s){{
             if (!s) return null;
             var t = Date.parse(s);
             return isNaN(t) ? null : t;
           }}
+          // Drop one-shot flash params so auto-reload does not re-show banners
+          try {{
+            var u = new URL(location.href);
+            var dropped = false;
+            FLASH.forEach(function(k){{ if (u.searchParams.has(k)) {{ u.searchParams.delete(k); dropped = true; }} }});
+            if (dropped) history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+          }} catch (e) {{}}
           var nextMs = parseIso(nextRaw);
           function fmt(sec){{
             sec = Math.max(0, Math.floor(sec));
@@ -860,15 +869,48 @@ def create_app(bot=None) -> FastAPI:
             var left = (nextMs - Date.now()) / 1000;
             if (abs) abs.textContent = ' · ' + new Date(nextMs).toLocaleString();
             if (left <= 0) {{
-              el.textContent = 'Poll due — next tick ≤{tick_s}s';
+              el.textContent = 'Poll due — next tick ≤' + tickS + 's';
               el.classList.add('due');
             }} else {{
               el.textContent = 'Next poll in ' + fmt(left);
               el.classList.remove('due');
             }}
           }}
+          function uiBusy(){{
+            if (document.hidden) return true;
+            var a = document.activeElement;
+            if (!a) return false;
+            var t = a.tagName;
+            return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || a.isContentEditable;
+          }}
+          var reloadTimer = null;
+          function softReload(){{
+            if (uiBusy()) {{
+              reloadTimer = setTimeout(softReload, 4000);
+              return;
+            }}
+            location.reload();
+          }}
+          function scheduleReload(){{
+            if (reloadTimer) clearTimeout(reloadTimer);
+            var delay;
+            if (nextMs) {{
+              // After next poll eligibility + one bot tick, then refresh stats
+              delay = (nextMs - Date.now()) + (tickS + 3) * 1000;
+              if (delay < 5000) delay = 5000;
+              // Keep page fresh even when next poll is far out
+              if (delay > 60000) delay = 60000;
+            }} else {{
+              delay = 60000;
+            }}
+            reloadTimer = setTimeout(softReload, delay);
+          }}
           tick();
           setInterval(tick, 1000);
+          scheduleReload();
+          document.addEventListener('visibilitychange', function(){{
+            if (!document.hidden) scheduleReload();
+          }});
         }})();
         </script>
         """
