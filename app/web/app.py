@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import secrets
+import sqlite3
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.catalog import list_challenges, upsert_challenges_from_yaml
@@ -502,6 +507,30 @@ def _bool_check(name: str, on: bool, label: str, desc: str = "") -> str:
         f'<label for="{_esc(name)}">{_esc(label)}{d}</label>'
         f"</div>"
     )
+
+
+def _backup_root() -> Path:
+    return Path(get_settings().database_path).expanduser().resolve().parent
+
+
+def _list_backup_dbs() -> list[Path]:
+    root = _backup_root()
+    if not root.is_dir():
+        return []
+    return sorted(
+        (p for p in root.glob("*.db") if p.is_file() and not p.name.startswith(".")),
+        key=lambda p: p.name.lower(),
+    )
+
+
+def _resolve_backup_db(name: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.db", name or ""):
+        raise HTTPException(400, "Invalid database name")
+    root = _backup_root()
+    path = (root / name).resolve()
+    if path.parent != root or not path.is_file():
+        raise HTTPException(404, "Database not found")
+    return path
 
 
 def _content_cell(a: dict) -> str:
@@ -1715,6 +1744,29 @@ def create_app(bot=None) -> FastAPI:
               </div>
             </div>
         """
+        db_links = []
+        for p in _list_backup_dbs():
+            sz = p.stat().st_size
+            if sz >= 1024 * 1024:
+                size_s = f"{sz / (1024 * 1024):.1f} MB"
+            elif sz >= 1024:
+                size_s = f"{sz / 1024:.0f} KB"
+            else:
+                size_s = f"{sz} B"
+            db_links.append(
+                f'<a class="btn secondary" href="/backup/{_esc(p.name)}">'
+                f"{_esc(p.name)} <span class='muted'>({_esc(size_s)})</span></a>"
+            )
+        backup_body = (
+            f'<p class="muted" style="margin:0 0 .55rem">'
+            f"Consistent SQLite snapshots from <span class='mono'>{_esc(str(_backup_root()))}</span>."
+            f"</p>"
+            + (
+                f'<div class="actions">{"".join(db_links)}</div>'
+                if db_links
+                else '<p class="muted">No .db files found.</p>'
+            )
+        )
         body = f"""
         {_flash_html(saved="Settings saved." if saved else "")}
         <form method="post" action="/settings" id="settings-form">
@@ -1727,6 +1779,7 @@ def create_app(bot=None) -> FastAPI:
             <span class="muted" id="settings-dirty" hidden>Unsaved changes</span>
           </div>
         </form>
+        {section("Server backup", backup_body, open_=True)}
         <script>
         (function(){{
           var form = document.getElementById('settings-form');
@@ -1843,6 +1896,42 @@ def create_app(bot=None) -> FastAPI:
             )
         return RedirectResponse("/settings?saved=1", status_code=303)
 
+    @app.get("/backup/{name}")
+    def backup_download(name: str, _: None = Depends(_auth)):
+        src = _resolve_backup_db(name)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        fd, tmp = tempfile.mkstemp(prefix="ct-backup-", suffix=".db")
+        os.close(fd)
+        try:
+            # Online-safe snapshot (includes WAL commits)
+            src_conn = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
+            try:
+                dst_conn = sqlite3.connect(tmp)
+                try:
+                    src_conn.backup(dst_conn)
+                finally:
+                    dst_conn.close()
+            finally:
+                src_conn.close()
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        def _rm(p: str = tmp) -> None:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+        return FileResponse(
+            tmp,
+            media_type="application/octet-stream",
+            filename=f"{src.stem}-{stamp}.db",
+            background=BackgroundTask(_rm),
+        )
+
     @app.get("/health")
     def health():
         return {"ok": True}
@@ -1856,4 +1945,9 @@ if __name__ == "__main__":
     assert _qs(filter="all") == "filter=all" or True
     assert "Saved" in _flash_html(saved="1")
     assert _pretty_evidence('{"a":1}').startswith("{")
+    try:
+        _resolve_backup_db("../etc/passwd.db")
+        raise SystemExit("backup path escape")
+    except HTTPException as e:
+        assert e.status_code == 400
     print("web helpers ok")
