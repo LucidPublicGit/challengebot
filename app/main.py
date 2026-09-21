@@ -106,7 +106,27 @@ async def run() -> None:
             if not became_ready.is_set():
                 delay = min(delay * 2.0, _BACKOFF_MAX)
 
+    async def run_backups() -> None:
+        from app.services.db_backup import run_due_backups
+
+        # First pass soon after boot, then hourly.
+        delay = 15.0
+        while True:
+            await asyncio.sleep(delay)
+            delay = 3600.0
+            try:
+                result = await asyncio.to_thread(run_due_backups)
+                for w in result.get("warnings") or []:
+                    logger.warning("backup: %s", w)
+                if result.get("done"):
+                    logger.info("backup: %s", ", ".join(result["done"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("backup loop error")
+
     web_task = asyncio.create_task(run_web(), name="admin-web")
+    backup_task = asyncio.create_task(run_backups(), name="db-backup")
     bot_task: asyncio.Task | None = None
     if settings.discord_token:
         bot_task = asyncio.create_task(run_bot(), name="discord-bot")
@@ -119,12 +139,13 @@ async def run() -> None:
     try:
         await web_task
     finally:
-        if bot_task is not None and not bot_task.done():
-            bot_task.cancel()
-            try:
-                await bot_task
-            except asyncio.CancelledError:
-                pass
+        for t in (backup_task, bot_task):
+            if t is not None and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
         await _close_bot(getattr(app.state, "bot", None))
 
 

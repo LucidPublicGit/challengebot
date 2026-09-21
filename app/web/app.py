@@ -523,14 +523,29 @@ def _list_backup_dbs() -> list[Path]:
     )
 
 
+def _fmt_bytes(sz: int) -> str:
+    if sz >= 1024 * 1024:
+        return f"{sz / (1024 * 1024):.1f} MB"
+    if sz >= 1024:
+        return f"{sz / 1024:.0f} KB"
+    return f"{sz} B"
+
+
 def _resolve_backup_db(name: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9._-]+\.db", name or ""):
-        raise HTTPException(400, "Invalid database name")
+    """Live DB in data/ or scheduled slot under data/backups/."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.(db|json)", name or ""):
+        raise HTTPException(400, "Invalid backup name")
     root = _backup_root()
-    path = (root / name).resolve()
-    if path.parent != root or not path.is_file():
-        raise HTTPException(404, "Database not found")
-    return path
+    slots = (root / "backups").resolve()
+    candidates = [(root / name).resolve(), (slots / name).resolve()]
+    for path in candidates:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        if path.is_file() and path.parent in (root, slots):
+            return path
+    raise HTTPException(404, "Backup not found")
 
 
 def _content_cell(a: dict) -> str:
@@ -1744,31 +1759,72 @@ def create_app(bot=None) -> FastAPI:
               </div>
             </div>
         """
+        from app.services import db_backup as bak_svc
+
+        bak = bak_svc.status()
+        slot_rows = []
+        for f in bak["files"]:
+            kind = f["kind"].replace("_", " ")
+            period = f.get("period") or "—"
+            if f["exists"]:
+                dl = (
+                    f'<a class="btn tiny" href="/backup/{_esc(f["name"])}">Download</a>'
+                )
+                size_cell = _esc(f["size_label"])
+                if f["over_limit"]:
+                    size_cell = (
+                        f"<span class='err' style='display:inline;padding:0;"
+                        f"border:0;background:0;margin:0'>{size_cell} ⚠</span>"
+                    )
+            else:
+                dl = "<span class='muted'>—</span>"
+                size_cell = "—"
+            slot_rows.append(
+                "<tr>"
+                f"<td>{_esc(kind)}</td>"
+                f"<td class='mono'>{_esc(f['name'])}</td>"
+                f"<td class='mono'>{_esc(period)}</td>"
+                f"<td>{size_cell}</td>"
+                f"<td>{dl}</td>"
+                "</tr>"
+            )
+        size_alert = ""
+        if bak.get("any_over_limit") or bak["keys"].get("size_warn"):
+            note = bak["keys"].get("size_warn") or (
+                f"A backup exceeds the {bak['warn_label']} soft limit."
+            )
+            size_alert = f'<p class="err" role="alert">{_esc(note)}</p>'
         db_links = []
         for p in _list_backup_dbs():
-            sz = p.stat().st_size
-            if sz >= 1024 * 1024:
-                size_s = f"{sz / (1024 * 1024):.1f} MB"
-            elif sz >= 1024:
-                size_s = f"{sz / 1024:.0f} KB"
-            else:
-                size_s = f"{sz} B"
+            size_s = _fmt_bytes(p.stat().st_size)
             db_links.append(
                 f'<a class="btn secondary" href="/backup/{_esc(p.name)}">'
                 f"{_esc(p.name)} <span class='muted'>({_esc(size_s)})</span></a>"
             )
         backup_body = (
             f'<p class="muted" style="margin:0 0 .55rem">'
-            f"Consistent SQLite snapshots from <span class='mono'>{_esc(str(_backup_root()))}</span>."
-            f"</p>"
+            f"Rolling slots (replace previous): challenges <b>daily / weekly / monthly</b>, "
+            f"admin settings <b>weekly</b>. Soft size warn at <b>{_esc(bak['warn_label'])}</b>. "
+            f"Dir <span class='mono'>{_esc(bak['dir'])}</span>."
+            f"</p>{size_alert}"
+            f'<div class="card" style="padding:0;overflow:auto;margin-bottom:.65rem">'
+            "<table><thead><tr><th>Slot</th><th>File</th><th>Period</th><th>Size</th><th></th></tr></thead>"
+            f"<tbody>{''.join(slot_rows)}</tbody></table></div>"
+            '<p class="muted" style="margin:0 0 .35rem">Live DB snapshot (on demand)</p>'
             + (
                 f'<div class="actions">{"".join(db_links)}</div>'
                 if db_links
-                else '<p class="muted">No .db files found.</p>'
+                else '<p class="muted">No live .db files found.</p>'
+            )
+            + (
+                '<form method="post" action="/backup/run" class="actions" '
+                'style="margin-top:.55rem">'
+                '<button type="submit" class="secondary">Run due backups now</button>'
+                "</form>"
             )
         )
         body = f"""
-        {_flash_html(saved="Settings saved." if saved else "")}
+        {_flash_html(saved=("Settings saved." if saved in ("1", "true") else saved) if saved else "")}
         <form method="post" action="/settings" id="settings-form">
           {section("Core", core)}
           {section("Status / progress cards", status_sec)}
@@ -1896,10 +1952,27 @@ def create_app(bot=None) -> FastAPI:
             )
         return RedirectResponse("/settings?saved=1", status_code=303)
 
+    @app.post("/backup/run")
+    def backup_run_now(_: None = Depends(_auth)):
+        from app.services.db_backup import run_due_backups
+
+        result = run_due_backups()
+        done = ",".join(result.get("done") or []) or "none"
+        qs = _qs(saved=f"Backup run: {done}"[:80])
+        return RedirectResponse(f"/settings?{qs}", status_code=303)
+
     @app.get("/backup/{name}")
     def backup_download(name: str, _: None = Depends(_auth)):
         src = _resolve_backup_db(name)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Scheduled slots are already snapshots — stream as-is.
+        if src.parent.name == "backups" or src.suffix.lower() == ".json":
+            media = (
+                "application/json"
+                if src.suffix.lower() == ".json"
+                else "application/octet-stream"
+            )
+            return FileResponse(src, media_type=media, filename=src.name)
         fd, tmp = tempfile.mkstemp(prefix="ct-backup-", suffix=".db")
         os.close(fd)
         try:
@@ -1919,6 +1992,7 @@ def create_app(bot=None) -> FastAPI:
             except OSError:
                 pass
             raise
+
         def _rm(p: str = tmp) -> None:
             try:
                 os.unlink(p)
