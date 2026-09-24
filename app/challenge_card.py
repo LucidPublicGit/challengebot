@@ -1240,7 +1240,8 @@ def _render_leaderboard(
         width=S,
     )
 
-    medals = {1: (214, 175, 84), 2: (183, 189, 201), 3: (200, 143, 92)}
+    # Gold vs bronze must stay distinct after a thin mix onto BG.
+    medals = {1: (236, 196, 64), 2: (168, 180, 204), 3: (204, 96, 52)}
     y = header
     pts_font_top = _font(18 * S, bold=True)
     pts_font = _font(16 * S, bold=True)
@@ -1273,6 +1274,8 @@ def _render_leaderboard(
         )
         if tier_c:
             plate = _mix(tier_c, BG, 0.10 if is_top else 0.07)
+            if is_top:
+                plate = _mix(medals.get(rank, accent), plate, 0.22)
             draw.rounded_rectangle(
                 row_box,
                 radius=10 * S,
@@ -1296,7 +1299,7 @@ def _render_leaderboard(
             draw.rounded_rectangle(
                 row_box,
                 radius=10 * S,
-                fill=_mix(medals.get(rank, accent), BG, 0.08),
+                fill=_mix(medals.get(rank, accent), BG, 0.22),
             )
 
         # Rank column
