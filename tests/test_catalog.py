@@ -9,8 +9,17 @@ from app.catalog import (
     needs_focus_param,
     special_points_note,
     special_points_suffix,
+    sweep_bonus,
 )
 from tests.helpers import cleanup_db, setup_tmp_db
+
+
+def test_sweep_bonus_scale():
+    assert sweep_bonus("easy") == 2
+    assert sweep_bonus("medium") == 4
+    assert sweep_bonus("hard") == 6
+    assert sweep_bonus("ota_master") == 8
+    assert sweep_bonus("special") == 0
 
 
 def test_seed_2026_count():
@@ -125,6 +134,7 @@ def test_special_mixed_points():
 
 
 if __name__ == "__main__":
+    test_sweep_bonus_scale()
     test_seed_2026_count()
     test_lookup_and_verify_modes()
     test_admin_catalog_crud()

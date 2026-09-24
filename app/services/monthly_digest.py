@@ -200,10 +200,7 @@ async def run_monthly_digest(bot: discord.Client) -> Optional[str]:
                 png = await render_leaderboard_card(
                     title=f"{month_label} · board",
                     entries=entries,
-                    footer=(
-                        f"{len(entries)} ranked · by points · "
-                        "ota 4 · hard 3 · med 2 · easy 1"
-                    ),
+                    footer=f"{len(entries)} ranked · /challenge scores",
                 )
                 lb = as_discord_file(png, "monthly-leaderboard.png")
                 caption = f"📊 **Monthly leaderboard · {month_label}**"

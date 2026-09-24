@@ -3606,15 +3606,27 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
     png = await render_leaderboard_card(
         title="Challenge board",
         entries=entries,
-        footer=(
-            f"{len(entries)} ranked · by points · "
-            "ota 4 · hard 3 · med 2 · easy 1"
-        ),
+        footer=f"{len(entries)} ranked · /challenge scores",
     )
     lb = as_discord_file(png, "leaderboard-card.png")
     await interaction.followup.send(
         file=lb,
         embeds=files_as_image_embeds([lb], kind="leaderboard"),
+    )
+
+
+@challenge_group.command(
+    name="scores",
+    description="How leaderboard points are calculated",
+)
+async def challenge_scores(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "**How points work**\n"
+        "Each clear: Easy **1** · Medium **2** · Hard **3** · Ota-Master **4**. "
+        "Special uses the points on that challenge.\n"
+        "**Sweep bonus** — clear 100% of a rank: **2 ×** that rank’s scale → "
+        "Easy **+2** · Medium **+4** · Hard **+6** · Ota-Master **+8**.\n"
+        "Fails don’t change points. Board: points, then clears, then fewer fails."
     )
 
 

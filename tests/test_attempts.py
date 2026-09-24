@@ -577,6 +577,25 @@ def test_completed_tiers_needs_every_challenge():
         cleanup_db(path)
 
 
+def test_overflow_and_status_guard():
+    from app.db import COUNTER_MAX, sql_int
+
+    assert sql_int(2**80) == COUNTER_MAX
+    assert sql_int(-3) == 0
+    assert sql_int("no") == 0
+    path = setup_tmp_db()
+    try:
+        assert att.failure_count("nobody") == 0
+        bad = att.admin_update_attempt(1, status="'; DROP TABLE attempts;--")
+        assert bad["ok"] is False
+        huge = att.admin_update_attempt(2**80, status="void")
+        assert huge["ok"] is False
+        rows = att.list_attempts(limit=10**18)
+        assert len(rows) <= 500
+    finally:
+        cleanup_db(path)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

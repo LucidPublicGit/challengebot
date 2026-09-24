@@ -19,7 +19,7 @@ import unicodedata
 from pathlib import Path
 from typing import Optional
 
-from app.db import db_session, utcnow_iso
+from app.db import COUNTER_MAX, db_session, utcnow_iso
 
 logger = logging.getLogger(__name__)
 
@@ -276,8 +276,8 @@ def _mark_used(path: Path) -> None:
         conn.execute(
             "INSERT INTO congrats_usage(path, use_count, last_used) VALUES(?, 1, ?) "
             "ON CONFLICT(path) DO UPDATE SET "
-            "use_count = use_count + 1, last_used = excluded.last_used",
-            (key, now),
+            "use_count = MIN(use_count + 1, ?), last_used = excluded.last_used",
+            (key, now, COUNTER_MAX),
         )
 
 

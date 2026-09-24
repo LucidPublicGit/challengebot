@@ -14,6 +14,29 @@ _db_path: str = "./data/challenges.db"
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
+# SQLite binds overflow above 2^63-1; counters stay in signed 32-bit.
+SQL_INT_MAX = 2**63 - 1
+COUNTER_MAX = 2**31 - 1
+
+
+def sql_int(
+    n: Any,
+    *,
+    lo: int = 0,
+    hi: int = COUNTER_MAX,
+    default: int | None = None,
+) -> int:
+    """Clamp an int for SQL binds / counters so it never hits max int."""
+    try:
+        v = int(n)
+    except (TypeError, ValueError):
+        return lo if default is None else default
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
 
 def configure(path: str) -> None:
     global _db_path

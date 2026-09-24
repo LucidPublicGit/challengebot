@@ -9,6 +9,8 @@ from typing import Optional
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+from app.catalog import sweep_bonus
+
 SCALE = 2
 WIDTH = 720
 MARGIN = 28
@@ -1181,7 +1183,7 @@ def _render_leaderboard(
     """entries: {rank, name, clears|score, points?, fails?, avatar?, best_tier?}.
 
     best_tier = highest fully swept prestige tier (themes row; None → UNRANKED).
-    Right side: PTS · CLR · F (points bold = sort key).
+    Right side: PTS · BNS · CLR · F (points bold = sort key).
     """
     S = SCALE
     accent = ACCENT_PURPLE
@@ -1190,17 +1192,18 @@ def _render_leaderboard(
     top_h = 52
     margin = 28
     header = 72
-    # Fixed right stat columns (right edges, logical px) — PTS · CLR · F
+    # Fixed right stat columns (right edges, logical px) — PTS · BNS · CLR · F
     col_f = W - margin          # fails right edge
-    col_c = col_f - 44          # clears right edge
-    col_p = col_c - 52          # points right edge
-    stats_left = col_p - 36     # name must stop before points
+    col_c = col_f - 40          # clears right edge
+    col_b = col_c - 48          # bonus right edge
+    col_p = col_b - 48          # points right edge
+    stats_left = col_p - 32     # name must stop before points
     body = 0
     for e in entries:
         body += top_h if int(e.get("rank") or 99) <= 3 else row_h
         body += 2
     if not footer:
-        footer = f"{BRAND_FOOTER}  ·  sorted by points"
+        footer = f"{BRAND_FOOTER}  ·  /challenge scores"
     elif BRAND_FOOTER.lower() not in footer.lower():
         footer = f"{footer}  ·  {BRAND_FOOTER}"
     foot = 28
@@ -1229,7 +1232,7 @@ def _render_leaderboard(
         fill=INK,
     )
     uf = _font(11 * S, bold=True)
-    for label, x in (("PTS", col_p), ("CLR", col_c), ("F", col_f)):
+    for label, x in (("PTS", col_p), ("BNS", col_b), ("CLR", col_c), ("F", col_f)):
         draw.text((x * S, 28 * S), label, font=uf, fill=INK_SOFT, anchor="rt")
     draw.line(
         (margin * S, (header - 10) * S, (W - margin) * S, (header - 10) * S),
@@ -1335,10 +1338,28 @@ def _render_leaderboard(
         else:
             draw.ellipse((ax, ay, ax + d, ay + d), outline=ring, width=ring_w)
 
-        # Stats: points (bold) · clears · fails
+        # Stats: points (bold) · bonus · clears · fails
         pf = pts_font_top if is_top else pts_font
         pts_fill = ACCENT_GOLD if best == "ota_master" else INK
         draw.text((col_p * S, mid), str(int(points)), font=pf, fill=pts_fill, anchor="rm")
+        bonus = e.get("bonus")
+        if bonus is None:
+            bonus = sum(
+                sweep_bonus(str(t)) for t in (e.get("cleared_tiers") or [])
+            )
+        bonus = int(bonus or 0)
+        if bonus > 0:
+            draw.text(
+                (col_b * S, mid),
+                f"+{bonus}",
+                font=sec_font,
+                fill=ACCENT_GOLD,
+                anchor="rm",
+            )
+        else:
+            draw.text(
+                (col_b * S, mid), "—", font=sec_font, fill=INK_SOFT, anchor="rm"
+            )
         draw.text(
             (col_c * S, mid),
             str(int(clears)),
@@ -1825,25 +1846,26 @@ def _render_userinfo(
             )
             y += row_h
 
+    def _section_hdr(label: str, n: int, fill, hdr_h: int) -> None:
+        nonlocal y
+        hf = _font(11 * S, bold=True)
+        text = f"{label}  {n}"
+        mid = (y + hdr_h / 2) * S
+        tw = draw.textlength(text, font=hf)
+        draw.text((margin * S, mid), text, font=hf, fill=fill, anchor="lm")
+        x0 = margin * S + tw + 10 * S
+        x1 = (W - margin) * S
+        if x1 > x0 + 8 * S:
+            draw.line((x0, mid, x1, mid), fill=HAIRLINE, width=S)
+        y += hdr_h
+
     if active:
-        draw.text(
-            (margin * S, y * S),
-            "ACTIVE",
-            font=_font(11 * S, bold=True),
-            fill=INK_SOFT,
-        )
-        y += active_hdr
+        _section_hdr("ACTIVE", len(active), ACCENT_GREEN, active_hdr)
         _draw_rows(active, title_fill=ACCENT_GREEN, show_progress=True)
 
     # Completed list
     if completed:
-        draw.text(
-            (margin * S, y * S),
-            "COMPLETED",
-            font=_font(11 * S, bold=True),
-            fill=INK_SOFT,
-        )
-        y += list_hdr
+        _section_hdr("COMPLETED", len(completed), INK, list_hdr)
         _draw_rows(completed)
     else:
         draw.text(
@@ -2497,7 +2519,7 @@ async def render_all_demo_cards(
                 "best_tier": None,
             },
         ],
-        footer="5 ranked · by points",
+        footer="5 ranked · /challenge scores",
     )
     out.append(("leaderboard", lb))
     return out

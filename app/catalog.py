@@ -138,6 +138,12 @@ def needs_focus_param(ch: dict | None) -> bool:
 
 
 _TIER_POINTS = {"easy": 1, "medium": 2, "hard": 3, "ota_master": 4}
+SWEEP_BONUS_MULT = 2
+
+
+def sweep_bonus(tier: str) -> int:
+    """Bonus for 100% clearing a prestige rank: 2 × scale (easy = 2)."""
+    return SWEEP_BONUS_MULT * _TIER_POINTS.get(str(tier or "").lower(), 0)
 
 
 def reward_points(ch: dict | None) -> int:

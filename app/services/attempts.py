@@ -5,9 +5,21 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from app.catalog import get_challenge, get_challenge_by_tier_num, needs_focus_param
+from app.catalog import (
+    get_challenge,
+    get_challenge_by_tier_num,
+    needs_focus_param,
+    sweep_bonus,
+)
 from app.config import get_settings, merge_runtime
-from app.db import db_session, get_all_settings, utcnow_iso
+from app.db import (
+    COUNTER_MAX,
+    SQL_INT_MAX,
+    db_session,
+    get_all_settings,
+    sql_int,
+    utcnow_iso,
+)
 from app.services.verify import (
     VerifyResult,
     evaluate_logs,
@@ -20,6 +32,22 @@ _OFFSET_RE = re.compile(
     r"^(?:UTC)?\s*(?P<sign>[+-])\s*(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?$",
     re.I,
 )
+ATTEMPT_STATUSES = frozenset(
+    {"active", "scheduled", "completed", "expired", "abandoned", "void"}
+)
+_LIST_LIMIT_MAX = 500
+_Q_MAX = 200
+_HOURS_MAX = 24.0 * 366 * 5
+
+
+def _bound_hours(raw: Any) -> float:
+    try:
+        h = float(raw if raw is not None else 24)
+    except (TypeError, ValueError):
+        h = 24.0
+    if h != h or h <= 0:
+        h = 24.0
+    return min(h, _HOURS_MAX)
 
 
 def display_content(attempt: dict | None) -> str:
@@ -309,7 +337,7 @@ def _attempts_where(
     elif status:
         where += " AND a.status=?"
         args.append(status)
-    needle = (q or "").strip()
+    needle = (q or "").strip()[:_Q_MAX]
     if needle:
         like = f"%{needle}%"
         where += (
@@ -349,10 +377,12 @@ def list_attempts(
     q_args = list(args)
     if limit is not None:
         sql += " LIMIT ?"
-        q_args.append(int(limit))
-        if offset is not None and int(offset) > 0:
-            sql += " OFFSET ?"
-            q_args.append(int(offset))
+        q_args.append(sql_int(limit, lo=1, hi=_LIST_LIMIT_MAX))
+        if offset is not None:
+            off = sql_int(offset, lo=0, hi=COUNTER_MAX)
+            if off > 0:
+                sql += " OFFSET ?"
+                q_args.append(off)
     with db_session() as conn:
         return [dict(r) for r in conn.execute(sql, q_args).fetchall()]
 
@@ -391,7 +421,7 @@ def list_users(*, q: str | None = None, limit: int | None = 500) -> list[dict]:
         "FROM users u WHERE 1=1"
     )
     args: list[Any] = []
-    needle = (q or "").strip()
+    needle = (q or "").strip()[:_Q_MAX]
     if needle:
         like = f"%{needle}%"
         sql += (
@@ -402,7 +432,7 @@ def list_users(*, q: str | None = None, limit: int | None = 500) -> list[dict]:
     sql += " ORDER BY u.updated_at DESC"
     if limit is not None:
         sql += " LIMIT ?"
-        args.append(int(limit))
+        args.append(sql_int(limit, lo=1, hi=_LIST_LIMIT_MAX))
     with db_session() as conn:
         return [dict(r) for r in conn.execute(sql, args).fetchall()]
 
@@ -598,7 +628,7 @@ def start_attempt(
         if start_dt <= now + timedelta(seconds=30):
             start_dt = now
 
-    hours = float(ch.get("time_limit_hours") or 24)
+    hours = _bound_hours(ch.get("time_limit_hours"))
     ends = start_dt + timedelta(hours=hours)
     status = "active" if start_dt <= now else "scheduled"
     with db_session() as conn:
@@ -1375,6 +1405,8 @@ def admin_update_attempt(
     fields = []
     args: list[Any] = []
     if status is not None:
+        if status not in ATTEMPT_STATUSES:
+            return {"ok": False, "error": "Invalid status"}
         fields.append("status=?")
         args.append(status)
         if status == "completed":
@@ -1400,7 +1432,13 @@ def admin_update_attempt(
         args.append(verify_method)
     if not fields:
         return {"ok": False, "error": "No changes"}
-    args.append(attempt_id)
+    try:
+        aid = int(attempt_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Attempt not found"}
+    if aid < 1 or aid > SQL_INT_MAX:
+        return {"ok": False, "error": "Attempt not found"}
+    args.append(aid)
     with db_session() as conn:
         cur = conn.execute(
             f"UPDATE attempts SET {', '.join(fields)} WHERE id=?", args
@@ -1427,7 +1465,11 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
     else:
         fixed = str(fixed).strip() or None
     raw_pts = data.get("points")
-    points = None if raw_pts in (None, "", "null") else int(raw_pts)
+    points = (
+        None
+        if raw_pts in (None, "", "null")
+        else sql_int(raw_pts, lo=0, hi=COUNTER_MAX)
+    )
     with db_session() as conn:
         conn.execute(
             """
@@ -1449,16 +1491,16 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
             """,
             (
                 data["id"],
-                int(data["year"]),
+                sql_int(data["year"], lo=1, hi=COUNTER_MAX),
                 data["tier"],
-                int(data["number"]),
+                sql_int(data["number"], lo=1, hi=COUNTER_MAX),
                 data["title"],
                 data.get("description") or "",
-                float(data.get("time_limit_hours") or 24),
+                _bound_hours(data.get("time_limit_hours")),
                 param,
                 data.get("verify") or "tadoku",
                 data["goal_kind"],
-                float(data["goal_amount"]),
+                min(max(float(data["goal_amount"] or 0), 0.0), 1e12),
                 data.get("media_filter") or "any",
                 concurrent,
                 fixed,
@@ -1519,7 +1561,7 @@ def failure_count(discord_id: str) -> int:
             f"WHERE discord_id=? AND {_fail_sql()}",
             (str(discord_id),),
         ).fetchone()
-        return int(row["n"] if row else 0)
+        return sql_int(row["n"] if row else 0)
 
 
 def total_completions() -> int:
@@ -1544,11 +1586,12 @@ _TIER_POINTS_SQL = (
 )
 
 
-def top_completers(limit: int = 15) -> list[dict[str, Any]]:
-    """Leaders by points, then clears, then fewer fails.
+def _sweep_bonus_total(swept: list[str]) -> int:
+    return sum(sweep_bonus(t) for t in swept)
 
-    Keys: discord_id, display_name, clears, points, fails, n (=points, compat).
-    """
+
+def _scored_board() -> list[dict[str, Any]]:
+    """All completers with sweep bonus, sorted points / clears / fewer fails."""
     with db_session() as conn:
         rows = conn.execute(
             "SELECT a.discord_id, u.display_name, "
@@ -1561,20 +1604,37 @@ def top_completers(limit: int = 15) -> list[dict[str, Any]]:
             "FROM attempts a "
             "JOIN challenge_defs c ON c.id=a.challenge_id "
             "LEFT JOIN users u ON u.discord_id=a.discord_id "
-            "WHERE a.status='completed' GROUP BY a.discord_id "
-            "ORDER BY points DESC, clears DESC, fails ASC LIMIT ?",
-            (int(limit),),
+            "WHERE a.status='completed' GROUP BY a.discord_id"
         ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["n"] = int(d.get("points") or 0)  # legacy alias
-            out.append(d)
-        return out
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["fails"] = sql_int(d.get("fails") or 0)
+        d["clears"] = sql_int(d.get("clears") or 0)
+        d["points"] = sql_int(d.get("points") or 0)
+        out.append(d)
+    if out:
+        swept_map = completed_tiers_for([str(d["discord_id"]) for d in out])
+        for d in out:
+            extra = _sweep_bonus_total(swept_map.get(str(d["discord_id"]), []))
+            d["points"] = sql_int(int(d["points"]) + extra)
+            d["n"] = d["points"]
+        out.sort(
+            key=lambda d: (-int(d["points"]), -int(d["clears"]), int(d["fails"]))
+        )
+    return out
+
+
+def top_completers(limit: int = 15) -> list[dict[str, Any]]:
+    """Leaders by points, then clears, then fewer fails.
+
+    Keys: discord_id, display_name, clears, points, fails, n (=points, compat).
+    """
+    return _scored_board()[: sql_int(limit, lo=1, hi=100)]
 
 
 def challenge_points(discord_id: str) -> int:
-    """Tier-weighted leaderboard points for one user."""
+    """Tier-weighted leaderboard points (clears + sweep bonuses)."""
     with db_session() as conn:
         row = conn.execute(
             f"SELECT COALESCE(SUM({_TIER_POINTS_SQL}), 0) AS n "
@@ -1583,37 +1643,23 @@ def challenge_points(discord_id: str) -> int:
             "WHERE a.discord_id=? AND a.status='completed'",
             (str(discord_id),),
         ).fetchone()
-        return int(row["n"] if row else 0)
+        base = int(row["n"] if row else 0)
+    return sql_int(base + _sweep_bonus_total(completed_tiers(str(discord_id))))
 
 
 def leaderboard_standing(discord_id: str) -> dict[str, Any]:
     """points, rank (1-based or None if 0 pts), ranked (players with points)."""
     did = str(discord_id)
-    points = challenge_points(did)
-    with db_session() as conn:
-        ranked_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM ("
-            "SELECT a.discord_id FROM attempts a "
-            "JOIN challenge_defs c ON c.id=a.challenge_id "
-            "WHERE a.status='completed' GROUP BY a.discord_id "
-            f"HAVING SUM({_TIER_POINTS_SQL}) > 0)"
-        ).fetchone()
-        ranked = int(ranked_row["n"] if ranked_row else 0)
-        if points <= 0:
-            return {"points": 0, "rank": None, "ranked": ranked}
-        better = conn.execute(
-            "SELECT COUNT(*) AS n FROM ("
-            "SELECT a.discord_id FROM attempts a "
-            "JOIN challenge_defs c ON c.id=a.challenge_id "
-            "WHERE a.status='completed' GROUP BY a.discord_id "
-            f"HAVING SUM({_TIER_POINTS_SQL}) > ?)",
-            (points,),
-        ).fetchone()
-        return {
-            "points": points,
-            "rank": int(better["n"] if better else 0) + 1,
-            "ranked": ranked,
-        }
+    rows = _scored_board()
+    ranked = sum(1 for r in rows if int(r["points"]) > 0)
+    points = next(
+        (int(r["points"]) for r in rows if str(r["discord_id"]) == did),
+        0,
+    )
+    if points <= 0:
+        return {"points": 0, "rank": None, "ranked": ranked}
+    better = sum(1 for r in rows if int(r["points"]) > points)
+    return {"points": points, "rank": better + 1, "ranked": ranked}
 
 
 def completed_tiers(discord_id: str, year: int | None = None) -> list[str]:
