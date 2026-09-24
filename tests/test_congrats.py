@@ -101,10 +101,36 @@ def test_filename_content_match():
                 os.environ["CONGRATS_DIR"] = old
 
 
+def test_zero_escape_does_not_match_re_zero():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        root = td / "pics"
+        _touch(root / "content" / "re-zero" / "emilia.png")
+        _touch(root / "hard" / "tier.png")
+        old = os.environ.get("CONGRATS_DIR")
+        os.environ["CONGRATS_DIR"] = str(root)
+        try:
+            init_db(str(td / "t.db"))
+            p = cg.pick_congrats(
+                tier="hard",
+                content="Zero Escape: Virtue's Last Reward",
+                mark=False,
+            )
+            assert p is not None and p.name == "tier.png"
+            p2 = cg.pick_congrats(tier="hard", content="Re:Zero", mark=False)
+            assert p2 is not None and p2.name == "emilia.png"
+        finally:
+            if old is None:
+                os.environ.pop("CONGRATS_DIR", None)
+            else:
+                os.environ["CONGRATS_DIR"] = old
+
+
 if __name__ == "__main__":
     test_slugify()
     test_pick_prefers_content_then_tier()
     test_prefers_unused()
     test_skips_huge_files()
     test_filename_content_match()
+    test_zero_escape_does_not_match_re_zero()
     print("ok")

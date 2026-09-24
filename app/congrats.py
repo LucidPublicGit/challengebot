@@ -136,6 +136,7 @@ _STOP = frozenset(
         "image",
         "maxresdefault",
         "sddefault",
+        "zero",  # Re:Zero vs Zero Escape
     }
 )
 
