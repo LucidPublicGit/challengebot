@@ -350,6 +350,19 @@ async def build_event_card(
     if not off:
         off = "+00:00"
 
+    name_tier = None
+    cleared_tiers: list[str] = []
+    if user is not None and getattr(user, "id", None) is not None:
+        try:
+            from app.services import attempts as att_svc
+
+            uid = str(user.id)
+            name_tier = att_svc.highest_completed_tier(uid)
+            cleared_tiers = att_svc.completed_tiers(uid)
+        except Exception:  # noqa: BLE001
+            name_tier = None
+            cleared_tiers = []
+
     # --- Unified start / scheduled (one box; no "Started" hero) ---
     if kind in ("start", "scheduled") and not skip_image:
         with_nc = (
@@ -385,14 +398,6 @@ async def build_event_card(
             except Exception:  # noqa: BLE001
                 poster = None
         av = await avatar_bytes(user)
-        name_tier = None
-        if user is not None and getattr(user, "id", None) is not None:
-            try:
-                from app.services import attempts as att_svc
-
-                name_tier = att_svc.highest_completed_tier(str(user.id))
-            except Exception:  # noqa: BLE001
-                name_tier = None
         try:
             png = await render_unified_start_card(
                 display_name=name,
@@ -406,6 +411,7 @@ async def build_event_card(
                 include_challenger=with_nc,
                 poster_bytes=poster,
                 name_tier=name_tier,
+                cleared_tiers=cleared_tiers,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("unified start card failed: %s", exc)
@@ -498,6 +504,7 @@ async def build_event_card(
             footer=footer,
             poster_bytes=poster,
             time_left=time_left,
+            cleared_tiers=cleared_tiers,
         )
 
     mention = user.mention if user is not None else name

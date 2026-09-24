@@ -239,6 +239,82 @@ def _mix(c: tuple[int, int, int], bg: tuple[int, int, int], t: float) -> tuple[i
     return tuple(int(a + (b - a) * t) for a, b in zip(bg, c))  # type: ignore[return-value]
 
 
+def _iter_cleared_tiers(tiers) -> list[str]:
+    seen = {(t or "").lower().strip() for t in (tiers or [])}
+    return [t for t in TIER_LABEL if t in seen]
+
+
+def _hanko_stamp(tier: str, S: int, *, compact: bool = False) -> Image.Image:
+    """Tilted 完 chop in tier color (double-frame square)."""
+    color = ACCENT_GOLD if tier == "ota_master" else TIER_COLOR.get(tier, ACCENT_GREEN)
+    side = (20 if compact else 32) * S
+    stroke = max(1, S if compact else 2 * S)
+    pad = 3 * S
+    im = Image.new("RGBA", (side + pad * 2, side + pad * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    x0, y0 = pad, pad
+    x1, y1 = pad + side - 1, pad + side - 1
+    d.rectangle((x0, y0, x1, y1), outline=color, width=stroke)
+    if not compact:
+        inset = stroke + max(1, S // 2)
+        d.rectangle(
+            (x0 + inset, y0 + inset, x1 - inset, y1 - inset),
+            outline=color,
+            width=max(1, S),
+        )
+    gf = _font(max(10, int(side * 0.64)), bold=True)
+    d.text(((x0 + x1) / 2, (y0 + y1) / 2), "完", font=gf, fill=color, anchor="mm")
+    return im.rotate(-10, resample=Image.Resampling.BICUBIC, expand=True)
+
+
+def _complete_badge_size(
+    draw: ImageDraw.ImageDraw, tier: str, S: int, *, compact: bool
+) -> tuple[float, float]:
+    w, h = _hanko_stamp(tier, S, compact=compact).size
+    return float(w), float(h)
+
+
+def _complete_badges_width(
+    draw: ImageDraw.ImageDraw,
+    tiers,
+    S: int,
+    *,
+    compact: bool = False,
+    gap: int | None = None,
+) -> float:
+    keys = _iter_cleared_tiers(tiers)
+    if not keys:
+        return 0.0
+    g = (2 if compact else 4) * S if gap is None else gap * S
+    w = sum(_complete_badge_size(draw, t, S, compact=compact)[0] for t in keys)
+    return w + g * (len(keys) - 1)
+
+
+def _draw_complete_badges(
+    img: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    x: float,
+    y_mid: float,
+    tiers,
+    S: int,
+    *,
+    compact: bool = False,
+) -> float:
+    """Hanko 完 stamps, one per swept tier."""
+    _ = draw
+    keys = _iter_cleared_tiers(tiers)
+    if not keys:
+        return 0.0
+    g = (2 if compact else 4) * S
+    cx = x
+    for t in keys:
+        stamp = _hanko_stamp(t, S, compact=compact)
+        tw, th = stamp.size
+        img.alpha_composite(stamp, (int(round(cx)), int(round(y_mid - th / 2))))
+        cx += tw + g
+    return cx - g - x
+
+
 def _tier_flair(tier_key: str) -> dict:
     return TIER_FLAIR.get(tier_key) or TIER_FLAIR["easy"]
 
@@ -628,6 +704,7 @@ def _render_challenge(
     # None = auto: stamp_outline for complete/abandon only; glow for all other kinds
     hero_style: str | None = None,
     time_left: str = "",
+    cleared_tiers: list | None = None,
 ) -> bytes:
     """
     Layout:
@@ -828,13 +905,18 @@ def _render_challenge(
     # Name uses full width — status lives in the outcome band, not a corner pill
     pill_font = _font(11 * S, bold=True)
     name_font = _font(24 * S, bold=True)
-    name_max = max(40.0, right - cx)
+    badges_w = _complete_badges_width(draw, cleared_tiers, S)
+    name_max = max(40.0, right - cx - (badges_w + 10 * S if badges_w else 0))
     draw.text(
         (cx, y),
         _truncate(draw, display_name, name_font, name_max),
         font=name_font,
         fill=INK,
     )
+    if badges_w:
+        _draw_complete_badges(
+            img, draw, right - badges_w, y + name_font.size * 0.55, cleared_tiers, S
+        )
     y += 34 * S
 
     # Tier badge + #N, then title (1–2 lines) — flair pads/outline escalate
@@ -1281,7 +1363,10 @@ def _render_leaderboard(
             tier_pill_w = tw + 8 * S
 
         name_x_px = name_x * S + tier_pill_w
-        name_max = stats_left * S - name_x_px - 8 * S
+        swept = e.get("cleared_tiers")
+        bw = _complete_badges_width(draw, swept, S, compact=True)
+        gap = 6 * S if bw else 0
+        name_max = stats_left * S - name_x_px - 8 * S - bw - gap
         draw.text(
             (name_x_px, mid),
             _truncate(draw, name, nf, name_max),
@@ -1289,6 +1374,10 @@ def _render_leaderboard(
             fill=INK,
             anchor="lm",
         )
+        if bw:
+            _draw_complete_badges(
+                img, draw, stats_left * S - bw, mid, swept, S, compact=True
+            )
 
         y += rh + 2
 
@@ -1322,6 +1411,7 @@ def _render_userinfo(
     completed: list | None = None,
     tadoku_linked: bool = False,
     footer: str = "",
+    cleared_tiers: list | None = None,
 ) -> bytes:
     """Profile card: points/clears/rank + open + completed lists.
 
@@ -1412,12 +1502,23 @@ def _render_userinfo(
 
     name_x = margin + 56 + 14
     nf = _font(22 * S, bold=True)
+    badges_w = _complete_badges_width(draw, cleared_tiers, S)
+    name_max = (W - name_x - margin) * S - (badges_w + 10 * S if badges_w else 0)
     draw.text(
         (name_x * S, 28 * S),
-        _truncate(draw, _oneline(display_name), nf, (W - name_x - margin) * S),
+        _truncate(draw, _oneline(display_name), nf, name_max),
         font=nf,
         fill=INK,
     )
+    if badges_w:
+        _draw_complete_badges(
+            img,
+            draw,
+            (W - margin) * S - badges_w,
+            28 * S + nf.size * 0.55,
+            cleared_tiers,
+            S,
+        )
     # Best-tier pill under name (same as completion card)
     pill_font = _font(11 * S, bold=True)
     if best:
@@ -1800,6 +1901,7 @@ def _render_unified_start(
     include_challenger: bool = True,
     poster_bytes: Optional[bytes] = None,
     name_tier: str | None = None,
+    cleared_tiers: list | None = None,
 ) -> bytes:
     """One-image start/scheduled card (Gbar_E_glow).
 
@@ -1891,6 +1993,10 @@ def _render_unified_start(
         name_fill,
         stroke_width=max(2, S),
     )
+    if _iter_cleared_tiers(cleared_tiers):
+        _draw_complete_badges(
+            canvas, draw, 22 * S, name_y - 22 * S, cleared_tiers, S
+        )
 
     tf = _font(14 * S, bold=True)
     tw = draw.textlength(tlabel, font=tf)
@@ -2053,6 +2159,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_primary": "Good luck",
         "line_secondary": "24 hours · Ends Sat 28 Mar 18:00 UTC",
         "footer": "",
+        "cleared_tiers": ["easy"],
     },
     "scheduled": {
         "display_name": "Monty",
@@ -2063,6 +2170,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_primary": "Queued to start",
         "line_secondary": "24 hours · Sun 29 Mar 09:00 -> Mon 30 Mar 09:00 UTC",
         "footer": "",
+        "cleared_tiers": ["easy"],
     },
     "active": {
         "display_name": "Monty",
@@ -2074,6 +2182,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_secondary": "12.5k / 30k characters",
         "time_left": "4h 12m left",
         "footer": "",
+        "cleared_tiers": ["easy"],
     },
     "complete": {
         "display_name": "Monty",
@@ -2084,6 +2193,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_primary": "Cleared",
         "line_secondary": "32.1k / 30k characters · Tadoku",
         "footer": "",
+        "cleared_tiers": ["easy"],
     },
     "fail": {
         "display_name": "Monty",
@@ -2094,6 +2204,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_primary": "Goal not met",
         "line_secondary": "6.2 / 10 volumes",
         "footer": "",
+        "cleared_tiers": ["easy", "medium"],
     },
     "abandon": {
         "display_name": "Monty",
@@ -2104,6 +2215,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_primary": "Abandoned",
         "line_secondary": "",
         "footer": "",
+        "cleared_tiers": ["easy"],
     },
     "expired": {
         "display_name": "Monty",
@@ -2114,6 +2226,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "line_primary": "Time's up",
         "line_secondary": "Window closed",
         "footer": "",
+        "cleared_tiers": ["easy", "medium"],
     },
     "status": {
         "display_name": "PatChatGC",
@@ -2127,6 +2240,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         ),
         "time_left": "11h 59m left",
         "footer": "",
+        "cleared_tiers": ["easy", "medium", "hard", "ota_master"],
     },
 }
 
@@ -2193,6 +2307,7 @@ async def render_all_demo_cards(
         by_tier={"easy": 2, "medium": 1, "hard": 2, "ota_master": 1},
         fails=1,
         tadoku_linked=True,
+        cleared_tiers=["easy"],
         active=[
             {
                 "title": "VN 50k",
@@ -2252,6 +2367,7 @@ async def render_all_demo_cards(
                 "fails": 1,
                 "avatar": demo_avatar_png((214, 175, 84)),
                 "best_tier": "ota_master",
+                "cleared_tiers": ["easy", "medium", "hard", "ota_master"],
             },
             {
                 "rank": 2,
@@ -2261,6 +2377,7 @@ async def render_all_demo_cards(
                 "fails": 0,
                 "avatar": demo_avatar_png((183, 189, 201)),
                 "best_tier": "hard",
+                "cleared_tiers": ["easy", "medium", "hard"],
             },
             {
                 "rank": 3,
@@ -2270,6 +2387,7 @@ async def render_all_demo_cards(
                 "fails": 2,
                 "avatar": demo_avatar_png((200, 143, 92)),
                 "best_tier": "medium",
+                "cleared_tiers": ["easy", "medium"],
             },
             {
                 "rank": 4,
@@ -2279,6 +2397,7 @@ async def render_all_demo_cards(
                 "fails": 0,
                 "avatar": None,
                 "best_tier": "easy",
+                "cleared_tiers": ["easy"],
             },
             {
                 "rank": 5,

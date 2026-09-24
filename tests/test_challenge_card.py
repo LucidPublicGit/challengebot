@@ -8,12 +8,22 @@ from pathlib import Path
 from app.challenge_card import (
     DEMO_CHALLENGE_SAMPLES,
     KIND_STYLE,
+    _hanko_stamp,
+    _iter_cleared_tiers,
     _oneline,
     _parse_progress,
     render_all_demo_cards,
     render_challenge_card,
     render_leaderboard_card,
 )
+
+
+def test_hanko_stamp():
+    assert _iter_cleared_tiers(["HARD", "easy", "nope"]) == ["easy", "hard"]
+    im = _hanko_stamp("easy", 2)
+    assert im.mode == "RGBA"
+    assert im.size[0] >= 32 and im.size[1] >= 32
+    assert any(px[3] > 0 for px in im.getdata())
 
 
 def test_oneline_strips_emoji_tofu():

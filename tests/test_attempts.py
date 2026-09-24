@@ -514,6 +514,41 @@ def test_admin_void():
         cleanup_db(path)
 
 
+def test_completed_tiers_needs_every_challenge():
+    path = setup_tmp_db()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        with db_session() as conn:
+            for n in range(1, 5):
+                conn.execute(
+                    "INSERT INTO attempts("
+                    "discord_id,challenge_id,status,started_at,ends_at)"
+                    " VALUES(?,?,?,?,?)",
+                    ("u", f"easy-{n}", "completed", now, now),
+                )
+        assert att.completed_tiers("u") == []
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO attempts("
+                "discord_id,challenge_id,status,started_at,ends_at)"
+                " VALUES(?,?,?,?,?)",
+                ("u", "easy-5", "completed", now, now),
+            )
+        assert att.completed_tiers("u") == ["easy"]
+        # extra completes of the same id don't invent other tiers
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO attempts("
+                "discord_id,challenge_id,status,started_at,ends_at)"
+                " VALUES(?,?,?,?,?)",
+                ("u", "easy-1", "completed", now, now),
+            )
+        assert att.completed_tiers("u") == ["easy"]
+        assert att.completed_tiers_for(["u", "nobody"])["nobody"] == []
+    finally:
+        cleanup_db(path)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

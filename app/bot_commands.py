@@ -3530,6 +3530,7 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
         return
     uids = [str(r["discord_id"]) for r in rows]
     best_map = att_svc.highest_completed_tiers(uids)
+    swept_map = att_svc.completed_tiers_for(uids)
     entries = []
     for i, r in enumerate(rows):
         av = None
@@ -3554,6 +3555,7 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
                 "fails": int(r.get("fails") or 0),
                 "avatar": av,
                 "best_tier": best_map.get(uid),
+                "cleared_tiers": swept_map.get(uid) or [],
             }
         )
     png = await render_leaderboard_card(
@@ -3586,6 +3588,7 @@ async def challenge_userinfo(
     standing = att_svc.leaderboard_standing(tid)
     counts = att_svc.completion_counts(tid)
     best = att_svc.highest_completed_tier(tid)
+    swept = att_svc.completed_tiers(tid)
     fails = att_svc.failure_count(tid)
     db_user = att_svc.get_user(tid)
     tadoku_linked = bool(db_user and db_user.get("tadoku_user_id"))
@@ -3629,6 +3632,7 @@ async def challenge_userinfo(
         active=active,
         completed=completed,
         tadoku_linked=tadoku_linked,
+        cleared_tiers=swept,
     )
     f = as_discord_file(png, "userinfo-card.png")
     bits = [

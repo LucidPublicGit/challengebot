@@ -1593,6 +1593,58 @@ def leaderboard_standing(discord_id: str) -> dict[str, Any]:
         }
 
 
+def completed_tiers(discord_id: str, year: int | None = None) -> list[str]:
+    """Tiers where this user has cleared every catalog challenge for `year`."""
+    return completed_tiers_for([discord_id], year=year).get(str(discord_id), [])
+
+
+def completed_tiers_for(
+    discord_ids: list[str], year: int | None = None
+) -> dict[str, list[str]]:
+    """Map discord_id → swept tiers (easy < medium < hard < ota_master)."""
+    out: dict[str, list[str]] = {str(i): [] for i in discord_ids}
+    ids = [str(i) for i in discord_ids if i]
+    if not ids:
+        return out
+    with db_session() as conn:
+        if year is None:
+            row = conn.execute(
+                "SELECT MAX(year) AS y FROM challenge_defs"
+            ).fetchone()
+            year = int(row["y"]) if row and row["y"] is not None else None
+        if year is None:
+            return out
+        catalog = conn.execute(
+            "SELECT LOWER(tier) AS tier, COUNT(*) AS n FROM challenge_defs "
+            "WHERE year=? GROUP BY LOWER(tier)",
+            (int(year),),
+        ).fetchall()
+        need = {
+            str(r["tier"]): int(r["n"])
+            for r in catalog
+            if int(r["n"]) > 0 and str(r["tier"]) in _TIER_RANK
+        }
+        if not need:
+            return out
+        ph = ",".join("?" * len(ids))
+        rows = conn.execute(
+            "SELECT a.discord_id AS did, LOWER(c.tier) AS tier, "
+            "COUNT(DISTINCT a.challenge_id) AS n "
+            "FROM attempts a JOIN challenge_defs c ON c.id=a.challenge_id "
+            f"WHERE a.status='completed' AND c.year=? AND a.discord_id IN ({ph}) "
+            "GROUP BY a.discord_id, LOWER(c.tier)",
+            [int(year), *ids],
+        ).fetchall()
+    got: dict[str, dict[str, int]] = {}
+    for r in rows:
+        got.setdefault(str(r["did"]), {})[str(r["tier"])] = int(r["n"])
+    order = ("easy", "medium", "hard", "ota_master")
+    for did in ids:
+        have = got.get(did, {})
+        out[did] = [t for t in order if t in need and have.get(t, 0) >= need[t]]
+    return out
+
+
 def highest_completed_tier(discord_id: str) -> str | None:
     """Best tier the user has ever cleared, or None."""
     m = highest_completed_tiers([discord_id])
