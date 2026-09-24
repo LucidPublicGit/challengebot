@@ -33,7 +33,7 @@ NAV_ITEMS = (
     ("/settings", "Settings"),
 )
 
-TIERS = ("easy", "medium", "hard", "ota_master")
+TIERS = ("easy", "medium", "hard", "ota_master", "special")
 GOAL_KINDS = (
     "volumes",
     "episodes",
@@ -1238,6 +1238,8 @@ def create_app(bot=None) -> FastAPI:
               </div>
               <div><label>Goal amount</label>
                 <input name="goal_amount" value="{_esc(c.get('goal_amount') or '1')}" required/></div>
+              <div><label>Points <span class="hint">(blank = tier default; Special sets this)</span></label>
+                <input name="points" value="{_esc('' if c.get('points') in (None, '') else c.get('points'))}"/></div>
               <div class="span-2"><label>Description</label>
                 <textarea name="description">{_esc(c.get("description") or "")}</textarea></div>
             </div>
@@ -1388,6 +1390,7 @@ def create_app(bot=None) -> FastAPI:
         goal_amount: float = Form(...),
         media_filter: str = Form("any"),
         description: str = Form(""),
+        points: str = Form(""),
         _: None = Depends(_auth),
     ):
         att_svc.admin_upsert_challenge(
@@ -1405,6 +1408,7 @@ def create_app(bot=None) -> FastAPI:
                 "goal_amount": goal_amount,
                 "media_filter": media_filter,
                 "description": description,
+                "points": points.strip() or None,
             }
         )
         return RedirectResponse(f"/challenges/{id}?saved=1", status_code=303)

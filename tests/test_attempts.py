@@ -193,7 +193,31 @@ def test_one_active_and_abandon():
         ).lower()
         ab = att.abandon_attempt("u1")
         assert ab["ok"] is True
+        assert ab.get("fail") is True
         assert att.active_attempt("u1") is None
+        assert att.failure_count("u1") == 1
+    finally:
+        cleanup_db(path)
+
+
+def test_scheduled_abandon_is_not_a_fail():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("u_sched", "11111111-1111-1111-1111-111111111111")
+        later = datetime.now(timezone.utc) + timedelta(days=2)
+        r = att.start_attempt(
+            "u_sched",
+            tier="easy",
+            number=4,
+            param="Game",
+            guild_id="g",
+            starts_at=later,
+        )
+        assert r["ok"] is True and r.get("status") == "scheduled", r
+        ab = att.abandon_attempt("u_sched")
+        assert ab["ok"] is True
+        assert ab.get("fail") is False
+        assert att.failure_count("u_sched") == 0
     finally:
         cleanup_db(path)
 
@@ -519,7 +543,7 @@ def test_completed_tiers_needs_every_challenge():
     try:
         now = datetime.now(timezone.utc).isoformat()
         with db_session() as conn:
-            for n in range(1, 5):
+            for n in range(1, 4):
                 conn.execute(
                     "INSERT INTO attempts("
                     "discord_id,challenge_id,status,started_at,ends_at)"
@@ -532,7 +556,7 @@ def test_completed_tiers_needs_every_challenge():
                 "INSERT INTO attempts("
                 "discord_id,challenge_id,status,started_at,ends_at)"
                 " VALUES(?,?,?,?,?)",
-                ("u", "easy-5", "completed", now, now),
+                ("u", "easy-4", "completed", now, now),
             )
         assert att.completed_tiers("u") == ["easy"]
         # extra completes of the same id don't invent other tiers

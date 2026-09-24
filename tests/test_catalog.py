@@ -17,10 +17,19 @@ def test_seed_2026_count():
         items = list_challenges(year=2026)
         assert len(items) == 22
         tiers = {c["tier"] for c in items}
-        assert tiers == {"easy", "medium", "hard", "ota_master"}
+        assert tiers == {"easy", "medium", "hard", "ota_master", "special"}
+        assert sum(1 for c in items if c["tier"] == "easy") == 4
+        assert sum(1 for c in items if c["tier"] == "medium") == 4
+        assert sum(1 for c in items if c["tier"] == "special") == 5
         op = get_challenge("medium-7")
-        assert op is not None and int(op.get("allows_concurrent") or 0) == 1
-        assert int(get_challenge("easy-5").get("allows_concurrent") or 0) == 0
+        assert op is not None and op["tier"] == "special"
+        assert int(op.get("allows_concurrent") or 0) == 1
+        assert int(op.get("points") or 0) == 2
+        jp = get_challenge("easy-5")
+        assert jp["tier"] == "special" and int(jp.get("points") or 0) == 1
+        umezu = get_challenge("medium-8")
+        assert umezu["tier"] == "special" and int(umezu.get("points") or 0) == 2
+        assert int(jp.get("allows_concurrent") or 0) == 0
     finally:
         cleanup_db(path)
 
@@ -88,8 +97,31 @@ def test_admin_catalog_crud():
         cleanup_db(path)
 
 
+def test_special_mixed_points():
+    from app.db import db_session, utcnow_iso
+    from app.services import attempts as att
+
+    path = setup_tmp_db()
+    try:
+        now = utcnow_iso()
+        with db_session() as conn:
+            for cid in ("easy-5", "medium-8", "medium-7"):
+                conn.execute(
+                    "INSERT INTO attempts("
+                    "discord_id,challenge_id,status,started_at,ends_at)"
+                    " VALUES(?,?,?,?,?)",
+                    ("u", cid, "completed", now, now),
+                )
+        assert att.challenge_points("u") == 5  # 1 + 2 + 2
+        assert att.completed_tiers("u") == []
+        assert att.highest_completed_tier("u") is None
+    finally:
+        cleanup_db(path)
+
+
 if __name__ == "__main__":
     test_seed_2026_count()
     test_lookup_and_verify_modes()
     test_admin_catalog_crud()
+    test_special_mixed_points()
     print("test_catalog ok")

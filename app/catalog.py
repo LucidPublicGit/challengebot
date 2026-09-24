@@ -43,14 +43,16 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                 fixed = None
             else:
                 fixed = str(fixed).strip() or None
+            raw_pts = c.get("points")
+            points = None if raw_pts in (None, "", "null") else int(raw_pts)
             conn.execute(
                 """
                 INSERT INTO challenge_defs(
                   id, year, tier, number, title, description,
                   time_limit_hours, param_label, verify,
                   goal_kind, goal_amount, media_filter, allows_concurrent,
-                  fixed_param
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  fixed_param, points
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                   year=excluded.year,
                   tier=excluded.tier,
@@ -64,7 +66,8 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                   goal_amount=excluded.goal_amount,
                   media_filter=excluded.media_filter,
                   allows_concurrent=excluded.allows_concurrent,
-                  fixed_param=excluded.fixed_param
+                  fixed_param=excluded.fixed_param,
+                  points=excluded.points
                 """,
                 (
                     c["id"],
@@ -81,6 +84,7 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                     c.get("media_filter") or "any",
                     concurrent,
                     fixed,
+                    points,
                 ),
             )
             n += 1
@@ -98,7 +102,7 @@ def list_challenges(year: int | None = None, tier: str | None = None) -> list[di
         args.append(tier)
     q += " ORDER BY year DESC, CASE tier "
     q += "WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 WHEN 'hard' THEN 3 "
-    q += "WHEN 'ota_master' THEN 4 ELSE 9 END, number"
+    q += "WHEN 'ota_master' THEN 4 WHEN 'special' THEN 5 ELSE 9 END, number"
     with db_session() as conn:
         return [dict(r) for r in conn.execute(q, args).fetchall()]
 

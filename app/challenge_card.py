@@ -65,6 +65,7 @@ TIER_LABEL = {
     "medium": "Medium",
     "hard": "Hard",
     "ota_master": "Ota-Master",
+    "special": "Special",
 }
 
 TIER_COLOR = {
@@ -72,6 +73,7 @@ TIER_COLOR = {
     "medium": ACCENT_CYAN,
     "hard": ACCENT_RED,
     "ota_master": ACCENT_VIOLET,
+    "special": ACCENT_AMBER,
 }
 
 # Escalating flair: higher tier = stronger wash, thicker rail, more ornaments
@@ -137,6 +139,21 @@ TIER_FLAIR: dict[str, dict] = {
         "tier_pill_pad": 2,
         "spark": True,
         "secondary": ACCENT_GOLD,
+    },
+    "special": {
+        "wash": 0.06,
+        "wash_width": 0.32,
+        "rail_tier": 0,
+        "rail_kind": 4,
+        "ring": 2,
+        "ring_outer": 0,
+        "ring_outer_color": None,
+        "edge": 0.28,
+        "top_rule": False,
+        "corners": False,
+        "tier_pill_pad": 0,
+        "spark": False,
+        "secondary": ACCENT_AMBER,
     },
 }
 
@@ -2079,6 +2096,7 @@ _TIER_EMBED_COLOR = {
     "medium": 0x38BDF8,
     "hard": 0xF07178,
     "ota_master": 0xE4C460,  # gold prestige strip
+    "special": 0xE6C07B,
 }
 
 _TIER_CAPTION = {
@@ -2086,6 +2104,7 @@ _TIER_CAPTION = {
     "medium": "🔵 **Medium**",
     "hard": "🔴 **Hard**",
     "ota_master": "★ **Ota-Master**",
+    "special": "◆ **Special**",
 }
 
 

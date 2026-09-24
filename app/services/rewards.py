@@ -554,8 +554,11 @@ async def build_event_card(
         when_bits.append(f"Ended {_discord_when(ends_at_ts, relative=False)}")
     if when_bits:
         caption = f"{caption}\n" + " | ".join(when_bits)
-    # Soft roast on fail / time-out; multi-loss tone from expired attempt count
-    if kind in ("fail", "expired") and _runtime().get("announce_shame", True):
+    # Soft roast on fail / time-out / quit-while-live
+    shame = kind in ("fail", "expired") or (
+        kind == "abandon" and (method or "").lower() == "quit"
+    )
+    if shame and _runtime().get("announce_shame", True):
         uid = getattr(user, "id", None)
         n = failure_count(str(uid)) if uid is not None else 0
         caption = f"{caption}\n{format_shame_caption(kind, n)}"

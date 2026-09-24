@@ -641,13 +641,24 @@ def abandon_attempt(
             err = "No active or scheduled challenge."
         return {"ok": False, "error": err, "attempts": picked.get("attempts")}
     att = picked["attempt"]
+    was_active = (att.get("status") or "") == "active"
     with db_session() as conn:
-        conn.execute(
-            "UPDATE attempts SET status='abandoned' "
-            "WHERE id=? AND status IN ('active','scheduled')",
-            (att["id"],),
-        )
-    return {"ok": True, "attempt": {**att, "status": "abandoned"}}
+        if was_active:
+            conn.execute(
+                "UPDATE attempts SET status='abandoned', verify_method='quit' "
+                "WHERE id=? AND status='active'",
+                (att["id"],),
+            )
+        else:
+            conn.execute(
+                "UPDATE attempts SET status='abandoned' "
+                "WHERE id=? AND status='scheduled'",
+                (att["id"],),
+            )
+    out = {**att, "status": "abandoned"}
+    if was_active:
+        out["verify_method"] = "quit"
+    return {"ok": True, "attempt": out, "fail": was_active}
 
 
 def _parse_exclude(raw: str | None) -> list[str]:
@@ -1415,14 +1426,16 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
         fixed = None
     else:
         fixed = str(fixed).strip() or None
+    raw_pts = data.get("points")
+    points = None if raw_pts in (None, "", "null") else int(raw_pts)
     with db_session() as conn:
         conn.execute(
             """
             INSERT INTO challenge_defs(
               id, year, tier, number, title, description, time_limit_hours,
               param_label, verify, goal_kind, goal_amount, media_filter,
-              allows_concurrent, fixed_param
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              allows_concurrent, fixed_param, points
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               year=excluded.year, tier=excluded.tier, number=excluded.number,
               title=excluded.title, description=excluded.description,
@@ -1431,7 +1444,8 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
               goal_kind=excluded.goal_kind, goal_amount=excluded.goal_amount,
               media_filter=excluded.media_filter,
               allows_concurrent=excluded.allows_concurrent,
-              fixed_param=excluded.fixed_param
+              fixed_param=excluded.fixed_param,
+              points=excluded.points
             """,
             (
                 data["id"],
@@ -1448,6 +1462,7 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
                 data.get("media_filter") or "any",
                 concurrent,
                 fixed,
+                points,
             ),
         )
     return {"ok": True}
@@ -1487,12 +1502,21 @@ def completion_counts(discord_id: str) -> dict[str, int]:
         return by_tier
 
 
+def _fail_sql(alias: str = "") -> str:
+    """Timeout, or quit after the window was live (scheduled cancel is not a loss)."""
+    p = f"{alias}." if alias else ""
+    return (
+        f"({p}status='expired' OR "
+        f"({p}status='abandoned' AND {p}verify_method='quit'))"
+    )
+
+
 def failure_count(discord_id: str) -> int:
-    """Lifetime expired attempts (challenge losses on record)."""
+    """Lifetime losses: expired, or abandoned while active."""
     with db_session() as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS n FROM attempts "
-            "WHERE discord_id=? AND status='expired'",
+            f"WHERE discord_id=? AND {_fail_sql()}",
             (str(discord_id),),
         ).fetchone()
         return int(row["n"] if row else 0)
@@ -1506,7 +1530,7 @@ def total_completions() -> int:
         return int(row["n"] if row else 0)
 
 
-# Difficulty ladder = leaderboard points (ota_master 4 … easy 1)
+# Prestige ladder only (Special is a side board — mixed points, no sweep/best-tier).
 _TIER_RANK = {
     "easy": 1,
     "medium": 2,
@@ -1515,9 +1539,9 @@ _TIER_RANK = {
 }
 _RANK_TO_TIER = {v: k for k, v in _TIER_RANK.items()}
 _TIER_POINTS_SQL = (
-    "CASE LOWER(c.tier) "
+    "COALESCE(c.points, CASE LOWER(c.tier) "
     "WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 WHEN 'hard' THEN 3 "
-    "WHEN 'ota_master' THEN 4 ELSE 0 END"
+    "WHEN 'ota_master' THEN 4 ELSE 0 END)"
 )
 
 
@@ -1533,7 +1557,7 @@ def top_completers(limit: int = 15) -> list[dict[str, Any]]:
             f"SUM({_TIER_POINTS_SQL}) AS points, "
             "COALESCE(("
             "  SELECT COUNT(*) FROM attempts f "
-            "  WHERE f.discord_id = a.discord_id AND f.status = 'expired'"
+            f"  WHERE f.discord_id = a.discord_id AND {_fail_sql('f')}"
             "), 0) AS fails "
             "FROM attempts a "
             "JOIN challenge_defs c ON c.id=a.challenge_id "

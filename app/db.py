@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS challenge_defs (
   media_filter TEXT NOT NULL DEFAULT 'any',
   allows_concurrent INTEGER NOT NULL DEFAULT 0,
   fixed_param TEXT,
+  points INTEGER,
   UNIQUE(year, tier, number)
 );
 
@@ -130,6 +131,10 @@ _CHALLENGE_MIGRATIONS = (
     (
         "fixed_param",
         "ALTER TABLE challenge_defs ADD COLUMN fixed_param TEXT",
+    ),
+    (
+        "points",
+        "ALTER TABLE challenge_defs ADD COLUMN points INTEGER",
     ),
 )
 

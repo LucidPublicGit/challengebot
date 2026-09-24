@@ -102,6 +102,7 @@ TIER_META = (
     ("medium", "Medium", discord.ButtonStyle.primary),
     ("hard", "Hard", discord.ButtonStyle.danger),
     ("ota_master", "Ota-Master", discord.ButtonStyle.secondary),
+    ("special", "Special", discord.ButtonStyle.secondary),
 )
 
 TIER_CHOICES = [
@@ -109,6 +110,7 @@ TIER_CHOICES = [
     app_commands.Choice(name="Medium", value="medium"),
     app_commands.Choice(name="Hard", value="hard"),
     app_commands.Choice(name="Ota-Master", value="ota_master"),
+    app_commands.Choice(name="Special", value="special"),
 ]
 
 # Fixed offsets (no auto-DST). Pick what your clock shows *right now*.
@@ -504,6 +506,7 @@ async def _run_abandon(
         param=att.get("param"),
         content=att_svc.display_content(att),
         media_filter=att.get("media_filter"),
+        method=att.get("verify_method"),
     )
 
 
@@ -2068,6 +2071,7 @@ def _challenge_payload(ch: dict, **overrides: object) -> dict:
         "media_filter": ch.get("media_filter") or "any",
         "allows_concurrent": ch.get("allows_concurrent") or 0,
         "fixed_param": ch.get("fixed_param"),
+        "points": ch.get("points"),
     }
     base.update(overrides)
     return base

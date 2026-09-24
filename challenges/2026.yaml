@@ -53,20 +53,6 @@ challenges:
       Read at least 30,000 Japanese characters from visual novels within 24 hours.
       Any titles count toward the total.
 
-  - id: easy-5
-    tier: easy
-    number: 5
-    title: JP Progress Video
-    param_label: null
-    time_limit_hours: 720
-    verify: honor
-    goal_kind: complete_work
-    goal_amount: 1
-    media_filter: any
-    description: >-
-      Make a Japanese progress-update video and publish it on YouTube.
-      On confirm, enter the YouTube URL as content.
-
   # Medium
   - id: medium-1
     tier: medium
@@ -119,68 +105,6 @@ challenges:
     description: >-
       Read at least 50,000 Japanese characters from visual novels within 24 hours.
       Any titles count toward the total.
-
-  - id: medium-5
-    tier: medium
-    number: 5
-    title: "歴史の漫画"
-    param_label: series
-    time_limit_hours: 8760
-    allows_concurrent: true
-    verify: honor
-    goal_kind: complete_work
-    goal_amount: 1
-    media_filter: manga
-    description: >-
-      Complete at least one full history manga series from the club-resources
-      history list within one year. May run concurrent with other challenges.
-
-  - id: medium-6
-    tier: medium
-    number: 6
-    title: "鳥山明先生の作品"
-    param_label: series
-    time_limit_hours: 8760
-    allows_concurrent: true
-    verify: honor
-    goal_kind: complete_work
-    goal_amount: 1
-    media_filter: manga
-    description: >-
-      Complete at least one full manga series by Toriyama Akira within one year.
-      May run concurrent with other challenges.
-
-  - id: medium-7
-    tier: medium
-    number: 7
-    title: One Piece
-    param_label: null
-    fixed_param: One Piece
-    time_limit_hours: 4380
-    allows_concurrent: true
-    verify: tadoku
-    goal_kind: volumes
-    goal_amount: 55
-    media_filter: manga
-    description: >-
-      Read at least 55 One Piece volumes within six months. May be taken twice
-      for catch-up; negotiate fewer volumes for a shorter window with an admin.
-      May run concurrent with other challenges. Tadoku filter is fixed to One Piece.
-
-  - id: medium-8
-    tier: medium
-    number: 8
-    title: "楳図かずお先生の作品"
-    param_label: series
-    time_limit_hours: 8760
-    allows_concurrent: true
-    verify: honor
-    goal_kind: complete_work
-    goal_amount: 1
-    media_filter: manga
-    description: >-
-      Complete at least one full manga series by Umezu Kazuo within one year.
-      May run concurrent with other challenges.
 
   # Hard
   - id: hard-1
@@ -301,3 +225,85 @@ challenges:
     description: >-
       Complete at least 12 hours of immersion in any combination of approved media
       within 24 hours.
+
+  # Special — side board, mixed points; does not block Easy/Medium/Hard/Ota sweeps
+  - id: easy-5
+    tier: special
+    number: 1
+    points: 1
+    title: JP Progress Video
+    param_label: null
+    time_limit_hours: 720
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: any
+    description: >-
+      Make a Japanese progress-update video and publish it on YouTube.
+      On confirm, enter the YouTube URL as content.
+
+  - id: medium-8
+    tier: special
+    number: 2
+    points: 2
+    title: "楳図かずお先生の作品"
+    param_label: series
+    time_limit_hours: 8760
+    allows_concurrent: true
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: manga
+    description: >-
+      Complete at least one full manga series by Umezu Kazuo within one year.
+      May run concurrent with other challenges.
+
+  - id: medium-7
+    tier: special
+    number: 3
+    points: 2
+    title: One Piece
+    param_label: null
+    fixed_param: One Piece
+    time_limit_hours: 4380
+    allows_concurrent: true
+    verify: tadoku
+    goal_kind: volumes
+    goal_amount: 55
+    media_filter: manga
+    description: >-
+      Read at least 55 One Piece volumes within six months. May be taken twice
+      for catch-up; negotiate fewer volumes for a shorter window with an admin.
+      May run concurrent with other challenges. Tadoku filter is fixed to One Piece.
+
+  - id: medium-5
+    tier: special
+    number: 4
+    points: 2
+    title: "歴史の漫画"
+    param_label: series
+    time_limit_hours: 8760
+    allows_concurrent: true
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: manga
+    description: >-
+      Complete at least one full history manga series from the club-resources
+      history list within one year. May run concurrent with other challenges.
+
+  - id: medium-6
+    tier: special
+    number: 5
+    points: 2
+    title: "鳥山明先生の作品"
+    param_label: series
+    time_limit_hours: 8760
+    allows_concurrent: true
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: manga
+    description: >-
+      Complete at least one full manga series by Toriyama Akira within one year.
+      May run concurrent with other challenges.

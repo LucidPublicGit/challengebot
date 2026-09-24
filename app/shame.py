@@ -157,7 +157,7 @@ def format_shame_caption(kind: str, fail_count: int) -> str:
     """Extra caption block under the card mention line."""
     n = max(0, int(fail_count or 0))
     quote = pick_shame(kind, n)
-    if kind == "expired" and n >= 2:
+    if kind in ("expired", "abandon") and n >= 2:
         return f"📉 **{n} failures on record**\n_{quote}_"
     if kind == "fail" and n >= 2:
         return f"💀 prior losses: **{n}**\n_{quote}_"
