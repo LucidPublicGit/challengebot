@@ -552,6 +552,7 @@ def test_completed_tiers_needs_every_challenge():
                 )
         assert att.completed_tiers("u") == []
         assert att.highest_completed_tier("u") is None
+        assert att.tier_slot_progress("u")["easy"] == [True, True, True, False]
         with db_session() as conn:
             conn.execute(
                 "INSERT INTO attempts("
@@ -561,6 +562,7 @@ def test_completed_tiers_needs_every_challenge():
             )
         assert att.completed_tiers("u") == ["easy"]
         assert att.highest_completed_tier("u") == "easy"
+        assert att.tier_slot_progress("u")["easy"] == [True, True, True, True]
         # extra completes of the same id don't invent other tiers
         with db_session() as conn:
             conn.execute(

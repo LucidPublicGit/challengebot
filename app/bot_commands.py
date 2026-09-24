@@ -3678,6 +3678,7 @@ async def challenge_userinfo(
         completed=completed,
         tadoku_linked=tadoku_linked,
         cleared_tiers=swept,
+        tier_slots=att_svc.tier_slot_progress(tid),
     )
     f = as_discord_file(png, "userinfo-card.png")
     bits = [

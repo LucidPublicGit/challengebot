@@ -1441,11 +1441,13 @@ def _render_userinfo(
     tadoku_linked: bool = False,
     footer: str = "",
     cleared_tiers: list | None = None,
+    tier_slots: dict | None = None,
 ) -> bytes:
     """Profile card: points/clears/rank + open + completed lists.
 
     active/completed entries: {title, tier, number?, status?}
     by_tier: {easy/medium/hard/ota_master: count}
+    tier_slots: {tier: [bool, ...]} catalog ticks in number order
     """
     S = SCALE
     accent = ACCENT_PURPLE
@@ -1458,11 +1460,23 @@ def _render_userinfo(
     active = list(active or [])
     completed = list(completed or [])
     by_tier = by_tier or {}
+    slot_order = ("easy", "medium", "hard", "ota_master")
+    slot_map = {}
+    if tier_slots:
+        slot_map = {
+            t: list(tier_slots.get(t) or [])
+            for t in slot_order
+            if tier_slots.get(t)
+        }
+    slot_row_h = 22
 
     # Measure body height
     header = 118
     stats_h = 64
-    tier_h = 36 if any(by_tier.get(t) for t in TIER_LABEL) else 0
+    if slot_map:
+        tier_h = 8 + len(slot_map) * slot_row_h
+    else:
+        tier_h = 36 if any(by_tier.get(t) for t in TIER_LABEL) else 0
     row_h = 34
     active_hdr = 28 if active else 0
     list_hdr = 28 if completed else 0
@@ -1660,8 +1674,41 @@ def _render_userinfo(
         )
     y += stats_h
 
-    # Tier breakdown pills (ota/hard match completion pill chrome)
-    if tier_h:
+    # Prestige catalog ticks (one slot per challenge, number order)
+    if slot_map:
+        y += 4
+        box = 11 * S
+        gap = 5 * S
+        lab_w = 36 * S
+        lf = _font(11 * S, bold=True)
+        for tkey, flags in slot_map.items():
+            mid = (y + slot_row_h / 2) * S
+            short = "OTA" if tkey == "ota_master" else TIER_LABEL[tkey][:3].upper()
+            tc = TIER_COLOR[tkey]
+            ink = (
+                ACCENT_GOLD
+                if tkey == "ota_master" and any(flags)
+                else (tc if any(flags) else INK_SOFT)
+            )
+            draw.text((margin * S, mid), short, font=lf, fill=ink, anchor="lm")
+            x = margin * S + lab_w
+            fill_c = ACCENT_GOLD if tkey == "ota_master" else tc
+            for done in flags:
+                rbox = (x, mid - box / 2, x + box, mid + box / 2)
+                if done:
+                    draw.rounded_rectangle(rbox, radius=3 * S, fill=fill_c)
+                else:
+                    draw.rounded_rectangle(
+                        rbox,
+                        radius=3 * S,
+                        fill=PANEL_BG,
+                        outline=HAIRLINE,
+                        width=max(1, S // 2),
+                    )
+                x += box + gap
+            y += slot_row_h
+        y += 4
+    elif tier_h:
         px = margin * S
         mid = (y + tier_h / 2 - 4) * S
         for tkey, tlab in TIER_LABEL.items():
@@ -2338,6 +2385,12 @@ async def render_all_demo_cards(
         ranked=8,
         best_tier="ota_master",
         by_tier={"easy": 2, "medium": 1, "hard": 2, "ota_master": 1},
+        tier_slots={
+            "easy": [True, True, True, True],
+            "medium": [True, False, False, False],
+            "hard": [True, True, False, False, False],
+            "ota_master": [True, False, False, False],
+        },
         fails=1,
         tadoku_linked=True,
         cleared_tiers=["easy"],

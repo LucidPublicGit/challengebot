@@ -1668,6 +1668,40 @@ def completed_tiers_for(
     return out
 
 
+def tier_slot_progress(
+    discord_id: str, year: int | None = None
+) -> dict[str, list[bool]]:
+    """Prestige catalog slots in number order; True if that challenge is cleared."""
+    out: dict[str, list[bool]] = {t: [] for t in _TIER_RANK}
+    did = str(discord_id)
+    with db_session() as conn:
+        if year is None:
+            row = conn.execute(
+                "SELECT MAX(year) AS y FROM challenge_defs"
+            ).fetchone()
+            year = int(row["y"]) if row and row["y"] is not None else None
+        if year is None:
+            return out
+        catalog = conn.execute(
+            "SELECT id, LOWER(tier) AS tier FROM challenge_defs "
+            "WHERE year=? ORDER BY number, id",
+            (int(year),),
+        ).fetchall()
+        done = {
+            str(r["challenge_id"])
+            for r in conn.execute(
+                "SELECT DISTINCT challenge_id FROM attempts "
+                "WHERE discord_id=? AND status='completed'",
+                (did,),
+            ).fetchall()
+        }
+    for r in catalog:
+        t = str(r["tier"])
+        if t in out:
+            out[t].append(str(r["id"]) in done)
+    return out
+
+
 def highest_completed_tier(discord_id: str) -> str | None:
     """Highest fully swept prestige tier, or None."""
     m = highest_completed_tiers([discord_id])

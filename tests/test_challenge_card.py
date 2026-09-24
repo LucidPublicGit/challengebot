@@ -20,7 +20,18 @@ from app.challenge_card import (
 
 
 def test_userinfo_unranked_renders():
-    png = asyncio.run(render_userinfo_card(display_name="Monty", best_tier=None))
+    png = asyncio.run(
+        render_userinfo_card(
+            display_name="Monty",
+            best_tier=None,
+            tier_slots={
+                "easy": [False, False, False, False],
+                "medium": [True, False, False, False],
+                "hard": [False, False, False, False, False],
+                "ota_master": [False, False, False, False],
+            },
+        )
+    )
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
 
 
