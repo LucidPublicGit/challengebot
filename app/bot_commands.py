@@ -24,6 +24,7 @@ from app.challenge_card import (
     render_all_demo_cards,
     render_leaderboard_card,
     render_userinfo_card,
+    tier_embed_color,
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
@@ -111,11 +112,11 @@ challenge_group = app_commands.Group(
 )
 
 TIER_META = (
-    ("easy", "Easy", discord.ButtonStyle.success),
-    ("medium", "Medium", discord.ButtonStyle.primary),
-    ("hard", "Hard", discord.ButtonStyle.danger),
-    ("ota_master", "Ota-Master", discord.ButtonStyle.secondary),
-    ("special", "Special", discord.ButtonStyle.secondary),
+    ("easy", "Easy", discord.ButtonStyle.success, 0),
+    ("medium", "Medium", discord.ButtonStyle.primary, 0),
+    ("hard", "Hard", discord.ButtonStyle.danger, 0),
+    ("ota_master", "🟨 Ota-Master", discord.ButtonStyle.secondary, 0),
+    ("special", "🟪 Special", discord.ButtonStyle.primary, 1),
 )
 
 TIER_CHOICES = [
@@ -1445,8 +1446,10 @@ class ChallengePickView(_OwnerView):
 
 
 class TierButton(discord.ui.Button):
-    def __init__(self, tier: str, label: str, style: discord.ButtonStyle) -> None:
-        super().__init__(label=label, style=style)
+    def __init__(
+        self, tier: str, label: str, style: discord.ButtonStyle, *, row: int = 0
+    ) -> None:
+        super().__init__(label=label, style=style, row=row)
         self.tier = tier
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1476,7 +1479,7 @@ class TierButton(discord.ui.Button):
             embed = discord.Embed(
                 title=f"{self.label} · {view.year}",
                 description="\n".join(lines)[:4000],
-                color=0x5865F2,
+                color=tier_embed_color(self.tier) or 0x5865F2,
             )
             back = ListTierView(view.owner_id, year=view.year)
             await interaction.response.edit_message(embed=embed, view=back)
@@ -1528,10 +1531,10 @@ class TierPickView(_OwnerView):
         self.year = year
         self.guild_id = guild_id
         self.mode = mode  # start | list
-        for tier, label, style in TIER_META:
-            self.add_item(TierButton(tier, label, style))
+        for tier, label, style, row in TIER_META:
+            self.add_item(TierButton(tier, label, style, row=row))
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
     async def cancel(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -2253,8 +2256,10 @@ class _AdminPickView(_OwnerView):
 
 
 class AdminCatalogTierButton(discord.ui.Button):
-    def __init__(self, tier: str, label: str, style: discord.ButtonStyle) -> None:
-        super().__init__(label=label, style=style)
+    def __init__(
+        self, tier: str, label: str, style: discord.ButtonStyle, *, row: int = 0
+    ) -> None:
+        super().__init__(label=label, style=style, row=row)
         self.tier = tier
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -2305,10 +2310,10 @@ class AdminCatalogTierView(_OwnerView):
         super().__init__(owner_id)
         self.year = year
         self.mode = mode  # add | edit | remove
-        for tier, label, style in TIER_META:
-            self.add_item(AdminCatalogTierButton(tier, label, style))
+        for tier, label, style, row in TIER_META:
+            self.add_item(AdminCatalogTierButton(tier, label, style, row=row))
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
     async def cancel(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:

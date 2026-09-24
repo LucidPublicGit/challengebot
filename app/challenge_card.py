@@ -2095,8 +2095,8 @@ _TIER_EMBED_COLOR = {
     "easy": 0x3DD68C,
     "medium": 0x38BDF8,
     "hard": 0xF07178,
-    "ota_master": 0xE4C460,  # gold prestige strip
-    "special": 0xE6C07B,
+    "ota_master": 0xE4C460,  # yellow/gold
+    "special": 0x9B6DFF,  # purple
 }
 
 _TIER_CAPTION = {
