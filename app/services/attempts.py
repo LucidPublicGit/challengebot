@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from app.catalog import get_challenge, get_challenge_by_tier_num
+from app.catalog import get_challenge, get_challenge_by_tier_num, needs_focus_param
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, utcnow_iso
 from app.services.verify import (
@@ -516,7 +516,7 @@ def start_attempt(
         if not ch:
             return {"ok": False, "error": f"No challenge {tier} #{number} for {year}."}
 
-    if ch.get("param_label") and not (param and param.strip()):
+    if needs_focus_param(ch) and not (param and param.strip()):
         return {
             "ok": False,
             "error": f"This challenge requires **{ch['param_label']}**.",

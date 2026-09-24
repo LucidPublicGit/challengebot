@@ -10,7 +10,7 @@ from typing import Optional
 import discord
 from discord import app_commands
 
-from app.catalog import get_challenge, list_challenges
+from app.catalog import get_challenge, list_challenges, needs_focus_param
 from app.challenge_card import (
     as_discord_file,
     avatar_bytes,
@@ -1264,7 +1264,11 @@ class WhenPickView(_OwnerView):
         )
         lines = [
             f"**#{c['number']} {c['title']}**"
-            + (f" · needs *{c['param_label']}*" if c.get("param_label") else "")
+            + (
+                f" · needs *{c['param_label']}*"
+                if needs_focus_param(c)
+                else ""
+            )
             + _challenge_done_tag(str(c["id"]), done_ids)
             for c in items
         ]
@@ -1309,7 +1313,7 @@ class ChallengeSelect(discord.ui.Select):
         for c in challenges[:25]:
             cid = str(c["id"])
             done = cid in self.done_ids
-            need = c.get("param_label")
+            need = c.get("param_label") if needs_focus_param(c) else None
             if done and lock:
                 desc = "Cleared — can't redo"
             elif done:
@@ -1350,7 +1354,7 @@ class ChallengeSelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
-        if ch.get("param_label"):
+        if needs_focus_param(ch):
             await interaction.response.send_modal(
                 FocusModal(
                     ch,
@@ -1439,7 +1443,9 @@ class TierButton(discord.ui.Button):
             b = _bot_helpers()
             lines = [_cleared_note(), ""]
             for c in items:
-                param = f" `<{c['param_label']}>`" if c.get("param_label") else ""
+                param = (
+                    f" `<{c['param_label']}>`" if needs_focus_param(c) else ""
+                )
                 tag = _challenge_done_tag(str(c["id"]), done_ids)
                 lines.append(
                     f"**#{c['number']} {c['title']}**{param}{tag} — "
@@ -1457,7 +1463,11 @@ class TierButton(discord.ui.Button):
             return
         lines = []
         for c in items:
-            need = f" · needs *{c['param_label']}*" if c.get("param_label") else ""
+            need = (
+                f" · needs *{c['param_label']}*"
+                if needs_focus_param(c)
+                else ""
+            )
             tag = _challenge_done_tag(str(c["id"]), done_ids)
             lines.append(f"**#{c['number']} {c['title']}**{need}{tag}")
         pick = ChallengePickView(
@@ -3731,7 +3741,7 @@ async def challenge_testsched(interaction: discord.Interaction) -> None:
     year = _catalog_year()
     # Prefer a no-param challenge so focus modal is skipped
     items = list_challenges(year=year)
-    ch = next((c for c in items if not c.get("param_label")), None)
+    ch = next((c for c in items if not needs_focus_param(c)), None)
     if ch is None and items:
         ch = items[0]
     if not ch:
@@ -3740,7 +3750,7 @@ async def challenge_testsched(interaction: discord.Interaction) -> None:
         )
         return
     guild_id = str(interaction.guild_id) if interaction.guild_id else None
-    focus = f"(test focus)" if ch.get("param_label") else None
+    focus = f"(test focus)" if needs_focus_param(ch) else None
     view = WhenPickView(
         interaction.user.id,
         ch=ch,

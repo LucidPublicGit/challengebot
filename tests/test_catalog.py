@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.catalog import get_challenge, get_challenge_by_tier_num, list_challenges
+from app.catalog import (
+    get_challenge,
+    get_challenge_by_tier_num,
+    list_challenges,
+    needs_focus_param,
+)
 from tests.helpers import cleanup_db, setup_tmp_db
 
 
@@ -28,16 +33,19 @@ def test_lookup_and_verify_modes():
         assert vn["goal_kind"] == "characters"
         assert vn["verify"] == "tadoku"
         assert vn["param_label"] is None
+        assert needs_focus_param(vn) is False
 
         immersion = get_challenge("hard-5")
         assert immersion is not None
         assert immersion["verify"] == "honor"
         assert immersion["goal_kind"] == "immersion_hours"
+        assert needs_focus_param(immersion) is False
 
         novel = get_challenge("hard-1")
         assert novel is not None
         assert novel["verify"] == "honor"
         assert novel["goal_kind"] == "complete_work"
+        assert needs_focus_param(novel) is True
     finally:
         cleanup_db(path)
 

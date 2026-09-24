@@ -122,6 +122,17 @@ def get_challenge(challenge_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def needs_focus_param(ch: dict | None) -> bool:
+    """Ask for a named work only when the goal is one specific title."""
+    if not ch:
+        return False
+    if not str(ch.get("param_label") or "").strip():
+        return False
+    if str(ch.get("fixed_param") or "").strip():
+        return False
+    return str(ch.get("goal_kind") or "").lower() == "complete_work"
+
+
 def get_challenge_by_tier_num(tier: str, number: int, year: int = 2026) -> dict | None:
     with db_session() as conn:
         row = conn.execute(

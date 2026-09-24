@@ -1,6 +1,7 @@
-"""Best-effort cover art for challenge focus (AniList / VNDB / optional MAL).
+"""Best-effort cover art (AniList / VNDB / MAL / Steam / Books / TMDB).
 
-Inspired by ApathyWorks/TadokuBot poster_client — failures always return None.
+Ported from ApathyWorks/TadokuBot poster_client. Failures return None.
+VNDB NSFW (and a tadoku `nsfw` tag) swap in images/anime-disgust.png.
 """
 
 from __future__ import annotations
@@ -9,51 +10,101 @@ import logging
 import os
 import re
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 6.0
-_MAX_Q = 80
+_TIMEOUT = 8.0
+_MAX_Q = 64
 _CACHE: dict[tuple[str, str], Optional[bytes]] = {}
 _CACHE_MAX = 128
-
-# Strip volume / episode noise so search hits better.
-_NOISE_RE = re.compile(
-    r"""
-    (?:
-        \b(?:vol\.?|volume|v)\s*\d+
-        | \b(?:ch\.?|chapter)\s*\d+
-        | \b(?:ep\.?|episode|e)\s*\d+
-        | \bS\d{1,2}E\d{1,3}\b
-        | [〜~\-–—]\s*\d+
-        | \d+\s*[〜~\-–—]\s*\d+
-    )
-    """,
-    re.I | re.VERBOSE,
+_NSFW = "nsfw"
+_VNDB_NSFW_THRESHOLD = 0.4
+_NSFW_POSTER_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "images", "anime-disgust.png"
 )
 
 
-def clean_title(title: str) -> str:
-    t = " ".join((title or "").split())
-    t = _NOISE_RE.sub(" ", t)
-    return " ".join(t.split()).strip()[:_MAX_Q]
+def clean_title(description: str) -> str:
+    t = (description or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"[\(（【\[].*?[\)）】\]]", " ", t)
+    t = re.sub(r"[\(（【\[].*$", " ", t)
+    t = re.sub(
+        r"(?i)\b(?:(?:vol\.?|volume|ep\.?|episode|chapter|ch\.?|#)\s*[\d０-９]|s[\d０-９]+e[\d０-９]+).*$",
+        "",
+        t,
+    )
+    t = re.sub(r"第?\s*[\d０-９]+\s*(?:話|巻|章|集|冊).*$", "", t)
+    t = re.sub(r"[\d０-９]+(?:\s*[〜~\-–ー]\s*[\d０-９]+)?\s*$", "", t)
+    t = re.sub(r"\s+", " ", t).strip(" 　-–—・:：")
+    return (t or (description or "").strip())[:_MAX_Q]
+
+
+def tags_are_nsfw(tags: list | None) -> bool:
+    return any(str(t).lower().lstrip("#") == "nsfw" for t in (tags or []))
+
+
+def _category_from_tags(tags: list | None) -> Optional[str]:
+    if not tags:
+        return None
+    have = {str(t).lower().lstrip("#") for t in tags}
+    if "vn" in have:
+        return "vn"
+    if "game" in have:
+        return "game"
+    if "anime" in have:
+        return "anime"
+    if "manga" in have:
+        return "manga"
+    if "ln" in have:
+        return "ln"
+    if have & {"book", "audiobook"}:
+        return "book"
+    if have & {"tv", "movie", "show"}:
+        return "screen"
+    return None
 
 
 def _media_category(media_filter: str | None) -> str:
     m = (media_filter or "any").lower().strip()
     if m in ("vn", "visual_novel", "visual novel"):
         return "vn"
+    if m in ("game",):
+        return "game"
     if m in ("manga", "comic"):
         return "manga"
-    if m in ("anime", "shows", "show"):
+    if m in ("anime",):
         return "anime"
-    if m in ("book", "novel", "ln", "light_novel", "reading"):
+    if m in ("shows", "show", "tv", "movie"):
+        return "screen"
+    if m in ("ln", "light_novel"):
+        return "ln"
+    if m in ("book", "novel", "reading"):
         return "book"
     if m in ("youtube", "video"):
         return "skip"
-    return "any"  # try anime/manga/vn broadly
+    return "any"
+
+
+def _vndb_is_nsfw(image: dict) -> bool:
+    if not image.get("votecount"):
+        return True
+    return (image.get("sexual") or 0) > _VNDB_NSFW_THRESHOLD or (
+        image.get("violence") or 0
+    ) > _VNDB_NSFW_THRESHOLD
+
+
+def nsfw_poster() -> Optional[bytes]:
+    try:
+        with open(_NSFW_POSTER_PATH, "rb") as f:
+            return f.read()
+    except OSError as exc:
+        logger.warning("NSFW stand-in missing at %s: %s", _NSFW_POSTER_PATH, exc)
+        return None
 
 
 async def fetch_poster(
@@ -61,12 +112,15 @@ async def fetch_poster(
     media_filter: str | None = None,
     *,
     use_cache: bool = True,
+    tags: list | None = None,
 ) -> Optional[bytes]:
     """Return cover image bytes for *title*, or None."""
+    if tags_are_nsfw(tags):
+        return nsfw_poster()
     q = clean_title(title)
     if not q or len(q) < 2:
         return None
-    cat = _media_category(media_filter)
+    cat = _category_from_tags(tags) or _media_category(media_filter)
     if cat == "skip":
         return None
     key = (cat, q.lower())
@@ -77,7 +131,9 @@ async def fetch_poster(
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
             url = await _image_url(client, cat, q)
-            if url:
+            if url == _NSFW:
+                result = nsfw_poster()
+            elif url:
                 result = await _download(client, url)
     except Exception as exc:  # noqa: BLE001
         logger.debug("poster fetch failed for %r: %s", q, exc)
@@ -85,7 +141,6 @@ async def fetch_poster(
 
     if use_cache:
         if len(_CACHE) >= _CACHE_MAX:
-            # drop an arbitrary old entry
             try:
                 _CACHE.pop(next(iter(_CACHE)))
             except StopIteration:
@@ -101,30 +156,33 @@ async def _download(client: httpx.AsyncClient, url: str) -> Optional[bytes]:
     data = r.content
     if not data or len(data) < 200 or len(data) > 5_000_000:
         return None
-    # crude image sniff
-    if not (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:4] == b"RIFF"):
-        # still allow webp etc.
-        if b"ftyp" not in data[:20] and data[:4] != b"RIFF":
-            pass
     return data
 
 
 async def _image_url(client: httpx.AsyncClient, cat: str, title: str) -> Optional[str]:
     if cat == "vn":
         return await _vndb_url(client, title)
-    if cat == "manga":
-        return (
-            await _mal_url(client, "manga", title)
-            or await _anilist_url(client, title, media_type="MANGA")
+    if cat == "game":
+        return await _vndb_url(client, title) or await _steam_url(client, title)
+    if cat in ("anime", "manga"):
+        media = "ANIME" if cat == "anime" else "MANGA"
+        return await _anilist_url(client, title, media_type=media) or await _mal_url(
+            client, cat, title
         )
-    if cat == "anime":
-        return (
-            await _mal_url(client, "anime", title)
-            or await _anilist_url(client, title, media_type="ANIME")
-        )
+    if cat == "ln":
+        return await _anilist_url(
+            client, title, media_type="MANGA", novel_only=True
+        ) or await _google_books_url(client, title)
     if cat == "book":
-        return await _anilist_url(client, title, media_type="MANGA")  # novels often under MANGA/NOVEL
-    # any: try anime then manga then vn
+        return await _anilist_url(client, title, media_type="MANGA") or await _google_books_url(
+            client, title
+        )
+    if cat == "screen":
+        return (
+            await _anilist_url(client, title, media_type="ANIME")
+            or await _mal_url(client, "anime", title)
+            or await _tmdb_url(client, title)
+        )
     return (
         await _anilist_url(client, title, media_type="ANIME")
         or await _anilist_url(client, title, media_type="MANGA")
@@ -135,34 +193,37 @@ async def _image_url(client: httpx.AsyncClient, cat: str, title: str) -> Optiona
 
 
 async def _anilist_url(
-    client: httpx.AsyncClient, title: str, *, media_type: str = "ANIME"
+    client: httpx.AsyncClient,
+    title: str,
+    *,
+    media_type: str = "ANIME",
+    novel_only: bool = False,
 ) -> Optional[str]:
-    query = """
-    query ($search: String, $type: MediaType) {
-      Media(search: $search, type: $type, sort: SEARCH_MATCH) {
-        coverImage { large extraLarge }
-      }
-    }
-    """
+    fmt = ", format: NOVEL" if novel_only else ""
+    query = (
+        f"query ($search: String) {{ Media(search: $search, type: {media_type}{fmt}) "
+        f"{{ isAdult coverImage {{ extraLarge large medium }} }} }}"
+    )
     try:
         r = await client.post(
             "https://graphql.anilist.co",
-            json={"query": query, "variables": {"search": title, "type": media_type}},
+            json={"query": query, "variables": {"search": title}},
         )
         if r.status_code != 200:
             return None
         media = (r.json().get("data") or {}).get("Media") or {}
+        if media.get("isAdult"):
+            return _NSFW
         cover = media.get("coverImage") or {}
-        return cover.get("extraLarge") or cover.get("large")
+        return cover.get("extraLarge") or cover.get("large") or cover.get("medium")
     except Exception:  # noqa: BLE001
         return None
 
 
 async def _vndb_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
-    # VNDB API v2
     body = {
         "filters": ["search", "=", title],
-        "fields": "image.url",
+        "fields": "image.url, image.sexual, image.violence, image.votecount",
         "results": 1,
     }
     try:
@@ -177,7 +238,79 @@ async def _vndb_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
         if not results:
             return None
         img = results[0].get("image") or {}
-        return img.get("url")
+        url = img.get("url")
+        if url and _vndb_is_nsfw(img):
+            return _NSFW
+        return url
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _steam_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
+    try:
+        r = await client.get(
+            "https://steamcommunity.com/actions/SearchApps/" + quote(title, safe="")
+        )
+        if r.status_code != 200:
+            return None
+        results = r.json() or []
+        if not results:
+            return None
+        appid = results[0].get("appid")
+        if not appid:
+            return None
+        base = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}"
+        for filename in ("library_600x900.jpg", "header.jpg"):
+            candidate = f"{base}/{filename}"
+            head = await client.head(candidate)
+            if head.status_code == 200:
+                return candidate
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+async def _tmdb_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
+    key = (os.environ.get("TMDB_API_KEY") or "").strip()
+    if not key:
+        return None
+    try:
+        r = await client.get(
+            "https://api.themoviedb.org/3/search/multi",
+            params={
+                "api_key": key,
+                "query": title,
+                "include_adult": "false",
+                "language": "ja-JP",
+            },
+        )
+        if r.status_code != 200:
+            return None
+        for result in r.json().get("results") or []:
+            if result.get("media_type") in ("movie", "tv") and result.get("poster_path"):
+                return f"https://image.tmdb.org/t/p/w500{result['poster_path']}"
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+async def _google_books_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
+    key = (os.environ.get("GOOGLE_BOOKS_API_KEY") or "").strip()
+    if not key:
+        return None
+    try:
+        r = await client.get(
+            "https://www.googleapis.com/books/v1/volumes",
+            params={"q": title, "maxResults": 1, "country": "US", "key": key},
+        )
+        if r.status_code != 200:
+            return None
+        items = r.json().get("items") or []
+        if not items:
+            return None
+        links = items[0].get("volumeInfo", {}).get("imageLinks") or {}
+        thumb = links.get("thumbnail") or links.get("smallThumbnail")
+        return thumb.replace("http://", "https://") if thumb else None
     except Exception:  # noqa: BLE001
         return None
 

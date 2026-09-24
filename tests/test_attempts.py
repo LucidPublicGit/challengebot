@@ -56,16 +56,13 @@ def test_start_wizard_tadoku_helpers():
 def test_start_requires_param_when_labeled():
     path = setup_tmp_db()
     try:
-        att.link_tadoku("u1", "11111111-1111-1111-1111-111111111111")
         r = att.start_attempt(
-            "u1", tier="easy", number=4, param=None, guild_id="g"
+            "u1", challenge_id="hard-1", param=None, guild_id="g"
         )
         assert r["ok"] is False
-        assert "game" in (r.get("error") or "").lower() or "requires" in (
-            r.get("error") or ""
-        ).lower()
+        assert "book" in (r.get("error") or "").lower()
         ok = att.start_attempt(
-            "u1", tier="easy", number=1, param=None, guild_id="g"
+            "u1", challenge_id="hard-1", param="Some Novel", guild_id="g"
         )
         assert ok["ok"] is True, ok
     finally:
@@ -109,6 +106,28 @@ def test_start_by_challenge_id():
             "u1b", challenge_id="nope-x", param=None, guild_id="g"
         )
         assert bad["ok"] is False
+    finally:
+        cleanup_db(path)
+
+
+def test_start_aggregate_skips_series():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("u_agg", "11111111-1111-1111-1111-111111111111")
+        r = att.start_attempt(
+            "u_agg", challenge_id="easy-4", param=None, guild_id="g"
+        )
+        assert r["ok"] is True, r
+        assert not r.get("param")
+        hours = att.start_attempt(
+            "u_h", challenge_id="hard-5", param=None, guild_id="g"
+        )
+        assert hours["ok"] is True, hours
+        novel = att.start_attempt(
+            "u_n", challenge_id="hard-1", param=None, guild_id="g"
+        )
+        assert novel["ok"] is False
+        assert "book" in (novel.get("error") or "").lower()
     finally:
         cleanup_db(path)
 

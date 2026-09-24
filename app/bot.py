@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands, tasks
 
 from app.bot_commands import challenge_group
+from app.catalog import needs_focus_param
 from app.config import get_settings, merge_runtime
 from app.discord_http import patch_discord_http, user_id_from_bot_token
 from app.db import db_session, get_all_settings
@@ -55,7 +56,7 @@ def confirm_howto(ch: dict, *, attempt_id: int | None = None) -> str:
     kind = (ch.get("goal_kind") or "").lower()
     amount = ch.get("goal_amount")
     media = ch.get("media_filter") or "any"
-    param = ch.get("param_label")
+    param = ch.get("param_label") if needs_focus_param(ch) else None
 
     if mode == "honor":
         lines = [
