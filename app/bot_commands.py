@@ -115,8 +115,8 @@ TIER_META = (
     ("easy", "Easy", discord.ButtonStyle.success, 0),
     ("medium", "Medium", discord.ButtonStyle.primary, 0),
     ("hard", "Hard", discord.ButtonStyle.danger, 0),
-    ("ota_master", "🟨 Ota-Master", discord.ButtonStyle.secondary, 0),
-    ("special", "🟪 Special", discord.ButtonStyle.primary, 1),
+    ("ota_master", "★ Ota-Master ★", discord.ButtonStyle.secondary, 0),
+    ("special", "Special", discord.ButtonStyle.primary, 1),
 )
 
 TIER_CHOICES = [
