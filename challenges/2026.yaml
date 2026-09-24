@@ -43,13 +43,15 @@ challenges:
     tier: easy
     number: 4
     title: VN 30k
-    param_label: game
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: characters
     goal_amount: 30000
     media_filter: vn
-    description: Read at least 30,000 Japanese characters from a visual novel within 24 hours.
+    description: >-
+      Read at least 30,000 Japanese characters from visual novels within 24 hours.
+      Any titles count toward the total.
 
   - id: easy-5
     tier: easy
@@ -108,13 +110,15 @@ challenges:
     tier: medium
     number: 4
     title: VN 50k
-    param_label: game
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: characters
     goal_amount: 50000
     media_filter: vn
-    description: Read at least 50,000 Japanese characters from a visual novel within 24 hours.
+    description: >-
+      Read at least 50,000 Japanese characters from visual novels within 24 hours.
+      Any titles count toward the total.
 
   - id: medium-5
     tier: medium
@@ -221,13 +225,15 @@ challenges:
     tier: hard
     number: 4
     title: VN 100k
-    param_label: game
+    param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: characters
     goal_amount: 100000
     media_filter: vn
-    description: Read at least 100,000 Japanese characters from a visual novel within 24 hours.
+    description: >-
+      Read at least 100,000 Japanese characters from visual novels within 24 hours.
+      Any titles count toward the total.
 
   - id: hard-5
     tier: hard

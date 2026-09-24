@@ -27,7 +27,7 @@ def test_lookup_and_verify_modes():
         assert vn is not None
         assert vn["goal_kind"] == "characters"
         assert vn["verify"] == "tadoku"
-        assert vn["param_label"] == "game"
+        assert vn["param_label"] is None
 
         immersion = get_challenge("hard-5")
         assert immersion is not None

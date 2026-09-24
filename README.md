@@ -45,7 +45,7 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 ### User flow
 
 1. `/challenge link user_id:<tadoku uuid or profile url>`  
-2. `/challenge list` → `/challenge start tier:Easy number:4 param:Some VN`  
+2. `/challenge list` → `/challenge start` (e.g. Easy #4 VN 30k — any VNs)  
 3. Log immersion on tadoku.app inside the window  
 4. `/challenge confirm` — bot pulls Tadoku logs immediately (no form); edit labels later with `/challenge content`  
 
