@@ -137,6 +137,31 @@ def needs_focus_param(ch: dict | None) -> bool:
     return str(ch.get("goal_kind") or "").lower() == "complete_work"
 
 
+_TIER_POINTS = {"easy": 1, "medium": 2, "hard": 3, "ota_master": 4}
+
+
+def reward_points(ch: dict | None) -> int:
+    if not ch:
+        return 0
+    raw = ch.get("points")
+    if raw not in (None, ""):
+        return int(raw)
+    return _TIER_POINTS.get(str(ch.get("tier") or "").lower(), 0)
+
+
+def special_points_note(ch: dict | None) -> str:
+    """'1 pt' / '2 pts' for Special listings; empty on ladder tiers."""
+    if not ch or str(ch.get("tier") or "").lower() != "special":
+        return ""
+    n = reward_points(ch)
+    return f"{n} pt" if n == 1 else f"{n} pts"
+
+
+def special_points_suffix(ch: dict | None) -> str:
+    note = special_points_note(ch)
+    return f" · **{note}**" if note else ""
+
+
 def get_challenge_by_tier_num(tier: str, number: int, year: int = 2026) -> dict | None:
     with db_session() as conn:
         row = conn.execute(

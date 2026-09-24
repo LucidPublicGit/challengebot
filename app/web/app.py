@@ -18,7 +18,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.catalog import list_challenges, upsert_challenges_from_yaml
+from app.catalog import list_challenges, special_points_note, upsert_challenges_from_yaml
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, set_settings
 from app.services import attempts as att_svc
@@ -1287,7 +1287,8 @@ def create_app(bot=None) -> FastAPI:
                 f"<tr>"
                 f"<td class='mono'><a href='/challenges/{_esc(c['id'])}'>{_esc(c['id'])}</a></td>"
                 f"<td>{c['year']}</td>"
-                f"<td>{_esc(c['tier'])} #{c['number']}</td>"
+                f"<td>{_esc(c['tier'])} #{c['number']}"
+                f"{(' · ' + _esc(special_points_note(c))) if special_points_note(c) else ''}</td>"
                 f"<td>{_esc(c['title'])}"
                 f"<span class='sub'>{_esc((c.get('description') or '')[:90])}</span></td>"
                 f"<td>{_esc(c['goal_kind'])} {_esc(c['goal_amount'])}"
@@ -1429,6 +1430,11 @@ def create_app(bot=None) -> FastAPI:
         subtitle = (
             f"<span class='mono'>{_esc(c['id'])}</span> · year { _esc(c.get('year')) }"
             f" · #{_esc(c.get('number'))}"
+            + (
+                f" · {_esc(special_points_note(c))}"
+                if special_points_note(c)
+                else ""
+            )
         )
         body = f"""
         {_flash_html(saved="Saved." if saved else "")}

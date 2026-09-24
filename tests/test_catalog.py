@@ -7,6 +7,8 @@ from app.catalog import (
     get_challenge_by_tier_num,
     list_challenges,
     needs_focus_param,
+    special_points_note,
+    special_points_suffix,
 )
 from tests.helpers import cleanup_db, setup_tmp_db
 
@@ -30,6 +32,9 @@ def test_seed_2026_count():
         umezu = get_challenge("medium-8")
         assert umezu["tier"] == "special" and int(umezu.get("points") or 0) == 2
         assert int(jp.get("allows_concurrent") or 0) == 0
+        assert special_points_note(jp) == "1 pt"
+        assert special_points_suffix(op) == " · **2 pts**"
+        assert special_points_note(get_challenge("easy-1")) == ""
     finally:
         cleanup_db(path)
 

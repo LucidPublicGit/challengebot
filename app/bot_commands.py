@@ -10,7 +10,13 @@ from typing import Optional
 import discord
 from discord import app_commands
 
-from app.catalog import get_challenge, list_challenges, needs_focus_param
+from app.catalog import (
+    get_challenge,
+    list_challenges,
+    needs_focus_param,
+    special_points_note,
+    special_points_suffix,
+)
 from app.challenge_card import (
     as_discord_file,
     avatar_bytes,
@@ -46,6 +52,13 @@ def _challenge_done_tag(challenge_id: str, done_ids: set[str]) -> str:
     if att_svc.reattempts_allowed():
         return " ✅ cleared"
     return " ✅ cleared · one-time only"
+
+
+def _select_label(c: dict) -> str:
+    note = special_points_note(c)
+    if note:
+        return f"#{c['number']} · {note} · {c['title']}"[:100]
+    return f"#{c['number']} · {c['title']}"[:100]
 
 
 # Imported lazily-friendly bits from bot to avoid cycles at import time
@@ -1267,6 +1280,7 @@ class WhenPickView(_OwnerView):
         )
         lines = [
             f"**#{c['number']} {c['title']}**"
+            + special_points_suffix(c)
             + (
                 f" · needs *{c['param_label']}*"
                 if needs_focus_param(c)
@@ -1325,9 +1339,12 @@ class ChallengeSelect(discord.ui.Select):
                 desc = (c.get("description") or "")[:100]
                 if need:
                     desc = f"Needs {need} · {desc}"[:100]
+                note = special_points_note(c)
+                if note:
+                    desc = f"{note} · {desc}"[:100] if desc else note
             options.append(
                 discord.SelectOption(
-                    label=f"#{c['number']} · {c['title']}"[:100],
+                    label=_select_label(c),
                     value=cid,
                     description=desc or None,
                     emoji="✅" if done else None,
@@ -1451,7 +1468,8 @@ class TierButton(discord.ui.Button):
                 )
                 tag = _challenge_done_tag(str(c["id"]), done_ids)
                 lines.append(
-                    f"**#{c['number']} {c['title']}**{param}{tag} — "
+                    f"**#{c['number']} {c['title']}**{param}{tag}"
+                    f"{special_points_suffix(c)} — "
                     f"{c.get('description') or ''} "
                     f"_(confirm: {b.verify_label(c)})_"
                 )
@@ -1472,7 +1490,10 @@ class TierButton(discord.ui.Button):
                 else ""
             )
             tag = _challenge_done_tag(str(c["id"]), done_ids)
-            lines.append(f"**#{c['number']} {c['title']}**{need}{tag}")
+            lines.append(
+                f"**#{c['number']} {c['title']}**{need}{tag}"
+                f"{special_points_suffix(c)}"
+            )
         pick = ChallengePickView(
             view.owner_id,
             tier=self.tier,
@@ -2096,6 +2117,11 @@ def _catalog_embed(
                 f"verify **{ch.get('verify') or 'tadoku'}** · "
                 f"{ch.get('time_limit_hours') or 24}h"
                 + (
+                    f" · **{special_points_note(ch)}**"
+                    if special_points_note(ch)
+                    else ""
+                )
+                + (
                     f" · param `{ch.get('param_label')}`"
                     if ch.get("param_label")
                     else ""
@@ -2122,9 +2148,17 @@ class _AdminCatalogSelect(discord.ui.Select):
     def __init__(self, challenges: list[dict]) -> None:
         options = [
             discord.SelectOption(
-                label=f"#{c['number']} · {c['title']}"[:100],
+                label=_select_label(c),
                 value=str(c["id"]),
-                description=(c.get("description") or c.get("id") or "")[:100] or None,
+                description=(
+                    (
+                        f"{special_points_note(c)} · "
+                        if special_points_note(c)
+                        else ""
+                    )
+                    + (c.get("description") or c.get("id") or "")
+                )[:100]
+                or None,
             )
             for c in challenges[:25]
         ]
@@ -2245,7 +2279,10 @@ class AdminCatalogTierButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
-        lines = [f"**#{c['number']} {c['title']}** (`{c['id']}`)" for c in items]
+        lines = [
+            f"**#{c['number']} {c['title']}**{special_points_suffix(c)} (`{c['id']}`)"
+            for c in items
+        ]
         pick = _AdminPickView(
             view.owner_id,
             year=view.year,
