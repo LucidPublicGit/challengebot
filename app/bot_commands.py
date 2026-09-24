@@ -3575,7 +3575,6 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
         await interaction.followup.send("No completions yet.")
         return
     uids = [str(r["discord_id"]) for r in rows]
-    best_map = att_svc.highest_completed_tiers(uids)
     swept_map = att_svc.completed_tiers_for(uids)
     entries = []
     for i, r in enumerate(rows):
@@ -3600,7 +3599,7 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
                 "points": int(r.get("points") or r.get("n") or 0),
                 "fails": int(r.get("fails") or 0),
                 "avatar": av,
-                "best_tier": best_map.get(uid),
+                "best_tier": (swept_map.get(uid) or [None])[-1],
                 "cleared_tiers": swept_map.get(uid) or [],
             }
         )
@@ -3633,8 +3632,8 @@ async def challenge_userinfo(
     tid = str(target.id)
     standing = att_svc.leaderboard_standing(tid)
     counts = att_svc.completion_counts(tid)
-    best = att_svc.highest_completed_tier(tid)
     swept = att_svc.completed_tiers(tid)
+    best = swept[-1] if swept else None
     fails = att_svc.failure_count(tid)
     db_user = att_svc.get_user(tid)
     tadoku_linked = bool(db_user and db_user.get("tadoku_user_id"))
@@ -3689,6 +3688,8 @@ async def challenge_userinfo(
         bits.append(f"Rank **#{standing['rank']}** / {standing['ranked']}")
     if best:
         bits.append(f"Best tier **{best.replace('_', '-')}**")
+    else:
+        bits.append("Unranked")
     if active:
         n_act = sum(1 for a in active if a.get("status") != "scheduled")
         n_sch = len(active) - n_act

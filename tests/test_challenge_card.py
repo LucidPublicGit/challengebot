@@ -15,7 +15,13 @@ from app.challenge_card import (
     render_all_demo_cards,
     render_challenge_card,
     render_leaderboard_card,
+    render_userinfo_card,
 )
+
+
+def test_userinfo_unranked_renders():
+    png = asyncio.run(render_userinfo_card(display_name="Monty", best_tier=None))
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_hanko_stamp():

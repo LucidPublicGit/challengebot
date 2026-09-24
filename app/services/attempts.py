@@ -1537,7 +1537,6 @@ _TIER_RANK = {
     "hard": 3,
     "ota_master": 4,
 }
-_RANK_TO_TIER = {v: k for k, v in _TIER_RANK.items()}
 _TIER_POINTS_SQL = (
     "COALESCE(c.points, CASE LOWER(c.tier) "
     "WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 WHEN 'hard' THEN 3 "
@@ -1670,32 +1669,12 @@ def completed_tiers_for(
 
 
 def highest_completed_tier(discord_id: str) -> str | None:
-    """Best tier the user has ever cleared, or None."""
+    """Highest fully swept prestige tier, or None."""
     m = highest_completed_tiers([discord_id])
     return m.get(discord_id)
 
 
 def highest_completed_tiers(discord_ids: list[str]) -> dict[str, str | None]:
-    """Map discord_id → highest completed tier (easy < medium < hard < ota_master)."""
-    out: dict[str, str | None] = {str(i): None for i in discord_ids}
-    ids = [str(i) for i in discord_ids if i]
-    if not ids:
-        return out
-    ph = ",".join("?" * len(ids))
-    with db_session() as conn:
-        rows = conn.execute(
-            "SELECT a.discord_id AS did, c.tier AS tier "
-            "FROM attempts a "
-            "JOIN challenge_defs c ON c.id = a.challenge_id "
-            f"WHERE a.status='completed' AND a.discord_id IN ({ph})",
-            ids,
-        ).fetchall()
-    best: dict[str, int] = {}
-    for r in rows:
-        did = str(r["did"])
-        rank = _TIER_RANK.get((r["tier"] or "").lower(), 0)
-        if rank > best.get(did, 0):
-            best[did] = rank
-    for did, rank in best.items():
-        out[did] = _RANK_TO_TIER.get(rank)
-    return out
+    """Map discord_id → highest fully swept prestige tier."""
+    swept = completed_tiers_for(discord_ids)
+    return {did: (tiers[-1] if tiers else None) for did, tiers in swept.items()}

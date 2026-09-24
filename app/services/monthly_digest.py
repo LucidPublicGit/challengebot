@@ -139,7 +139,6 @@ async def _build_leaderboard_entries(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     uids = [str(r["discord_id"]) for r in rows]
-    best_map = att_svc.highest_completed_tiers(uids)
     swept_map = att_svc.completed_tiers_for(uids)
     entries: list[dict[str, Any]] = []
     for i, r in enumerate(rows):
@@ -162,7 +161,7 @@ async def _build_leaderboard_entries(
                 "points": int(r.get("points") or r.get("n") or 0),
                 "fails": int(r.get("fails") or 0),
                 "avatar": av,
-                "best_tier": best_map.get(uid),
+                "best_tier": (swept_map.get(uid) or [None])[-1],
                 "cleared_tiers": swept_map.get(uid) or [],
             }
         )

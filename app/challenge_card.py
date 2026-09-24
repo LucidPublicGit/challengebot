@@ -722,6 +722,7 @@ def _render_challenge(
     hero_style: str | None = None,
     time_left: str = "",
     cleared_tiers: list | None = None,
+    name_tier: str | None = None,
 ) -> bytes:
     """
     Layout:
@@ -924,11 +925,15 @@ def _render_challenge(
     name_font = _font(24 * S, bold=True)
     badges_w = _complete_badges_width(draw, cleared_tiers, S)
     name_max = max(40.0, right - cx - (badges_w + 10 * S if badges_w else 0))
+    nk = (name_tier or "").lower().strip()
+    name_fill = (
+        ACCENT_GOLD if nk == "ota_master" else TIER_COLOR[nk]
+    ) if nk in TIER_COLOR else INK
     draw.text(
         (cx, y),
         _truncate(draw, display_name, name_font, name_max),
         font=name_font,
-        fill=INK,
+        fill=name_fill,
     )
     if badges_w:
         _draw_complete_badges(
@@ -1175,7 +1180,7 @@ def _render_leaderboard(
 ) -> bytes:
     """entries: {rank, name, clears|score, points?, fails?, avatar?, best_tier?}.
 
-    best_tier = highest challenge tier the user has cleared (themes row border/ring).
+    best_tier = highest fully swept prestige tier (themes row; None → UNRANKED).
     Right side: PTS · CLR · F (points bold = sort key).
     """
     S = SCALE
@@ -1350,34 +1355,41 @@ def _render_leaderboard(
             anchor="rm",
         )
 
-        # Mini tier pill after name area
+        # Mini tier pill after name area (UNR until a full tier is swept)
         name_x = margin + 40 + 32 + 12
         nf = _font(17 * S if is_top else 15 * S, bold=is_top)
-        tier_pill_w = 0
         if best and tier_c:
-            tlab = TIER_LABEL.get(best, best)[:3].upper()
-            if best == "ota_master":
-                tlab = "OTA"
-            tf = _font(10 * S, bold=True)
-            tw = draw.textlength(tlab, font=tf) + 12 * S
-            th = tf.size + 6 * S
-            tpx = name_x * S
-            tpy = mid - th / 2
-            draw.rounded_rectangle(
-                (tpx, tpy, tpx + tw, tpy + th),
-                radius=th / 2,
-                fill=_mix(tier_c, BG, 0.28),
-                outline=sec if best in ("hard", "ota_master") and sec else _mix(tier_c, BG, 0.55),
-                width=max(1, S // 2),
+            tlab = "OTA" if best == "ota_master" else TIER_LABEL.get(best, best)[:3].upper()
+            pill_fill = _mix(tier_c, BG, 0.28)
+            pill_outline = (
+                sec if best in ("hard", "ota_master") and sec else _mix(tier_c, BG, 0.55)
             )
-            draw.text(
-                (tpx + tw / 2, mid),
-                tlab,
-                font=tf,
-                fill=ACCENT_GOLD if best == "ota_master" else tier_c,
-                anchor="mm",
-            )
-            tier_pill_w = tw + 8 * S
+            pill_ink = ACCENT_GOLD if best == "ota_master" else tier_c
+        else:
+            tlab = "UNR"
+            pill_fill = _mix(INK_SOFT, BG, 0.18)
+            pill_outline = HAIRLINE
+            pill_ink = INK_SOFT
+        tf = _font(10 * S, bold=True)
+        tw = draw.textlength(tlab, font=tf) + 12 * S
+        th = tf.size + 6 * S
+        tpx = name_x * S
+        tpy = mid - th / 2
+        draw.rounded_rectangle(
+            (tpx, tpy, tpx + tw, tpy + th),
+            radius=th / 2,
+            fill=pill_fill,
+            outline=pill_outline,
+            width=max(1, S // 2),
+        )
+        draw.text(
+            (tpx + tw / 2, mid),
+            tlab,
+            font=tf,
+            fill=pill_ink,
+            anchor="mm",
+        )
+        tier_pill_w = tw + 8 * S
 
         name_x_px = name_x * S + tier_pill_w
         swept = e.get("cleared_tiers")
@@ -1536,53 +1548,55 @@ def _render_userinfo(
             cleared_tiers,
             S,
         )
-    # Best-tier pill under name (same as completion card)
+    # Swept-tier pill under name (UNRANKED until a full tier is cleared)
     pill_font = _font(11 * S, bold=True)
     if best:
         tlabel = TIER_LABEL.get(best, best).upper()
         if best == "ota_master":
             tlabel = "★  OTA-MASTER"
         extra_pad = int((flair or {}).get("tier_pill_pad") or 0) * S
-        tpad_x = 10 * S + extra_pad
-        tpad_y = 4 * S + max(0, extra_pad // 2)
-        th = pill_font.size + tpad_y * 2
-        tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
-        tpx = name_x * S
-        tpy = 60 * S  # below name (was overlapping at 54)
-        tier_outline = (
+        pill_fill = _mix(best_c, BG, 0.28 if best != "easy" else 0.22)
+        pill_outline = (
             sec_color
             if best in ("hard", "ota_master") and sec_color
             else _mix(best_c, BG, 0.55)
         )
-        draw.rounded_rectangle(
-            (tpx, tpy, tpx + tw, tpy + th),
-            radius=th / 2,
-            fill=_mix(best_c, BG, 0.28 if best != "easy" else 0.22),
-            outline=tier_outline,
-            width=max(
-                1,
-                (1 + (1 if best in ("hard", "ota_master") else 0)) * max(1, S // 2),
-            ),
+        pill_ink = ACCENT_GOLD if best == "ota_master" else best_c
+        outline_w = (1 + (1 if best in ("hard", "ota_master") else 0)) * max(
+            1, S // 2
         )
-        draw.text(
-            (tpx + tw / 2, tpy + th / 2),
-            tlabel,
-            font=pill_font,
-            fill=ACCENT_GOLD if best == "ota_master" else best_c,
-            anchor="mm",
-        )
-        if flair and flair.get("spark"):
-            sy = int(tpy + th / 2)
-            for dx in (-6 * S, tw + 6 * S):
-                sx = int(tpx + dx)
-                draw.ellipse((sx - S, sy - S, sx + S, sy + S), fill=ACCENT_GOLD)
     else:
-        draw.text(
-            (name_x * S, 60 * S),
-            "PROFILE",
-            font=_font(13 * S, bold=True),
-            fill=INK_SOFT,
-        )
+        tlabel = "UNRANKED"
+        extra_pad = 0
+        pill_fill = _mix(INK_SOFT, BG, 0.18)
+        pill_outline = HAIRLINE
+        pill_ink = INK_SOFT
+        outline_w = max(1, S // 2)
+    tpad_x = 10 * S + extra_pad
+    tpad_y = 4 * S + max(0, extra_pad // 2)
+    th = pill_font.size + tpad_y * 2
+    tw = draw.textlength(tlabel, font=pill_font) + tpad_x * 2
+    tpx = name_x * S
+    tpy = 60 * S  # below name (was overlapping at 54)
+    draw.rounded_rectangle(
+        (tpx, tpy, tpx + tw, tpy + th),
+        radius=th / 2,
+        fill=pill_fill,
+        outline=pill_outline,
+        width=max(1, outline_w),
+    )
+    draw.text(
+        (tpx + tw / 2, tpy + th / 2),
+        tlabel,
+        font=pill_font,
+        fill=pill_ink,
+        anchor="mm",
+    )
+    if best and flair and flair.get("spark"):
+        sy = int(tpy + th / 2)
+        for dx in (-6 * S, tw + 6 * S):
+            sx = int(tpx + dx)
+            draw.ellipse((sx - S, sy - S, sx + S, sy + S), fill=ACCENT_GOLD)
     tad = "Tadoku linked" if tadoku_linked else "Tadoku not linked"
     draw.text(
         (name_x * S, 90 * S),
@@ -1923,7 +1937,7 @@ def _render_unified_start(
     """One-image start/scheduled card (Gbar_E_glow).
 
     NC banner full-bleed; name + challenge tier/meta on the art.
-    name_tier = highest tier the user has *cleared* (colors the display name).
+    name_tier = highest fully swept prestige tier (colors the display name).
     tier = challenge being started (colors the tier label under the name).
     poster_bytes ignored (no series underlay).
     """

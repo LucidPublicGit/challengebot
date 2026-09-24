@@ -357,8 +357,8 @@ async def build_event_card(
             from app.services import attempts as att_svc
 
             uid = str(user.id)
-            name_tier = att_svc.highest_completed_tier(uid)
             cleared_tiers = att_svc.completed_tiers(uid)
+            name_tier = cleared_tiers[-1] if cleared_tiers else None
         except Exception:  # noqa: BLE001
             name_tier = None
             cleared_tiers = []
@@ -505,6 +505,7 @@ async def build_event_card(
             poster_bytes=poster,
             time_left=time_left,
             cleared_tiers=cleared_tiers,
+            name_tier=name_tier,
         )
 
     mention = user.mention if user is not None else name
