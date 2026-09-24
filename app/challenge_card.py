@@ -1447,7 +1447,7 @@ def _render_userinfo(
 
     active/completed entries: {title, tier, number?, status?}
     by_tier: {easy/medium/hard/ota_master: count}
-    tier_slots: {tier: [bool, ...]} catalog ticks in number order
+    tier_slots: {tier: [bool, ...]} one tick per catalog challenge; filled left-to-right by count
     """
     S = SCALE
     accent = ACCENT_PURPLE
@@ -1674,7 +1674,7 @@ def _render_userinfo(
         )
     y += stats_h
 
-    # Prestige catalog ticks (one slot per challenge, number order)
+    # Prestige catalog ticks (count filled left-to-right, not catalog number)
     if slot_map:
         y += 4
         box = 11 * S
@@ -1693,7 +1693,9 @@ def _render_userinfo(
             draw.text((margin * S, mid), short, font=lf, fill=ink, anchor="lm")
             x = margin * S + lab_w
             fill_c = ACCENT_GOLD if tkey == "ota_master" else tc
-            for done in flags:
+            n_done = sum(1 for d in flags if d)
+            for i in range(len(flags)):
+                done = i < n_done
                 rbox = (x, mid - box / 2, x + box, mid + box / 2)
                 if done:
                     draw.rounded_rectangle(rbox, radius=3 * S, fill=fill_c)
