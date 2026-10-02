@@ -45,14 +45,17 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                 fixed = str(fixed).strip() or None
             raw_pts = c.get("points")
             points = None if raw_pts in (None, "", "null") else int(raw_pts)
+            category = str(c.get("category") or "ota").strip().lower()
+            if category not in ("ota", "physical"):
+                raise ValueError(f"Invalid category: {category}")
             conn.execute(
                 """
                 INSERT INTO challenge_defs(
                   id, year, tier, number, title, description,
                   time_limit_hours, param_label, verify,
                   goal_kind, goal_amount, media_filter, allows_concurrent,
-                  fixed_param, points
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  fixed_param, points, category
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                   year=excluded.year,
                   tier=excluded.tier,
@@ -67,7 +70,8 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                   media_filter=excluded.media_filter,
                   allows_concurrent=excluded.allows_concurrent,
                   fixed_param=excluded.fixed_param,
-                  points=excluded.points
+                  points=excluded.points,
+                  category=excluded.category
                 """,
                 (
                     c["id"],
@@ -85,6 +89,7 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                     concurrent,
                     fixed,
                     points,
+                    category,
                 ),
             )
             n += 1

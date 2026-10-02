@@ -30,10 +30,16 @@ ACCENT_RED = (240, 113, 120)
 ACCENT_AMBER = (230, 192, 123)
 ACCENT_BLUE = (91, 156, 250)
 ACCENT_CYAN = (56, 189, 248)  # medium — distinct from kind purple/blue
+ACCENT_TEAL = (56, 213, 207)  # physical category
 ACCENT_GOLD = (234, 196, 96)  # ota prestige
 ACCENT_VIOLET = (186, 140, 255)  # ota primary (brighter than log purple)
 
-BRAND_FOOTER = "ChallengeTracker"
+def _clean_footer(footer: str) -> str:
+    """Keep useful metadata, never add product branding to a card."""
+    return " · ".join(
+        part.strip() for part in _oneline(footer).split("·")
+        if part.strip() and re.sub(r"\s+", "", part).lower() != "challengetracker"
+    )
 
 KIND_STYLE = {
     "start": ("STARTED", ACCENT_PURPLE),
@@ -744,7 +750,7 @@ def _render_challenge(
         focus_items = [_oneline(focus)]
     line_primary = _oneline(line_primary)
     line_secondary = _oneline(line_secondary)
-    footer = _oneline(footer)
+    footer = _clean_footer(footer)
     tier_key = (tier or "").lower()
     tier_pretty = TIER_LABEL.get(tier_key, (tier or "?").replace("_", " ").title())
     tier_color = TIER_COLOR.get(tier_key, INK_SOFT)
@@ -842,18 +848,13 @@ def _render_challenge(
     title_line_h = 24
     title_after = 6
     outcome_gap = 10
-    footer_h = 28
+    footer_h = 28 if footer else 16
 
     H = top_pad + name_row_h + tier_row_h
     H += title_line_h * len(title_lines) + title_after
     H += focus_block_h
     if has_outcome:
         H += outcome_gap + outcome_h + 6
-    # Always reserve brand footer
-    if not footer:
-        footer = BRAND_FOOTER
-    elif BRAND_FOOTER.lower() not in footer.lower():
-        footer = f"{footer}  ·  {BRAND_FOOTER}"
     H += footer_h
     H = max(H, 200)
 
@@ -1202,11 +1203,8 @@ def _render_leaderboard(
     for e in entries:
         body += top_h if int(e.get("rank") or 99) <= 3 else row_h
         body += 2
-    if not footer:
-        footer = f"{BRAND_FOOTER}  ·  /challenge scores"
-    elif BRAND_FOOTER.lower() not in footer.lower():
-        footer = f"{footer}  ·  {BRAND_FOOTER}"
-    foot = 28
+    footer = _clean_footer(footer)
+    foot = 28 if footer else 16
     H = header + body + foot
 
     img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
@@ -1458,20 +1456,19 @@ def _render_userinfo(
     rank: int | None = None,
     ranked: int = 0,
     best_tier: str | None = None,
-    by_tier: dict | None = None,
+    categories: dict | None = None,
     fails: int = 0,
     active: list | None = None,
     completed: list | None = None,
     tadoku_linked: bool = False,
     footer: str = "",
     cleared_tiers: list | None = None,
-    tier_slots: dict | None = None,
 ) -> bytes:
     """Profile card: points/clears/rank + open + completed lists.
 
     active/completed entries: {title, tier, number?, status?}
-    by_tier: {easy/medium/hard/ota_master: count}
-    tier_slots: {tier: [bool, ...]} one tick per catalog challenge; filled left-to-right by count
+    categories: {ota/physical: {points, total_points, clears, total, breakdown}}
+    Ring fill uses catalog points, not clear counts or leaderboard bonuses.
     """
     S = SCALE
     accent = ACCENT_PURPLE
@@ -1483,41 +1480,26 @@ def _render_userinfo(
     sec_color = _flair_secondary(flair) if flair else None
     active = list(active or [])
     completed = list(completed or [])
-    by_tier = by_tier or {}
-    slot_order = ("easy", "medium", "hard", "ota_master")
-    slot_map = {}
-    if tier_slots:
-        slot_map = {
-            t: list(tier_slots.get(t) or [])
-            for t in slot_order
-            if tier_slots.get(t)
-        }
-    slot_row_h = 22
+    categories = categories or {}
 
     # Measure body height
     header = 118
     stats_h = 64
-    if slot_map:
-        tier_h = 8 + len(slot_map) * slot_row_h
-    else:
-        tier_h = 36 if any(by_tier.get(t) for t in TIER_LABEL) else 0
+    category_h = 250
     row_h = 34
     active_hdr = 28 if active else 0
     list_hdr = 28 if completed else 0
     empty_h = 28 if not completed else 0
     body = (
         stats_h
-        + tier_h
+        + category_h
         + active_hdr
         + len(active) * row_h
         + list_hdr
         + (len(completed) * row_h if completed else empty_h)
     )
-    if not footer:
-        footer = BRAND_FOOTER
-    elif BRAND_FOOTER.lower() not in footer.lower():
-        footer = f"{footer}  ·  {BRAND_FOOTER}"
-    foot = 28
+    footer = _clean_footer(footer)
+    foot = 28 if footer else 16
     H = header + body + foot
 
     img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
@@ -1698,89 +1680,57 @@ def _render_userinfo(
         )
     y += stats_h
 
-    # Prestige catalog ticks (count filled left-to-right, not catalog number)
-    if slot_map:
-        y += 4
-        box = 11 * S
-        gap = 5 * S
-        lab_w = 36 * S
-        lf = _font(11 * S, bold=True)
-        for tkey, flags in slot_map.items():
-            mid = (y + slot_row_h / 2) * S
-            short = "OTA" if tkey == "ota_master" else TIER_LABEL[tkey][:3].upper()
-            tc = TIER_COLOR[tkey]
-            ink = (
-                ACCENT_GOLD
-                if tkey == "ota_master" and any(flags)
-                else (tc if any(flags) else INK_SOFT)
-            )
-            draw.text((margin * S, mid), short, font=lf, fill=ink, anchor="lm")
-            x = margin * S + lab_w
-            fill_c = ACCENT_GOLD if tkey == "ota_master" else tc
-            n_done = sum(1 for d in flags if d)
-            for i in range(len(flags)):
-                done = i < n_done
-                rbox = (x, mid - box / 2, x + box, mid + box / 2)
-                if done:
-                    draw.rounded_rectangle(rbox, radius=3 * S, fill=fill_c)
-                else:
-                    draw.rounded_rectangle(
-                        rbox,
-                        radius=3 * S,
-                        fill=PANEL_BG,
-                        outline=HAIRLINE,
-                        width=max(1, S // 2),
-                    )
-                x += box + gap
-            y += slot_row_h
-        y += 4
-    elif tier_h:
-        px = margin * S
-        mid = (y + tier_h / 2 - 4) * S
-        for tkey, tlab in TIER_LABEL.items():
-            n = int(by_tier.get(tkey) or 0)
-            if n <= 0:
-                continue
-            tc = TIER_COLOR[tkey]
-            tf_flair = _tier_flair(tkey)
-            tf_sec = _flair_secondary(tf_flair)
-            short = "OTA" if tkey == "ota_master" else tlab[:3].upper()
-            txt = f"{short} {n}"
-            tf = _font(11 * S, bold=True)
-            tw = draw.textlength(txt, font=tf) + 16 * S
-            th = 22 * S
-            outline = (
-                tf_sec
-                if tkey in ("hard", "ota_master") and tf_sec
-                else _mix(tc, BG, 0.55)
-            )
-            draw.rounded_rectangle(
-                (px, mid - th / 2, px + tw, mid + th / 2),
-                radius=th / 2,
-                fill=_mix(tc, BG, 0.28),
-                outline=outline,
-                width=max(
-                    1,
-                    (1 + (1 if tkey in ("hard", "ota_master") else 0)) * max(1, S // 2),
-                ),
-            )
-            draw.text(
-                (px + tw / 2, mid),
-                txt,
-                font=tf,
-                fill=ACCENT_GOLD if tkey == "ota_master" else tc,
-                anchor="mm",
-            )
-            px += tw + 8 * S
-        y += tier_h
+    draw.text((margin * S, y * S), "Category progress",
+              font=_font(15 * S, bold=True), fill=INK)
+    tile_y = y + 28
+    tile_w = (W - 2 * margin - 12) / 2
+    for i, (key, label, color) in enumerate(
+        (("ota", "Ota", ACCENT_PURPLE), ("physical", "Physical", ACCENT_TEAL))
+    ):
+        stats = categories.get(key) or {}
+        earned = max(0, int(stats.get("points") or 0))
+        total = max(0, int(stats.get("total_points") or 0))
+        ratio = min(1.0, earned / total) if total else 0.0
+        x = margin + i * (tile_w + 12)
+        draw.rounded_rectangle(
+            (x * S, tile_y * S, (x + tile_w) * S, (tile_y + 210) * S),
+            radius=12 * S, fill=PANEL_BG, outline=HAIRLINE, width=S,
+        )
+        draw.text(((x + 14) * S, (tile_y + 12) * S), label,
+                  font=_font(16 * S, bold=True), fill=INK)
+        cx, cy = (x + tile_w / 2) * S, (tile_y + 91) * S
+        r = 44 * S
+        ring = (cx - r, cy - r, cx + r, cy + r)
+        draw.ellipse(ring, outline=HAIRLINE, width=8 * S)
+        if ratio:
+            draw.arc(ring, start=-90, end=-90 + 360 * ratio,
+                     fill=color, width=8 * S)
+        draw.text((cx, cy - 10 * S), str(earned),
+                  font=_font(23 * S, bold=True), fill=INK, anchor="mm")
+        draw.text((cx, cy + 12 * S), f"/ {total} pts",
+                  font=_font(11 * S), fill=INK_SOFT, anchor="mm")
+        pct = f"{ratio:.0%}" if total else "No challenges yet" if not stats.get("total") else "No points available"
+        draw.text((cx, (tile_y + 143) * S), pct,
+                  font=_font(11 * S, bold=True), fill=color, anchor="mm")
+        draw.text((cx, (tile_y + 163) * S),
+                  f"{int(stats.get('clears') or 0)} / {int(stats.get('total') or 0)} complete",
+                  font=_font(11 * S), fill=INK_SOFT, anchor="mm")
+        if key == "ota":
+            breakdown = stats.get("breakdown") or {}
+            for j, name in enumerate(("Reading", "Listening", "Normal")):
+                bx = (x + tile_w * (j + 0.5) / 3) * S
+                draw.text((bx, (tile_y + 183) * S), name,
+                          font=_font(9 * S), fill=INK_SOFT, anchor="mm")
+                draw.text((bx, (tile_y + 198) * S),
+                          f"{int(breakdown.get(name) or 0)} pts",
+                          font=_font(10 * S, bold=True), fill=INK, anchor="mm")
+    y += category_h
 
     def _draw_rows(entries: list, *, title_fill=INK, show_progress: bool = False) -> None:
         nonlocal y
         for e in entries:
-            tier = (e.get("tier") or "").lower().strip()
-            tc = TIER_COLOR.get(tier, HAIRLINE)
-            row_flair = _tier_flair(tier) if tier in TIER_COLOR else None
-            row_sec = _flair_secondary(row_flair) if row_flair else None
+            physical = e.get("category") == "physical"
+            tc = ACCENT_TEAL if physical else ACCENT_PURPLE
             title = _oneline(str(e.get("title") or "?"))
             num = e.get("number")
             if num is not None and str(num).strip() != "":
@@ -1794,28 +1744,21 @@ def _render_userinfo(
                 radius=2 * S,
                 fill=tc,
             )
-            tlab = "OTA" if tier == "ota_master" else TIER_LABEL.get(tier, tier or "?")[:3].upper()
+            tlab = "Physical" if physical else "Ota"
             tf = _font(10 * S, bold=True)
             tw = draw.textlength(tlab, font=tf) + 10 * S
             th = 18 * S
             tpx = (margin + 10) * S
-            outline = (
-                row_sec
-                if tier in ("hard", "ota_master") and row_sec
-                else None
-            )
             draw.rounded_rectangle(
                 (tpx, mid - th / 2, tpx + tw, mid + th / 2),
                 radius=th / 2,
                 fill=_mix(tc, BG, 0.28),
-                outline=outline,
-                width=max(1, S // 2) if outline else 0,
             )
             draw.text(
                 (tpx + tw / 2, mid),
                 tlab,
                 font=tf,
-                fill=ACCENT_GOLD if tier == "ota_master" else tc,
+                fill=tc,
                 anchor="mm",
             )
             tx = margin + 10 + tw / S + 8
@@ -2406,17 +2349,15 @@ async def render_all_demo_cards(
     ui = await render_userinfo_card(
         display_name=display_name or "Monty",
         avatar=av,
-        points=16,
-        clears=6,
+        points=84,
+        clears=30,
         rank=1,
         ranked=8,
         best_tier="ota_master",
-        by_tier={"easy": 2, "medium": 1, "hard": 2, "ota_master": 1},
-        tier_slots={
-            "easy": [True, True, True, True],
-            "medium": [True, False, False, False],
-            "hard": [True, True, False, False, False],
-            "ota_master": [True, False, False, False],
+        categories={
+            "ota": {"points": 24, "total_points": 40, "clears": 24, "total": 40,
+                    "breakdown": {"Reading": 12, "Listening": 8, "Normal": 4}},
+            "physical": {"points": 6, "total_points": 10, "clears": 6, "total": 10},
         },
         fails=1,
         tadoku_linked=True,
@@ -2429,10 +2370,11 @@ async def render_all_demo_cards(
                 "status": "active",
             },
             {
-                "title": "Shows Sprint",
+                "title": "Daily walk",
                 "tier": "easy",
                 "number": 2,
                 "status": "scheduled",
+                "category": "physical",
             },
         ],
         completed=[

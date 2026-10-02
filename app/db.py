@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS challenge_defs (
   allows_concurrent INTEGER NOT NULL DEFAULT 0,
   fixed_param TEXT,
   points INTEGER,
+  category TEXT NOT NULL DEFAULT 'ota' CHECK(category IN ('ota', 'physical')),
   UNIQUE(year, tier, number)
 );
 
@@ -146,6 +147,11 @@ _USER_MIGRATIONS = (
     ("tz_offset", "ALTER TABLE users ADD COLUMN tz_offset TEXT"),
 )
 _CHALLENGE_MIGRATIONS = (
+    (
+        "category",
+        "ALTER TABLE challenge_defs ADD COLUMN category TEXT NOT NULL DEFAULT 'ota' "
+        "CHECK(category IN ('ota', 'physical'))",
+    ),
     (
         "allows_concurrent",
         "ALTER TABLE challenge_defs ADD COLUMN allows_concurrent "

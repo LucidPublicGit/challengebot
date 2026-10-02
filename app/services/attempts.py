@@ -9,6 +9,7 @@ from app.catalog import (
     get_challenge,
     get_challenge_by_tier_num,
     needs_focus_param,
+    reward_points,
     sweep_bonus,
 )
 from app.config import get_settings, merge_runtime
@@ -153,7 +154,7 @@ def _attempt_join_rows(
         rows = conn.execute(
             "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
             "c.goal_amount, c.media_filter, c.param_label, c.time_limit_hours, "
-            "c.allows_concurrent "
+            "c.allows_concurrent, c.category "
             "FROM attempts a JOIN challenge_defs c ON c.id = a.challenge_id "
             f"WHERE a.discord_id=? AND a.status IN ({placeholders}) "
             "ORDER BY a.id DESC",
@@ -368,7 +369,7 @@ def list_attempts(
     )
     sql = (
         "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, c.goal_amount, "
-        "u.display_name, u.tadoku_user_id "
+        "c.category, u.display_name, u.tadoku_user_id "
         "FROM attempts a "
         "JOIN challenge_defs c ON c.id = a.challenge_id "
         "LEFT JOIN users u ON u.discord_id = a.discord_id"
@@ -1471,13 +1472,21 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
         else sql_int(raw_pts, lo=0, hi=COUNTER_MAX)
     )
     with db_session() as conn:
+        existing = conn.execute(
+            "SELECT category FROM challenge_defs WHERE id=?", (data["id"],)
+        ).fetchone()
+        category = str(
+            data.get("category") or (existing["category"] if existing else "ota")
+        ).strip().lower()
+        if category not in ("ota", "physical"):
+            return {"ok": False, "error": "Invalid category"}
         conn.execute(
             """
             INSERT INTO challenge_defs(
               id, year, tier, number, title, description, time_limit_hours,
               param_label, verify, goal_kind, goal_amount, media_filter,
-              allows_concurrent, fixed_param, points
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              allows_concurrent, fixed_param, points, category
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               year=excluded.year, tier=excluded.tier, number=excluded.number,
               title=excluded.title, description=excluded.description,
@@ -1487,7 +1496,8 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
               media_filter=excluded.media_filter,
               allows_concurrent=excluded.allows_concurrent,
               fixed_param=excluded.fixed_param,
-              points=excluded.points
+              points=excluded.points,
+              category=excluded.category
             """,
             (
                 data["id"],
@@ -1505,6 +1515,7 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
                 concurrent,
                 fixed,
                 points,
+                category,
             ),
         )
     return {"ok": True}
@@ -1745,6 +1756,48 @@ def tier_slot_progress(
         t = str(r["tier"])
         if t in out:
             out[t].append(str(r["id"]) in done)
+    return out
+
+
+def category_progress(discord_id: str, year: int | None = None) -> dict[str, dict]:
+    """Current catalog points; repeats and leaderboard sweep bonuses are excluded."""
+    out = {
+        key: {"points": 0, "total_points": 0, "clears": 0, "total": 0,
+              "breakdown": {"Reading": 0, "Listening": 0, "Normal": 0}}
+        for key in ("ota", "physical")
+    }
+    with db_session() as conn:
+        if year is None:
+            row = conn.execute("SELECT MAX(year) AS y FROM challenge_defs").fetchone()
+            year = row["y"] if row else None
+        if year is None:
+            return out
+        rows = conn.execute(
+            "SELECT c.*, EXISTS(SELECT 1 FROM attempts a "
+            "WHERE a.challenge_id=c.id AND a.discord_id=? "
+            "AND a.status='completed') AS cleared "
+            "FROM challenge_defs c WHERE c.year=?",
+            (str(discord_id), int(year)),
+        ).fetchall()
+    for row in rows:
+        c = dict(row)
+        stats = out[c["category"]]
+        points = max(0, reward_points(c))
+        stats["total"] += 1
+        stats["total_points"] += points
+        if not c["cleared"]:
+            continue
+        stats["clears"] += 1
+        stats["points"] += points
+        media = str(c.get("media_filter") or "any").lower().strip()
+        kind = (
+            "Reading" if media in ("reading", "manga", "comic", "book", "novel",
+                                   "ln", "light_novel", "vn", "visual_novel", "visual novel")
+            else "Listening" if media in ("listening", "anime", "shows", "show",
+                                         "tv", "movie", "youtube", "video", "audiobook")
+            else "Normal"
+        )
+        stats["breakdown"][kind] += points
     return out
 
 

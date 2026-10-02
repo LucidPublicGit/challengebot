@@ -378,7 +378,6 @@ def frame_congrats(
         from app.challenge_card import (
             ACCENT_GOLD,
             BG,
-            BRAND_FOOTER,
             INK,
             INK_SOFT,
             TIER_COLOR,
@@ -468,7 +467,6 @@ def frame_congrats(
         bits.append(f"#{int(number)}")
     if title:
         bits.append(title[:40])
-    bits.append(BRAND_FOOTER)
     text = "  ·  ".join(bits)
 
     try:

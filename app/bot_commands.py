@@ -3654,6 +3654,7 @@ async def challenge_userinfo(
     for a in opens:
         row = {
             "title": a.get("title") or "?",
+            "category": a.get("category") or "ota",
             "tier": a.get("tier") or "",
             "number": a.get("number"),
             "status": a.get("status") or "active",
@@ -3667,6 +3668,7 @@ async def challenge_userinfo(
     completed = [
         {
             "title": a.get("title") or "?",
+            "category": a.get("category") or "ota",
             "tier": a.get("tier") or "",
             "number": a.get("number"),
             "content": att_svc.display_content(a),
@@ -3684,13 +3686,12 @@ async def challenge_userinfo(
         rank=standing.get("rank"),
         ranked=int(standing.get("ranked") or 0),
         best_tier=best,
-        by_tier=counts,
+        categories=att_svc.category_progress(tid),
         fails=fails,
         active=active,
         completed=completed,
         tadoku_linked=tadoku_linked,
         cleared_tiers=swept,
-        tier_slots=att_svc.tier_slot_progress(tid),
     )
     f = as_discord_file(png, "userinfo-card.png")
     bits = [

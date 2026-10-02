@@ -1227,6 +1227,11 @@ def create_app(bot=None) -> FastAPI:
                   placeholder="series / game / …"/></div>
               <div><label>Media filter</label>
                 <input name="media_filter" value="{_esc(c.get('media_filter') or 'any')}"/></div>
+              <div><label>Category</label>
+                <select name="category">
+                  <option value="ota" {"selected" if c.get("category", "ota") == "ota" else ""}>Ota</option>
+                  <option value="physical" {"selected" if c.get("category") == "physical" else ""}>Physical</option>
+                </select></div>
               {_tier_goal_fields(
                     tier=str(c.get("tier") or "easy"),
                     goal_kind=str(c.get("goal_kind") or "volumes"),
@@ -1392,9 +1397,10 @@ def create_app(bot=None) -> FastAPI:
         media_filter: str = Form("any"),
         description: str = Form(""),
         points: str = Form(""),
+        category: str = Form("ota"),
         _: None = Depends(_auth),
     ):
-        att_svc.admin_upsert_challenge(
+        result = att_svc.admin_upsert_challenge(
             {
                 "id": id,
                 "year": year,
@@ -1410,8 +1416,11 @@ def create_app(bot=None) -> FastAPI:
                 "media_filter": media_filter,
                 "description": description,
                 "points": points.strip() or None,
+                "category": category,
             }
         )
+        if not result["ok"]:
+            raise HTTPException(400, result["error"])
         return RedirectResponse(f"/challenges/{id}?saved=1", status_code=303)
 
     @app.get("/challenges/{cid}", response_class=HTMLResponse)

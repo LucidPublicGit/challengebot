@@ -24,15 +24,48 @@ def test_userinfo_unranked_renders():
         render_userinfo_card(
             display_name="Monty",
             best_tier=None,
-            tier_slots={
-                "easy": [False, False, False, False],
-                "medium": [True, False, False, False],
-                "hard": [False, False, False, False, False],
-                "ota_master": [False, False, False, False],
+            categories={
+                "ota": {"points": 2, "total_points": 10, "clears": 1, "total": 4},
+                "physical": {"points": 0, "total_points": 0},
             },
         )
     )
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_category_rings_use_points_and_cards_omit_branding():
+    from unittest.mock import patch
+    from PIL import ImageDraw
+    from app.challenge_card import _clean_footer
+
+    arcs, texts = [], []
+    original_arc, original_text = ImageDraw.ImageDraw.arc, ImageDraw.ImageDraw.text
+
+    def arc(draw, xy, start, end, **kwargs):
+        arcs.append((start, end))
+        return original_arc(draw, xy, start, end, **kwargs)
+
+    def text(draw, xy, value, *args, **kwargs):
+        texts.append(str(value))
+        return original_text(draw, xy, value, *args, **kwargs)
+
+    with patch.object(ImageDraw.ImageDraw, "arc", arc), patch.object(ImageDraw.ImageDraw, "text", text):
+        asyncio.run(render_userinfo_card(
+            display_name="Alex",
+            categories={
+                "ota": {"points": 1, "total_points": 4, "clears": 1, "total": 2},
+                "physical": {"points": 0, "total_points": 0},
+            },
+            footer="Challenge Tracker",
+        ))
+        assert arcs == [(-90, 0)]  # 25% points, despite 50% of challenges cleared.
+        assert "25%" in texts and "No challenges yet" in texts
+        assert "/ 4 pts" in texts
+        assert not any(t == "Physical challenges only" or t.startswith("of ") for t in texts)
+        asyncio.run(render_all_demo_cards())
+    assert not any("ChallengeTracker" in t or "Challenge Tracker" in t for t in texts)
+    assert _clean_footer("ChallengeTracker · /challenge scores") == "/challenge scores"
+    assert _clean_footer("Challenge Tracker") == ""
 
 
 def test_hanko_stamp():

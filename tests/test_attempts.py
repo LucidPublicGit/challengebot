@@ -15,6 +15,79 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_category_progress_weights_points_and_deduplicates():
+    from app.catalog import get_challenge
+
+    path = setup_tmp_db()
+    try:
+        assert get_challenge("easy-1")["category"] == "ota"
+        assert att.category_progress("nobody", year=1999)["ota"]["total"] == 0
+        defs = [
+            ("read", "ota", "manga", 1),
+            ("listen", "ota", "shows", 3),
+            ("normal", "ota", "any", 2),
+            ("walk", "physical", "any", 4),
+        ]
+        for number, (cid, category, media, points) in enumerate(defs, 1):
+            payload = dict(id=cid, year=2030, tier="special", number=number,
+                           title=cid, goal_kind="minutes", goal_amount=1,
+                           media_filter=media, points=points, category=category)
+            assert att.admin_upsert_challenge(payload)["ok"]
+        # Admin callers without the new field must preserve a physical assignment.
+        payload.pop("category")
+        assert att.admin_upsert_challenge(payload)["ok"]
+        assert get_challenge("walk")["category"] == "physical"
+        payload["category"] = "invalid"
+        assert not att.admin_upsert_challenge(payload)["ok"]
+        with db_session() as conn:
+            for cid, status in [("read", "completed"), ("read", "completed"),
+                                ("walk", "completed"), ("listen", "active")]:
+                conn.execute(
+                    "INSERT INTO attempts(discord_id, challenge_id, status, started_at, ends_at) "
+                    "VALUES ('u', ?, ?, '2030-01-01', '2030-01-02')", (cid, status),
+                )
+        result = att.category_progress("u")
+        ota = result["ota"]
+        assert (ota["points"], ota["total_points"], ota["clears"], ota["total"]) == (1, 6, 1, 3)
+        assert ota["breakdown"] == {"Reading": 1, "Listening": 0, "Normal": 0}
+        assert result["physical"]["points"] == result["physical"]["total_points"] == 4
+        # The row sources used by /userinfo include category labels.
+        assert att.list_attempts("u", status="completed")[0]["category"] == "physical"
+        assert att.open_attempts("u")[0]["category"] == "ota"
+        assert att.category_progress("nobody")["ota"]["points"] == 0
+    finally:
+        cleanup_db(path)
+
+
+def test_category_migration_and_yaml_import(tmp_path):
+    import sqlite3
+    from app.db import SCHEMA, init_db
+    from app.catalog import get_challenge, upsert_challenges_from_yaml
+
+    path = str(tmp_path / "old.db")
+    with sqlite3.connect(path) as conn:
+        conn.executescript(SCHEMA.replace(
+            "  category TEXT NOT NULL DEFAULT 'ota' CHECK(category IN ('ota', 'physical')),\n", ""
+        ))
+        conn.execute(
+            "INSERT INTO challenge_defs(id, year, tier, number, title, goal_kind, goal_amount) "
+            "VALUES ('old', 2026, 'easy', 1, 'Old challenge', 'minutes', 1)"
+        )
+    init_db(path)
+    init_db(path)  # Additive migration is safe to rerun.
+    assert get_challenge("old")["category"] == "ota"
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        "year: 2026\nchallenges:\n"
+        "  - {id: walk, tier: special, number: 2, title: Walk, "
+        "goal_kind: minutes, goal_amount: 10, points: 4, category: physical}\n",
+        encoding="utf-8",
+    )
+    assert upsert_challenges_from_yaml(catalog) == 1
+    assert get_challenge("walk")["category"] == "physical"
+    assert att.category_progress("nobody")["physical"]["total_points"] == 4
+
+
 def test_start_requires_tadoku_link():
     path = setup_tmp_db()
     try:
