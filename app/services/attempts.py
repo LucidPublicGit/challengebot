@@ -13,6 +13,7 @@ from app.catalog import (
     sweep_bonus,
 )
 from app.config import get_settings, merge_runtime
+from app.catalog_changes import record_change
 from app.db import (
     COUNTER_MAX,
     SQL_INT_MAX,
@@ -1473,7 +1474,7 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
     )
     with db_session() as conn:
         existing = conn.execute(
-            "SELECT category FROM challenge_defs WHERE id=?", (data["id"],)
+            "SELECT * FROM challenge_defs WHERE id=?", (data["id"],)
         ).fetchone()
         category = str(
             data.get("category") or (existing["category"] if existing else "ota")
@@ -1518,12 +1519,20 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
                 category,
             ),
         )
+        updated = conn.execute(
+            "SELECT * FROM challenge_defs WHERE id=?", (data["id"],)
+        ).fetchone()
+        record_change(conn, existing, updated)
     return {"ok": True}
 
 
 def admin_delete_challenge(challenge_id: str) -> dict[str, Any]:
     with db_session() as conn:
+        existing = conn.execute(
+            "SELECT * FROM challenge_defs WHERE id=?", (challenge_id,)
+        ).fetchone()
         conn.execute("DELETE FROM challenge_defs WHERE id=?", (challenge_id,))
+        record_change(conn, existing, None)
     return {"ok": True}
 
 

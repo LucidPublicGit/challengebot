@@ -133,6 +133,17 @@ CREATE TABLE IF NOT EXISTS congrats_usage (
   use_count INTEGER NOT NULL DEFAULT 0,
   last_used TEXT
 );
+
+CREATE TABLE IF NOT EXISTS challenge_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  challenge_id TEXT NOT NULL,
+  change TEXT NOT NULL CHECK(change IN ('new', 'updated', 'retired')),
+  before_json TEXT,
+  after_json TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  announced_at TEXT
+);
 """
 
 # Additive columns for DBs created before content / tz existed.

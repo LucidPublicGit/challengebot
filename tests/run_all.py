@@ -17,6 +17,9 @@ sys.path.insert(0, str(ROOT))
 MODULES = (
     "tests.test_verify",
     "tests.test_catalog",
+    "tests.test_catalog_announcements",
+    "tests.test_catalog_changes",
+    "tests.test_web_announcements",
     "tests.test_attempts",
     "tests.test_challenge_card",
     "tests.test_congrats",

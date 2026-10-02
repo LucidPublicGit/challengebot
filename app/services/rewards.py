@@ -97,10 +97,14 @@ async def _resolve_text_channel(
 async def resolve_announce_channel(
     bot: discord.Client,
     guild: discord.Guild | None = None,
+    *,
+    channel_id: str | None = None,
 ) -> discord.TextChannel | None:
     """Highlights channel: START + COMPLETE/FAIL (congrats on complete)."""
     rt = _runtime()
-    return await _resolve_text_channel(bot, rt.get("announce_channel_id") or "", guild)
+    return await _resolve_text_channel(
+        bot, channel_id if channel_id is not None else rt.get("announce_channel_id") or "", guild
+    )
 
 
 async def resolve_secondary_announce_channel(

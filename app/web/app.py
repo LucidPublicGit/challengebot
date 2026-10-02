@@ -29,6 +29,7 @@ security = HTTPBasic(auto_error=False)
 NAV_ITEMS = (
     ("/", "Attempts"),
     ("/challenges", "Challenges"),
+    ("/announcements", "Announcements"),
     ("/users", "Users"),
     ("/settings", "Settings"),
 )
@@ -586,6 +587,9 @@ def _tier_goal_fields(
 def create_app(bot=None) -> FastAPI:
     app = FastAPI(title="ChallengeTracker Admin", docs_url=None, redoc_url=None)
     app.state.bot = bot
+    from app.web.announcements import register_announcements
+
+    register_announcements(app, _auth)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):  # noqa: ARG001

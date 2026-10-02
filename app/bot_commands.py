@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -16,6 +17,13 @@ from app.catalog import (
     needs_focus_param,
     special_points_note,
     special_points_suffix,
+)
+from app.catalog_announcements import (
+    CHANGE_LABELS,
+    IMAGE_DIR,
+    announcement_text,
+    catalog_dump,
+    text_chunks,
 )
 from app.challenge_card import (
     as_discord_file,
@@ -36,6 +44,7 @@ from app.services.rewards import (
     announce_completion,
     apply_rewards,
     build_event_card,
+    resolve_announce_channel,
 )
 
 logger = logging.getLogger(__name__)
@@ -3038,6 +3047,165 @@ async def challenge_list(interaction: discord.Interaction) -> None:
         ephemeral=True,
     )
     view.message = await interaction.original_response()
+
+
+@challenge_group.command(
+    name="dump", description="Dump every challenge as copyable plain text (no buttons)"
+)
+@app_commands.describe(year="Only this year; omitted includes all years")
+async def challenge_dump(
+    interaction: discord.Interaction, year: Optional[int] = None
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    text = catalog_dump(list_challenges(year=year))
+    await interaction.followup.send(
+        "Full plain-text catalog attached; copyable messages below.",
+        file=discord.File(BytesIO(text.encode("utf-8")), filename="challenges.txt"),
+        ephemeral=True,
+    )
+    for chunk in text_chunks(text):
+        await interaction.followup.send(
+            chunk, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
+
+
+@challenge_group.command(
+    name="announce", description="Admin: preview or publish new, updated, or retired challenges"
+)
+@app_commands.guild_only()
+@app_commands.choices(
+    change=[app_commands.Choice(name=v, value=k) for k, v in CHANGE_LABELS.items()],
+    category=[
+        app_commands.Choice(name="Physical", value="physical"),
+        app_commands.Choice(name="Ota / immersion", value="ota"),
+        app_commands.Choice(name="All challenges", value="all"),
+    ],
+    image=[
+        app_commands.Choice(name=f"Physical option {n}", value=n)
+        for n in range(1, 7)
+        if (IMAGE_DIR / f"physical-option-{n}.png").is_file()
+    ],
+)
+@app_commands.describe(
+    change="New, updated, or retired (manual announcement; does not change the catalog)",
+    challenge_id="One catalog ID (see /challenge dump); omit for a category or custom text",
+    category="Announce all challenges in this category",
+    year="Category catalog year (default: latest)",
+    message="Intro or custom announcement; use for challenges already deleted",
+    title="Optional announcement heading",
+    image="Choose a saved Physical banner",
+    banner="Optional uploaded image for any future announcement",
+    channel="Publish destination (default: configured announcement channel)",
+    publish="False previews privately; True posts publicly",
+)
+async def challenge_announce(
+    interaction: discord.Interaction,
+    change: str = "new",
+    challenge_id: Optional[str] = None,
+    category: Optional[str] = None,
+    year: Optional[int] = None,
+    message: Optional[app_commands.Range[str, 1, 4000]] = None,
+    title: Optional[app_commands.Range[str, 1, 256]] = None,
+    image: Optional[int] = None,
+    banner: Optional[discord.Attachment] = None,
+    channel: Optional[discord.TextChannel] = None,
+    publish: bool = False,
+) -> None:
+    if not _admin_only(interaction):
+        await interaction.response.send_message("Admin only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    if challenge_id and category:
+        await interaction.followup.send(
+            "Choose a challenge_id OR a category, not both.", ephemeral=True
+        )
+        return
+    items = []
+    if challenge_id:
+        ch = get_challenge(challenge_id.strip())
+        if not ch:
+            await interaction.followup.send(
+                "Challenge not found. For an already deleted challenge, omit "
+                "challenge_id and supply its details in message.", ephemeral=True
+            )
+            return
+        items = [ch]
+    elif category:
+        items = [
+            c for c in list_challenges(year=year if year is not None else _catalog_year())
+            if category == "all" or (c.get("category") or "ota") == category
+        ]
+        if not items:
+            await interaction.followup.send("No matching challenges.", ephemeral=True)
+            return
+    elif not message or not message.strip():
+        await interaction.followup.send(
+            "Supply challenge_id, category, or a custom message.", ephemeral=True
+        )
+        return
+    if banner and image:
+        await interaction.followup.send("Choose banner OR image, not both.", ephemeral=True)
+        return
+    if banner and (
+        banner.content_type not in ("image/png", "image/jpeg", "image/webp", "image/gif")
+        or banner.size > min(interaction.guild.filesize_limit, 10 * 1024 * 1024)
+    ):
+        await interaction.followup.send(
+            "Use a PNG, JPEG, WebP, or GIF within the server upload limit (max 10 MB).",
+            ephemeral=True,
+        )
+        return
+    target = None
+    if publish:
+        target = channel or await resolve_announce_channel(
+            interaction.client, interaction.guild
+        )
+        if target is None or target.guild.id != interaction.guild_id:
+            await interaction.followup.send(
+                "Choose an announcement channel in this server.", ephemeral=True
+            )
+            return
+    heading = title or CHANGE_LABELS[change]
+    if category and category != "all" and not title:
+        heading += f" · {category.title()}"
+    embed = discord.Embed(title=heading, color=0xF5B041)
+    if not publish:
+        embed.set_footer(text="Private preview — run again with publish:True to post")
+    send = target.send if target else interaction.followup.send
+    kwargs: dict = {"allowed_mentions": discord.AllowedMentions.none()}
+    if not publish:
+        kwargs["ephemeral"] = True
+    posted = 0
+    try:
+        file = None
+        if banner:
+            file = await banner.to_file(filename="announcement-banner" + {
+                "image/png": ".png", "image/jpeg": ".jpg",
+                "image/webp": ".webp", "image/gif": ".gif",
+            }[banner.content_type])
+        elif image:
+            file = discord.File(IMAGE_DIR / f"physical-option-{image}.png")
+        header: dict = {"embed": embed}
+        if file:
+            embed.set_image(url=f"attachment://{file.filename}")
+            header["file"] = file
+        await send(**header, **kwargs)
+        posted += 1
+        for chunk in text_chunks(announcement_text(items, change, message or "")):
+            await send(chunk, **kwargs)
+            posted += 1
+    except (discord.HTTPException, OSError):
+        logger.exception("catalog announcement failed")
+        await interaction.followup.send(
+            f"Announcement failed after {posted} message(s). "
+            "Check the destination before retrying to avoid duplicates.",
+            ephemeral=True,
+        )
+        return
+    if publish:
+        await interaction.followup.send(
+            f"Announcement posted in {target.mention}.", ephemeral=True
+        )
 
 
 @challenge_group.command(

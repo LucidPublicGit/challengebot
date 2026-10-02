@@ -49,6 +49,55 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 3. Log immersion on tadoku.app inside the window  
 4. `/challenge confirm` — bot pulls Tadoku logs immediately (no form); edit labels later with `/challenge content`  
 
+### Catalog export and announcements
+
+- `/challenge dump`: anyone can export **all years** as plain text, without buttons
+  or embeds. Includes a `.txt` attachment for copying the entire catalog; optional `year`.
+- `/challenge announce`: admins can announce **new**, **updated**, or **retired**
+  challenges. It does not add, edit, or delete catalog entries.
+- Choose one `challenge_id` from the dump, or a `category` (Physical, Ota, All).
+  Category announcements default to the latest year; optional `year` selects another.
+  Add `message` for context and `title` for a custom heading.
+- For challenges already removed, omit `challenge_id`/`category` and put their
+  names and details in `message`. Announce removals before deleting to use catalog details.
+- `image` selects a saved Physical banner in `app/images/announcements/`
+  (the approved Japanese-only banner is option 6);
+  `banner` accepts an uploaded image for future announcements (use one or the other).
+- Default is a **private preview**. Run again with `publish:True` to post to the
+  configured announcement channel, or specify `channel` in this server.
+  Announcements never ping roles or everyone. The bot needs Send Messages,
+  Embed Links, and Attach Files in the destination.
+
+Example: `/challenge announce change:new category:physical image:6`
+then repeat with `publish:True` after reviewing.
+
+### Web announcements
+
+Open **Announcements** in the admin UI (`/announcements`). Start blank for any
+news, event, or catalog change, or choose **Physical challenges draft** to load the
+current Physical challenges and the approved **体力チャレンジ** image.
+Edit the title/message, select no image, the Physical banner, or upload your own,
+then choose the Discord destination. The live preview sends nothing.
+Check the confirmation box and click **Publish announcement** to post.
+
+The page uses the existing admin authentication; set `UI_PASSWORD` before exposing
+the UI. One-use forms expire after 30 minutes and prevent duplicate resubmissions.
+If publishing fails partway through, check Discord before retrying.
+
+Choose **Unannounced changes** to draft separate **New**, **Modified**, and
+**Removed** sections from the durable catalog history. Successful publication of
+that draft marks only its included changes announced; failures leave them pending.
+Large batches are split across drafts. Blank and Physical-only drafts do not
+automatically acknowledge the change queue.
+
+Catalog edits from the web UI, slash commands, and YAML imports save before/after
+definitions in the same transaction. Unchanged saves/imports create no events.
+**Change history** retains removed definitions and shows announcement timestamps.
+The first import establishes a baseline and records the reported 2026 rollout:
+four modified manga-volume challenges and eight newly added Physical challenges.
+Previous definitions are explicitly marked unavailable unless recoverable from
+the database before that import. Earlier changes cannot be reconstructed.
+
 ### Admin tests (owner / Administrator / `ADMIN_ROLE_IDS` only)
 
 | Command | Purpose |

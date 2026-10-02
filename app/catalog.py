@@ -6,6 +6,7 @@ from typing import Any
 import yaml
 
 from app.db import db_session
+from app.catalog_changes import record_import, snapshot
 
 
 def _as_bool(val: Any) -> bool:
@@ -30,6 +31,7 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
     year = int(data["year"])
     items = data.get("challenges") or []
     with db_session() as conn:
+        before = snapshot(conn)
         if replace_year:
             conn.execute("DELETE FROM challenge_defs WHERE year = ?", (year,))
         n = 0
@@ -93,6 +95,7 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                 ),
             )
             n += 1
+        record_import(conn, before)
         return n
 
 
