@@ -1872,8 +1872,10 @@ def _render_userinfo(
     def _draw_rows(entries: list, *, title_fill=INK, show_progress: bool = False) -> None:
         nonlocal y
         for e in entries:
-            physical = e.get("category") == "physical"
-            tc = ACCENT_TEAL if physical else ACCENT_PURPLE
+            tier = (e.get("tier") or "").lower().strip()
+            tc = TIER_COLOR.get(tier, HAIRLINE)
+            row_flair = _tier_flair(tier) if tier in TIER_COLOR else None
+            row_sec = _flair_secondary(row_flair) if row_flair else None
             title = _oneline(str(e.get("title") or "?"))
             num = e.get("number")
             if num is not None and str(num).strip() != "":
@@ -1887,21 +1889,28 @@ def _render_userinfo(
                 radius=2 * S,
                 fill=tc,
             )
-            tlab = "Physical" if physical else "Ota"
+            tlab = "OTA" if tier == "ota_master" else TIER_LABEL.get(tier, tier or "?")[:3].upper()
             tf = _font(10 * S, bold=True)
             tw = draw.textlength(tlab, font=tf) + 10 * S
             th = 18 * S
             tpx = (margin + 10) * S
+            outline = (
+                row_sec
+                if tier in ("hard", "ota_master") and row_sec
+                else None
+            )
             draw.rounded_rectangle(
                 (tpx, mid - th / 2, tpx + tw, mid + th / 2),
                 radius=th / 2,
                 fill=_mix(tc, BG, 0.28),
+                outline=outline,
+                width=max(1, S // 2) if outline else 0,
             )
             draw.text(
                 (tpx + tw / 2, mid),
                 tlab,
                 font=tf,
-                fill=tc,
+                fill=ACCENT_GOLD if tier == "ota_master" else tc,
                 anchor="mm",
             )
             tx = margin + 10 + tw / S + 8

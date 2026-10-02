@@ -68,6 +68,30 @@ def test_category_rings_use_points_and_cards_omit_branding():
     assert _clean_footer("Challenge Tracker") == ""
 
 
+def test_userinfo_rows_show_tier_not_category():
+    from unittest.mock import patch
+    from PIL import ImageDraw
+
+    texts = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def text(draw, xy, value, *args, **kwargs):
+        texts.append(str(value))
+        return original_text(draw, xy, value, *args, **kwargs)
+
+    with patch.object(ImageDraw.ImageDraw, "text", text):
+        asyncio.run(render_userinfo_card(
+            display_name="Alex",
+            active=[{"title": "VN 50k", "tier": "medium", "number": 3}],
+            completed=[
+                {"title": "Walk", "tier": "easy", "number": 2, "category": "physical"},
+                {"title": "Hard Mode", "tier": "hard", "number": 1},
+            ],
+        ))
+    assert texts.count("EAS") == 1 and texts.count("MED") == 1 and texts.count("HAR") == 1
+    assert texts.count("Ota") == 1 and texts.count("Physical") == 1
+
+
 def test_hanko_stamp():
     assert _iter_cleared_tiers(["HARD", "easy", "nope"]) == ["easy", "hard"]
     im = _hanko_stamp("easy", 2)
