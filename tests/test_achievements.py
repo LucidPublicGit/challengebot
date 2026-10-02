@@ -137,6 +137,22 @@ def test_achievement_atomic_completion_and_legacy_backfill():
         cleanup_db(path)
 
 
+def test_specials_do_not_grant_ladder_achievements():
+    path = setup_tmp_db()
+    try:
+        _attempt("medium-6", "2026-02-01T12:00:00+00:00")
+        earned = _earned()
+        assert "achievement-014" in earned and "achievement-010" in earned
+        assert "achievement-001" not in earned
+        assert "achievement-017" not in earned
+        _attempt("easy-1", "2026-02-01T12:00:00+00:00")
+        earned = _earned()
+        assert earned["achievement-001"]["unlocked_at"] == "2026-02-01T12:00:00+00:00"
+        assert "achievement-017" not in earned
+    finally:
+        cleanup_db(path)
+
+
 def test_achievement_quarter_century_and_rule_validation():
     path = setup_tmp_db()
     try:

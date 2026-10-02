@@ -34,13 +34,12 @@ def completion_snapshot(challenge: dict) -> str:
 def _defaults() -> list[tuple]:
     walk = [f"physical-walk-{t}" for t in ("easy", "medium", "hard", "ota")]
     endurance = [f"physical-endurance-{t}" for t in ("easy", "medium", "hard", "ota")]
-    manga = ["easy-1", "medium-1", "hard-2", "ota-2", "medium-8",
-             "medium-7", "medium-5", "medium-6"]
+    manga = ["easy-1", "medium-1", "hard-2", "ota-2"]
     shows = ["easy-2", "medium-2", "hard-3", "ota-3"]
     reading = manga + ["easy-4", "medium-4", "hard-4", "hard-1", "ota-1"]
     listening = shows + ["easy-3", "medium-3"]
     long_projects = ["medium-8", "medium-7", "medium-5", "medium-6"]
-    ota = reading + listening + ["hard-5", "ota-4", "easy-5"]
+    ota = reading + listening + ["hard-5", "ota-4"]
 
     def groups(*choices):
         return {"kind": "groups", "groups": list(choices)}
@@ -147,48 +146,75 @@ def _date(value: str | None) -> datetime | None:
 def sync_user(conn: sqlite3.Connection, discord_id: str) -> None:
     """Reconcile eligibility in the same transaction as a completion/correction."""
     rows = conn.execute(
-        "SELECT a.id,a.challenge_id,a.completed_at,a.challenge_snapshot_json,c.media_filter "
+        "SELECT a.id,a.challenge_id,a.completed_at,a.challenge_snapshot_json,"
+        "c.media_filter,c.tier "
         "FROM attempts a LEFT JOIN challenge_defs c ON c.id=a.challenge_id "
         "WHERE a.discord_id=? AND a.status='completed'", (str(discord_id),)
     ).fetchall()
+    special_ids = {
+        r["id"] for r in conn.execute(
+            "SELECT id FROM challenge_defs WHERE LOWER(tier)='special'"
+        )
+    }
+
+    def _snap(row):
+        return json.loads(row["challenge_snapshot_json"] or "{}")
+
+    def _is_special(row):
+        tier = str(_snap(row).get("tier") or row["tier"] or "").lower()
+        return tier == "special" or row["challenge_id"] in special_ids
+
     # Undated legacy completions qualify, but cannot establish a reliable unlock date.
     rows = sorted(rows, key=lambda r: (_date(r["completed_at"]) is not None,
                                       _date(r["completed_at"]) or datetime.min.replace(tzinfo=timezone.utc),
                                       r["id"]))
-    seen, formats = set(), set()
-    undated_ids, undated_formats = set(), set()
+    seen_all, seen, formats = set(), set(), set()
+    undated_all, undated_ids, undated_formats = set(), set(), set()
     for row in rows:
+        if _is_special(row):
+            special_ids.add(row["challenge_id"])
         if _date(row["completed_at"]) is None:
-            undated_ids.add(row["challenge_id"])
-            snapshot = json.loads(row["challenge_snapshot_json"] or "{}")
-            media = snapshot.get("media_filter", row["media_filter"])
-            if media in FORMATS:
-                undated_formats.add(FORMATS[media])
+            undated_all.add(row["challenge_id"])
+            if not _is_special(row):
+                undated_ids.add(row["challenge_id"])
+                snapshot = _snap(row)
+                media = snapshot.get("media_filter", row["media_filter"])
+                if media in FORMATS:
+                    undated_formats.add(FORMATS[media])
     definitions = conn.execute("SELECT id,rule_json FROM achievement_defs WHERE enabled=1").fetchall()
     earned = {}
     for row in rows:
-        seen.add(row["challenge_id"])
-        snapshot = json.loads(row["challenge_snapshot_json"] or "{}")
-        media = snapshot.get("media_filter", row["media_filter"])
-        if media in FORMATS:
-            formats.add(FORMATS[media])
+        seen_all.add(row["challenge_id"])
+        snapshot = _snap(row)
+        if not _is_special(row):
+            seen.add(row["challenge_id"])
+            media = snapshot.get("media_filter", row["media_filter"])
+            if media in FORMATS:
+                formats.add(FORMATS[media])
         for definition in definitions:
             aid = definition["id"]
             if aid in earned:
                 continue
             rule = json.loads(definition["rule_json"])
             kind = rule["kind"]
+            if kind == "groups":
+                groups = []
+                for group in rule["groups"]:
+                    gs = set(group)
+                    groups.append(gs if gs <= special_ids else gs - special_ids)
+            else:
+                groups = []
             qualifies = (
                 len(seen) >= rule["count"] if kind == "clears" else
                 len(formats) >= rule["count"] if kind == "formats" else
-                all(seen.intersection(group) for group in rule["groups"])
+                all(seen_all.intersection(group) for group in groups)
             )
             if qualifies:
                 date = _date(row["completed_at"])
                 uncertain = (
                     bool(undated_ids) if kind == "clears" else
                     bool(undated_formats) if kind == "formats" else
-                    any(undated_ids.intersection(group) for group in rule["groups"])
+                    any(undated_all.intersection(group) for group in groups)
                 )
                 if uncertain:
                     date = None

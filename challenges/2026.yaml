@@ -226,7 +226,7 @@ challenges:
       Complete at least 12 hours of immersion in any combination of approved media
       within 24 hours.
 
-  # Special — side board, mixed points; does not block Easy/Medium/Hard/Ota sweeps
+  # Special — evergreen side board (one-time; not replaced on a new catalog year).
   - id: easy-5
     tier: special
     number: 1

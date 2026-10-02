@@ -33,9 +33,20 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
     with db_session() as conn:
         before = snapshot(conn)
         if replace_year:
-            conn.execute("DELETE FROM challenge_defs WHERE year = ?", (year,))
+            # ponytail: specials are evergreen — a new year must not wipe them.
+            conn.execute(
+                "DELETE FROM challenge_defs WHERE year = ? AND tier != 'special'",
+                (year,),
+            )
         n = 0
         for c in items:
+            existing = conn.execute(
+                "SELECT year, tier FROM challenge_defs WHERE id=?", (c["id"],)
+            ).fetchone()
+            if existing and str(existing["tier"] or "").lower() == "special":
+                incoming = str(c.get("tier") or "").lower()
+                if incoming != "special" or int(existing["year"]) != year:
+                    continue
             param = c.get("param_label")
             if param in (None, "null", ""):
                 param = None
@@ -103,7 +114,7 @@ def list_challenges(year: int | None = None, tier: str | None = None) -> list[di
     q = "SELECT * FROM challenge_defs WHERE 1=1"
     args: list[Any] = []
     if year is not None:
-        q += " AND year = ?"
+        q += " AND (year = ? OR tier = 'special')"
         args.append(year)
     if tier:
         q += " AND tier = ?"
@@ -119,7 +130,7 @@ def challenge_count(year: int | None = None) -> int:
     q = "SELECT COUNT(*) AS n FROM challenge_defs"
     args: list[Any] = []
     if year is not None:
-        q += " WHERE year = ?"
+        q += " WHERE year = ? OR tier = 'special'"
         args.append(int(year))
     with db_session() as conn:
         row = conn.execute(q, args).fetchone()
@@ -178,8 +189,15 @@ def special_points_suffix(ch: dict | None) -> str:
 
 def get_challenge_by_tier_num(tier: str, number: int, year: int = 2026) -> dict | None:
     with db_session() as conn:
-        row = conn.execute(
-            "SELECT * FROM challenge_defs WHERE year=? AND tier=? AND number=?",
-            (year, tier, number),
-        ).fetchone()
+        if str(tier or "").lower() == "special":
+            row = conn.execute(
+                "SELECT * FROM challenge_defs WHERE tier='special' AND number=? "
+                "ORDER BY year ASC, id LIMIT 1",
+                (int(number),),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM challenge_defs WHERE year=? AND tier=? AND number=?",
+                (year, tier, number),
+            ).fetchone()
         return dict(row) if row else None

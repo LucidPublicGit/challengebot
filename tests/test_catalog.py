@@ -159,10 +159,52 @@ def test_special_mixed_points():
         cleanup_db(path)
 
 
+def test_specials_survive_new_year():
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    from app.catalog import upsert_challenges_from_yaml
+
+    path = setup_tmp_db()
+    try:
+        assert get_challenge("medium-6")["tier"] == "special"
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "2027.yaml"
+            catalog.write_text(yaml.safe_dump({
+                "year": 2027,
+                "challenges": [
+                    {"id": "easy-1", "tier": "easy", "number": 1,
+                     "title": "2027 Manga", "goal_kind": "volumes",
+                     "goal_amount": 3, "media_filter": "manga",
+                     "verify": "tadoku"},
+                    {"id": "medium-6", "tier": "medium", "number": 6,
+                     "title": "Should not clobber Toriyama",
+                     "goal_kind": "volumes", "goal_amount": 6,
+                     "media_filter": "manga", "verify": "tadoku"},
+                ],
+            }), encoding="utf8")
+            upsert_challenges_from_yaml(catalog, replace_year=True)
+        toriyama = get_challenge("medium-6")
+        assert toriyama["tier"] == "special"
+        assert toriyama["title"] == "鳥山明先生の作品"
+        assert get_challenge("easy-1")["title"] == "2027 Manga"
+        specials = list_challenges(year=2027, tier="special")
+        assert {c["id"] for c in specials} >= {
+            "easy-5", "medium-5", "medium-6", "medium-7", "medium-8",
+        }
+        found = get_challenge_by_tier_num("special", 5, year=2027)
+        assert found is not None and found["id"] == "medium-6"
+    finally:
+        cleanup_db(path)
+
+
 if __name__ == "__main__":
     test_sweep_bonus_scale()
     test_seed_2026_count()
     test_lookup_and_verify_modes()
     test_admin_catalog_crud()
     test_special_mixed_points()
+    test_specials_survive_new_year()
     print("test_catalog ok")
