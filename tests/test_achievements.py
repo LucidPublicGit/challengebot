@@ -240,7 +240,11 @@ def test_achievement_cards_hide_artwork_and_publish_clean_copy():
         assert "Getting Rolling" in text_calls  # Requirements are discoverable.
         small = original_open(BytesIO(card))
         base = original_open(BytesIO(asyncio.run(render_userinfo_card(display_name="Monty"))))
-        assert small.height - base.height == 130  # Two compact rows, no blank spacer.
+        assert small.height - base.height == 280  # Three readable rows, no blank spacer.
+        expanded = original_open(BytesIO(asyncio.run(render_userinfo_card(
+            display_name="Monty", achievements=entries + [entries[-1]],
+        ))))
+        assert expanded.height - small.height == 82  # A 19th tile wraps to a fourth row.
         assert "Date unavailable" not in text_calls
         for item in entries:
             item["description"] = "A long requirement with words that must wrap correctly. " * 6

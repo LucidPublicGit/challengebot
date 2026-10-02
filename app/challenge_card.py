@@ -1513,14 +1513,14 @@ def _render_achievement_list(
     page = max(0, min(int(page), pages - 1))
     entries = achievements[page * page_size:(page + 1) * page_size]
     measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    title_font, body_font = _font(15 * S, True), _font(12 * S)
-    text_width = (W - margin * 2 - 74) * S
+    title_font, body_font = _font(17 * S, True), _font(14 * S)
+    text_width = (W - margin * 2 - 92) * S
     rows = []
     for entry in entries:
         title = _wrap_lines(measure, str(entry["title"]), title_font, text_width)
         description = _wrap_lines(measure, str(entry["description"]), body_font, text_width)
-        height = max(78, 20 + len(title) * 19 + len(description) * 16
-                     + (18 if entry.get("earned") else 0))
+        height = max(96, 20 + len(title) * 22 + len(description) * 18
+                     + (20 if entry.get("earned") else 0))
         rows.append((entry, title, description, height))
     H = 100 + sum(r[3] + 8 for r in rows) + 36
     if not rows:
@@ -1535,15 +1535,15 @@ def _render_achievement_list(
     for entry, titles, descriptions, height in rows:
         draw.rounded_rectangle((margin * S, y * S, (W - margin) * S, (y + height) * S),
                                radius=10 * S, fill=PANEL_BG, outline=HAIRLINE, width=S)
-        art = _achievement_artwork(entry, 42 * S)
+        art = _achievement_artwork(entry, 56 * S)
         img.paste(art, ((margin + 12) * S, (y + 16) * S), art)
-        tx, ty = (margin + 68) * S, (y + 10) * S
+        tx, ty = (margin + 80) * S, (y + 10) * S
         for line in titles:
             draw.text((tx, ty), line, font=title_font, fill=INK)
-            ty += 19 * S
+            ty += 22 * S
         for line in descriptions:
             draw.text((tx, ty), line, font=body_font, fill=INK_SOFT)
-            ty += 16 * S
+            ty += 18 * S
         if entry.get("earned"):
             stamp = "Date unavailable"
             if entry.get("unlocked_at"):
@@ -1553,7 +1553,7 @@ def _render_achievement_list(
                     stamp = dt.strftime("%d %b %Y · %H:%M UTC")
                 except ValueError:
                     pass
-            draw.text((tx, ty + 3 * S), stamp, font=_font(10 * S), fill=INK_SOFT)
+            draw.text((tx, ty + 3 * S), stamp, font=_font(11 * S), fill=INK_SOFT)
         y += height + 8
     if not rows:
         draw.text((margin * S, y * S), "No achievements available.", font=body_font, fill=INK_SOFT)
@@ -1601,8 +1601,8 @@ def _render_userinfo(
     completed = list(completed or [])
     categories = categories or {}
     achievements = list(achievements or [])
-    achievement_rows = (len(achievements) + 8) // 9
-    achievements_h = 28 + achievement_rows * 48 + 6 if achievements else 0
+    achievement_rows = (len(achievements) + 5) // 6
+    achievements_h = 28 + achievement_rows * 82 + 6 if achievements else 0
 
     # Measure body height
     header = 118
@@ -1852,20 +1852,20 @@ def _render_userinfo(
     if achievements:
         draw.text((margin * S, y * S), "Achievements", font=_font(15 * S, True), fill=INK)
         y += 28
-        cell_w = (W - 2 * margin) / 9
+        cell_w = (W - 2 * margin) / 6
         for index, entry in enumerate(achievements):
-            row, col = divmod(index, 9)
+            row, col = divmod(index, 6)
             center_x = (margin + cell_w * (col + .5)) * S
-            top = (y + row * 48) * S
-            art = _achievement_artwork(entry, 28 * S)
-            img.paste(art, (int(center_x - 14 * S), int(top)), art)
+            top = (y + row * 82) * S
+            art = _achievement_artwork(entry, 48 * S)
+            img.paste(art, (int(center_x - 24 * S), int(top)), art)
             if entry.get("earned"):
                 for line_num, line in enumerate(_wrap_two_lines(
-                    draw, str(entry["title"]), _font(8 * S), (cell_w - 4) * S,
+                    draw, str(entry["title"]), _font(12 * S), (cell_w - 8) * S,
                 )):
-                    draw.text((center_x, top + (30 + line_num * 9) * S), line,
-                              font=_font(8 * S), fill=INK, anchor="mt")
-        y += achievement_rows * 48 + 6
+                    draw.text((center_x, top + (52 + line_num * 14) * S), line,
+                              font=_font(12 * S), fill=INK, anchor="mt")
+        y += achievement_rows * 82 + 6
 
     def _draw_rows(entries: list, *, title_fill=INK, show_progress: bool = False) -> None:
         nonlocal y

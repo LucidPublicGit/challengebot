@@ -30,9 +30,10 @@ and the achievement list. Break equal-date ties by catalog order. Locked stubs
 follow earned achievements in catalog order because they have no unlock date.
 This supersedes the earlier stable-position/catalog-order decision.
 
-Make the user-card tiles smaller than the first stub mockup, targeting roughly
-24–28px artwork at the normal 560px card width. Use tight wrapping and remove
-unused section height; preserve readable names and requirements in the list.
+Prioritize readable achievement artwork and labels: use 48px tiles with 12px
+labels in six columns at the normal 560px user-card width. The detailed list uses
+56px artwork, 17px titles, and 14px requirement text. This supersedes the smaller
+28px/nine-column version. Wrap rows without leaving unused section height.
 Repeated question-mark stubs are intentionally neutral;
 the unique-silhouette requirement applies to earned artwork, not these stubs.
 Allow the grid to wrap without leaving unused vertical space. Use pagination
