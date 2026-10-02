@@ -291,7 +291,7 @@ def test_achievement_web_completion_dates_and_discord_pagination():
             view.page = 100
             file, embeds = await view.card()
             file.close()
-            assert view.page == 2 and not view.previous.disabled and view.next_page.disabled
+            assert view.page == 4 and not view.previous.disabled and view.next_page.disabled
             assert challenge_achievements.name == "achievements"
             assert len(challenge_group.commands) <= 25
 

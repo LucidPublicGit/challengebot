@@ -34,6 +34,7 @@ from app.challenge_card import (
     render_leaderboard_card,
     render_userinfo_card,
     render_achievement_list,
+    ACHIEVEMENT_LIST_PAGE_SIZE,
     tier_embed_color,
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
@@ -3810,7 +3811,7 @@ class AchievementListView(_OwnerView):
 
     async def card(self):
         entries = await asyncio.to_thread(ach_svc.for_user, self.target_id)
-        pages = max(1, (len(entries) + 5) // 6)
+        pages = max(1, (len(entries) + ACHIEVEMENT_LIST_PAGE_SIZE - 1) // ACHIEVEMENT_LIST_PAGE_SIZE)
         self.page = min(self.page, pages - 1)
         self.previous.disabled = self.page == 0
         self.next_page.disabled = self.page >= pages - 1

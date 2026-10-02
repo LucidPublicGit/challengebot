@@ -15,6 +15,7 @@ from app.catalog import sweep_bonus
 SCALE = 2
 WIDTH = 720
 MARGIN = 28
+ACHIEVEMENT_LIST_PAGE_SIZE = 4
 POSTER_GAP = 20
 POSTER_MARGIN = 20
 
@@ -1504,7 +1505,8 @@ def _wrap_lines(draw, text, font, max_width) -> list[str]:
 
 
 def _render_achievement_list(
-    *, display_name: str, achievements: list[dict], page: int = 0, page_size: int = 6,
+    *, display_name: str, achievements: list[dict], page: int = 0,
+    page_size: int = ACHIEVEMENT_LIST_PAGE_SIZE,
 ) -> bytes:
     """Artwork is only loaded for earned entries, even on the detailed list."""
     S, W, margin = SCALE, 560, 28
@@ -1513,37 +1515,37 @@ def _render_achievement_list(
     page = max(0, min(int(page), pages - 1))
     entries = achievements[page * page_size:(page + 1) * page_size]
     measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    title_font, body_font = _font(17 * S, True), _font(14 * S)
-    text_width = (W - margin * 2 - 92) * S
+    title_font, body_font, date_font = _font(22 * S, True), _font(17 * S), _font(14 * S)
+    text_width = (W - margin * 2 - 108) * S
     rows = []
     for entry in entries:
         title = _wrap_lines(measure, str(entry["title"]), title_font, text_width)
         description = _wrap_lines(measure, str(entry["description"]), body_font, text_width)
-        height = max(96, 20 + len(title) * 22 + len(description) * 18
-                     + (20 if entry.get("earned") else 0))
+        height = max(112, 26 + len(title) * 28 + len(description) * 22
+                     + (22 if entry.get("earned") else 0))
         rows.append((entry, title, description, height))
-    H = 100 + sum(r[3] + 8 for r in rows) + 36
+    H = 108 + sum(r[3] + 10 for r in rows) + 40
     if not rows:
         H += 40
     img = Image.new("RGBA", (W * S, H * S), BG + (255,))
     draw = ImageDraw.Draw(img)
-    draw.text((margin * S, 22 * S), "Achievements", font=_font(22 * S, True), fill=INK)
-    draw.text((margin * S, 55 * S),
-              _truncate(draw, _oneline(display_name), _font(14 * S), (W - 2 * margin) * S),
-              font=_font(14 * S), fill=INK_SOFT)
-    y = 90
+    draw.text((margin * S, 22 * S), "Achievements", font=_font(24 * S, True), fill=INK)
+    draw.text((margin * S, 56 * S),
+              _truncate(draw, _oneline(display_name), _font(16 * S), (W - 2 * margin) * S),
+              font=_font(16 * S), fill=INK_SOFT)
+    y = 94
     for entry, titles, descriptions, height in rows:
         draw.rounded_rectangle((margin * S, y * S, (W - margin) * S, (y + height) * S),
                                radius=10 * S, fill=PANEL_BG, outline=HAIRLINE, width=S)
-        art = _achievement_artwork(entry, 56 * S)
-        img.paste(art, ((margin + 12) * S, (y + 16) * S), art)
-        tx, ty = (margin + 80) * S, (y + 10) * S
+        art = _achievement_artwork(entry, 72 * S)
+        img.paste(art, ((margin + 12) * S, (y + 18) * S), art)
+        tx, ty = (margin + 96) * S, (y + 14) * S
         for line in titles:
             draw.text((tx, ty), line, font=title_font, fill=INK)
-            ty += 22 * S
+            ty += 28 * S
         for line in descriptions:
-            draw.text((tx, ty), line, font=body_font, fill=INK_SOFT)
-            ty += 18 * S
+            draw.text((tx, ty), line, font=body_font, fill=INK)
+            ty += 22 * S
         if entry.get("earned"):
             stamp = "Date unavailable"
             if entry.get("unlocked_at"):
@@ -1553,12 +1555,12 @@ def _render_achievement_list(
                     stamp = dt.strftime("%d %b %Y · %H:%M UTC")
                 except ValueError:
                     pass
-            draw.text((tx, ty + 3 * S), stamp, font=_font(11 * S), fill=INK_SOFT)
-        y += height + 8
+            draw.text((tx, ty + 4 * S), stamp, font=date_font, fill=INK_SOFT)
+        y += height + 10
     if not rows:
         draw.text((margin * S, y * S), "No achievements available.", font=body_font, fill=INK_SOFT)
-    draw.text((W * S / 2, (H - 23) * S), f"Page {page + 1} of {pages}",
-              font=_font(11 * S), fill=INK_SOFT, anchor="mm")
+    draw.text((W * S / 2, (H - 24) * S), f"Page {page + 1} of {pages}",
+              font=date_font, fill=INK_SOFT, anchor="mm")
     _clip_round(img, (0, 0, W * S - 1, H * S - 1), 22 * S, HAIRLINE, S)
     buffer = io.BytesIO()
     img.resize((W, H), Image.Resampling.LANCZOS).save(buffer, format="PNG")

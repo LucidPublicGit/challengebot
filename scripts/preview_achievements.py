@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.catalog import list_challenges, upsert_challenges_from_yaml
-from app.challenge_card import demo_avatar_png, render_achievement_list, render_userinfo_card
+from app.challenge_card import (
+    ACHIEVEMENT_LIST_PAGE_SIZE, demo_avatar_png, render_achievement_list, render_userinfo_card,
+)
 from app.db import db_session, init_db
 from app.services import achievements as ach
 from app.services import attempts as att
@@ -33,7 +35,8 @@ async def render_demo(user, label):
         categories=att.category_progress(user), achievements=entries, completed=completed,
     )
     (OUT / f"achievements-{label}-usercard.png").write_bytes(png)
-    for page in range((len(entries) + 5) // 6):
+    n = ACHIEVEMENT_LIST_PAGE_SIZE
+    for page in range((len(entries) + n - 1) // n):
         png = await render_achievement_list(display_name="Monty", achievements=entries, page=page)
         (OUT / f"achievements-{label}-list-{page + 1}.png").write_bytes(png)
 

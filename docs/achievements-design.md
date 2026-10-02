@@ -32,7 +32,7 @@ This supersedes the earlier stable-position/catalog-order decision.
 
 Prioritize readable achievement artwork and labels: use 48px tiles with 12px
 labels in six columns at the normal 560px user-card width. The detailed list uses
-56px artwork, 17px titles, and 14px requirement text. This supersedes the smaller
+72px artwork, 22px titles, and 17px requirement text, four entries per page. This supersedes the smaller
 28px/nine-column version. Wrap rows without leaving unused section height.
 Repeated question-mark stubs are intentionally neutral;
 the unique-silhouette requirement applies to earned artwork, not these stubs.
