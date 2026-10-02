@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import re
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,7 @@ from app.challenge_card import (
     render_all_demo_cards,
     render_leaderboard_card,
     render_userinfo_card,
+    render_achievement_list,
     tier_embed_color,
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
@@ -39,6 +41,7 @@ from app.db import db_session
 from app.new_challenger import list_templates
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
+from app.services import achievements as ach_svc
 from app.services.rewards import (
     announce,
     announce_completion,
@@ -3798,6 +3801,76 @@ async def challenge_scores(interaction: discord.Interaction) -> None:
     )
 
 
+class AchievementListView(_OwnerView):
+    def __init__(self, owner_id: int, target_id: str, display_name: str):
+        super().__init__(owner_id)
+        self.target_id = target_id
+        self.display_name = display_name
+        self.page = 0
+
+    async def card(self):
+        entries = await asyncio.to_thread(ach_svc.for_user, self.target_id)
+        pages = max(1, (len(entries) + 5) // 6)
+        self.page = min(self.page, pages - 1)
+        self.previous.disabled = self.page == 0
+        self.next_page.disabled = self.page >= pages - 1
+        png = await render_achievement_list(
+            display_name=self.display_name, achievements=entries, page=self.page,
+        )
+        file = as_discord_file(png, "achievements.png")
+        return file, files_as_image_embeds([file], kind="achievements")
+
+    async def turn_page(self, interaction: discord.Interaction, delta: int):
+        await interaction.response.defer()
+        self.page = max(0, self.page + delta)
+        file, embeds = await self.card()
+        await interaction.edit_original_response(attachments=[file], embeds=embeds, view=self)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.turn_page(interaction, -1)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.turn_page(interaction, 1)
+
+
+async def _send_achievement_list(interaction: discord.Interaction, target_id: str, display_name: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    view = AchievementListView(interaction.user.id, target_id, display_name)
+    file, embeds = await view.card()
+    view.message = await interaction.followup.send(file=file, embeds=embeds, view=view, wait=True)
+
+
+class AchievementOpenView(discord.ui.View):
+    def __init__(self, target_id: str, display_name: str):
+        super().__init__(timeout=600)
+        self.target_id = target_id
+        self.display_name = display_name
+        self.message = None
+
+    @discord.ui.button(label="View Achievements", style=discord.ButtonStyle.primary)
+    async def open_list(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _send_achievement_list(interaction, self.target_id, self.display_name)
+
+    async def on_timeout(self):
+        self.open_list.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+@app_commands.command(name="achievements", description="View achievement requirements and earned artwork")
+@app_commands.describe(user="Member to look up (default: you)")
+async def challenge_achievements(
+    interaction: discord.Interaction, user: Optional[discord.Member] = None,
+):
+    target = user or interaction.user
+    await _send_achievement_list(interaction, str(target.id), target.display_name)
+
+
 @challenge_group.command(
     name="userinfo",
     description="Profile: active challenges, clears, points, rank",
@@ -3846,6 +3919,7 @@ async def challenge_userinfo(
     # list_attempts is newest-first; show oldest→newest on the card
     completed.reverse()
     av = await avatar_bytes(target)
+    achievements = await asyncio.to_thread(ach_svc.for_user, tid)
     png = await render_userinfo_card(
         display_name=target.display_name,
         avatar=av,
@@ -3860,6 +3934,7 @@ async def challenge_userinfo(
         completed=completed,
         tadoku_linked=tadoku_linked,
         cleared_tiers=swept,
+        achievements=achievements,
     )
     f = as_discord_file(png, "userinfo-card.png")
     bits = [
@@ -3881,10 +3956,13 @@ async def challenge_userinfo(
         if n_sch:
             open_bits.append(f"Scheduled **{n_sch}**")
         bits.append(" · ".join(open_bits))
-    await interaction.followup.send(
+    view = AchievementOpenView(tid, target.display_name)
+    view.message = await interaction.followup.send(
         content=" · ".join(bits),
         file=f,
         embeds=files_as_image_embeds([f], kind="userinfo"),
+        view=view,
+        wait=True,
     )
 
 

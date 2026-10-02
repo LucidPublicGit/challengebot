@@ -9,6 +9,7 @@ Discord bot + admin UI for yearly immersion challenges. Users log on **tadoku.ap
 - One active challenge per user, rolling timer (default 24h)
 - SQLite durability (`./data`), survive restarts
 - Admin web UI: attempts, users, challenges, settings (roles, contest id, re-attempt, announce channel)
+- Pixel Arcade achievements: dated unlocks, hidden-artwork stubs, and editable admin definitions
 - Docker Compose
 
 ## Quick start
@@ -97,6 +98,41 @@ The first import establishes a baseline and records the reported 2026 rollout:
 four modified manga-volume challenges and eight newly added Physical challenges.
 Previous definitions are explicitly marked unavailable unless recoverable from
 the database before that import. Earlier changes cannot be reconstructed.
+
+### Achievements
+
+- `/challenge userinfo` shows small earned icons and `?` stubs below Category
+  progress. **View Achievements** opens a paginated list; `/achievements` also
+  opens it directly. The existing `/challenge` group is at Discord's 25-child
+  limit, so the new command is standalone.
+- Names and requirements are visible in the list. Real artwork is attached only
+  after that user earns it. Earned achievements appear newest first, followed
+  by stubs in catalog order. There are no achievement status labels or progress
+  counters, and leaderboard points are unchanged.
+- Open **Achievements** (`/achievements`) in the authenticated admin web UI to
+  add, rename, edit requirements/rules, upload replacement artwork, or remove
+  an achievement. IDs are permanent and independent of names/images. Removal
+  hides the definition while keeping its ID and receipts; change visibility to
+  restore it. Set `UI_PASSWORD` before exposing the admin UI.
+- The 18 approved definitions are seeded once. Later restarts do not overwrite
+  edits or restore removed definitions. Rules support distinct clears, media
+  format counts, and one clear from each configured group of challenge IDs.
+  Group rules explicitly list IDs; update them when adding relevant challenges.
+  Failures, abandoned attempts, and repeats never advance clear milestones.
+- Unlocks use the earliest qualifying completion history, not the time a user
+  opens the card. Completion and unlock dates are stored in UTC, with a source
+  attempt and a snapshot of challenge metadata. Editing a completed attempt
+  preserves its date; the attempt form can correct a missing or inaccurate
+  completion date. Rule edits and moderation corrections recalculate eligibility.
+- Legacy completions with missing timestamps still qualify, but their unlock
+  dates remain unavailable rather than fabricated. Backfilled metadata uses the
+  catalog currently stored in the database; lost historical metadata cannot be
+  reconstructed.
+- Uploaded artwork is normalized to a managed PNG. Runtime assets live in
+  `app/images/achievements/`; replacements persist in `achievement_images/`
+  beside SQLite, inside the existing Docker data volume. Back up that folder
+  alongside the database. Locally generated demo cards can be refreshed with
+  `python scripts/preview_achievements.py` without touching the real database.
 
 ### Admin tests (owner / Administrator / `ADMIN_ROLE_IDS` only)
 

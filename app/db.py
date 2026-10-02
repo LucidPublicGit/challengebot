@@ -44,6 +44,10 @@ def configure(path: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
 
+def database_path() -> Path:
+    return Path(_db_path)
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_db_path, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -144,6 +148,26 @@ CREATE TABLE IF NOT EXISTS challenge_changes (
   created_at TEXT NOT NULL,
   announced_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS achievement_defs (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  rule_json TEXT NOT NULL,
+  image_file TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_achievements (
+  discord_id TEXT NOT NULL,
+  achievement_id TEXT NOT NULL REFERENCES achievement_defs(id),
+  unlocked_at TEXT,
+  source_attempt_id INTEGER REFERENCES attempts(id),
+  PRIMARY KEY(discord_id, achievement_id)
+);
 """
 
 # Additive columns for DBs created before content / tz existed.
@@ -153,6 +177,7 @@ _ATTEMPT_MIGRATIONS = (
     ("status_json", "ALTER TABLE attempts ADD COLUMN status_json TEXT"),
     # Manual Tadoku fixup: {"aliases":[...],"log_ids":[...]}
     ("fixup_json", "ALTER TABLE attempts ADD COLUMN fixup_json TEXT"),
+    ("challenge_snapshot_json", "ALTER TABLE attempts ADD COLUMN challenge_snapshot_json TEXT"),
 )
 _USER_MIGRATIONS = (
     ("tz_offset", "ALTER TABLE users ADD COLUMN tz_offset TEXT"),
@@ -212,6 +237,9 @@ def init_db(path: Optional[str] = None) -> None:
     with db_session() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
+        from app.services.achievements import bootstrap
+
+        bootstrap(conn)
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:

@@ -1369,9 +1369,14 @@ def _complete(
         content_val = format_content_items(content_val) or content_val
     evidence = {**evidence, "content": content_val}
     with db_session() as conn:
-        conn.execute(
+        from app.services.achievements import completion_snapshot, sync_user
+
+        challenge = conn.execute("SELECT * FROM challenge_defs WHERE id=?",
+                                 (att["challenge_id"],)).fetchone()
+        snapshot = {**dict(challenge or {}), **att}
+        cur = conn.execute(
             "UPDATE attempts SET status='completed', completed_at=?, "
-            "verify_method=?, evidence_json=?, note=?, content=? "
+            "verify_method=?, evidence_json=?, note=?, content=?, challenge_snapshot_json=? "
             "WHERE id=? AND status='active'",
             (
                 now,
@@ -1379,10 +1384,14 @@ def _complete(
                 json.dumps(evidence),
                 note,
                 content_val,
+                completion_snapshot(snapshot),
                 att["id"],
             ),
         )
-    att_out = {**att, "content": content_val, "status": "completed"}
+        if not cur.rowcount:
+            return {"ok": False, "error": "This attempt is no longer active."}
+        sync_user(conn, str(att["discord_id"]))
+    att_out = {**att, "content": content_val, "status": "completed", "completed_at": now}
     return {
         "ok": True,
         "attempt": att_out,
@@ -1403,6 +1412,7 @@ def admin_update_attempt(
     ends_at: str | None = None,
     started_at: str | None = None,
     verify_method: str | None = None,
+    completed_at: str | None = None,
 ) -> dict[str, Any]:
     fields = []
     args: list[Any] = []
@@ -1412,8 +1422,18 @@ def admin_update_attempt(
         fields.append("status=?")
         args.append(status)
         if status == "completed":
-            fields.append("completed_at=?")
+            # Editing a completed attempt must not change its completion date.
+            fields.append("completed_at=CASE WHEN status='completed' THEN completed_at "
+                          "ELSE COALESCE(completed_at,?) END")
             args.append(utcnow_iso())
+    if completed_at is not None:
+        try:
+            date = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+            date = date.replace(tzinfo=date.tzinfo or timezone.utc).astimezone(timezone.utc)
+        except (ValueError, TypeError, OverflowError):
+            return {"ok": False, "error": "Enter a valid completion date and time."}
+        fields.append("completed_at=?")
+        args.append(date.replace(microsecond=0).isoformat())
     if param is not None:
         fields.append("param=?")
         args.append(param or None)
@@ -1442,11 +1462,31 @@ def admin_update_attempt(
         return {"ok": False, "error": "Attempt not found"}
     args.append(aid)
     with db_session() as conn:
+        from app.services.achievements import completion_snapshot, sync_user
+
+        previous = conn.execute("SELECT * FROM attempts WHERE id=?", (aid,)).fetchone()
+        if previous is None:
+            return {"ok": False, "error": "Attempt not found"}
+        if completed_at is not None:
+            if (status or previous["status"]) != "completed":
+                return {"ok": False, "error": "Only completed attempts can have a completion date."}
+            start = parse_iso(started_at or previous["started_at"])
+            start = start.replace(tzinfo=start.tzinfo or timezone.utc)
+            if date < start:
+                return {"ok": False, "error": "The completion date cannot precede the start date."}
         cur = conn.execute(
             f"UPDATE attempts SET {', '.join(fields)} WHERE id=?", args
         )
         if cur.rowcount == 0:
             return {"ok": False, "error": "Attempt not found"}
+        current = conn.execute("SELECT * FROM attempts WHERE id=?", (aid,)).fetchone()
+        if current["status"] == "completed" and not current["challenge_snapshot_json"]:
+            challenge = conn.execute("SELECT * FROM challenge_defs WHERE id=?",
+                                     (current["challenge_id"],)).fetchone()
+            if challenge:
+                conn.execute("UPDATE attempts SET challenge_snapshot_json=? WHERE id=?",
+                             (completion_snapshot(dict(challenge)), aid))
+        sync_user(conn, str(current["discord_id"]))
     return {"ok": True}
 
 

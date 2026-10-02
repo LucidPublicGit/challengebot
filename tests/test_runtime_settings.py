@@ -23,7 +23,7 @@ def test_announce_fail_default_off():
     assert rt["announce_fail"] is False
     assert announce_kind_enabled(rt, "fail") is False
     assert announce_kind_enabled(rt, "complete") is True
-    assert announce_kind_enabled(rt, "active") is True  # maps to status
+    assert announce_kind_enabled(rt, "active") is False  # maps to status, default off
 
 
 def test_db_overrides_status_and_fail():

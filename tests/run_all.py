@@ -21,6 +21,7 @@ MODULES = (
     "tests.test_catalog_changes",
     "tests.test_web_announcements",
     "tests.test_attempts",
+    "tests.test_achievements",
     "tests.test_challenge_card",
     "tests.test_congrats",
     "tests.test_progress_status",

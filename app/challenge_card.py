@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
@@ -1447,6 +1448,123 @@ def _render_leaderboard(
     return buf.getvalue()
 
 
+def _achievement_stub(size: int) -> Image.Image:
+    """A neutral pixel card back; contains no hint of the hidden artwork."""
+    tile = Image.new("RGBA", (28, 28), PANEL_BG + (255,))
+    pen = ImageDraw.Draw(tile)
+    pen.rectangle((1, 3, 26, 24), outline=ACCENT_PURPLE)
+    pen.line((3, 1, 24, 1), fill=ACCENT_PURPLE)
+    pen.line((3, 26, 24, 26), fill=ACCENT_PURPLE)
+    for x, y in ((3, 3), (22, 3), (3, 22), (22, 22)):
+        pen.rectangle((x, y, x + 2, y + 2), fill=ACCENT_PURPLE)
+    glyph = ("01110", "11011", "00011", "00110", "01100", "00000", "01100")
+    for row, line in enumerate(glyph):
+        for col, bit in enumerate(line):
+            if bit == "1":
+                pen.rectangle((9 + col * 2, 7 + row * 2, 10 + col * 2, 8 + row * 2),
+                              fill=INK)
+    return tile.resize((size, size), Image.Resampling.NEAREST)
+
+
+def _achievement_artwork(entry: dict, size: int) -> Image.Image:
+    if entry.get("earned"):
+        from app.services.achievements import image_path
+
+        try:
+            path = image_path(entry.get("image_file"))
+            if path and path.is_file():
+                with Image.open(path) as source:
+                    source = source.convert("RGBA")
+                    source.thumbnail((size, size), Image.Resampling.NEAREST)
+                    tile = Image.new("RGBA", (size, size))
+                    tile.paste(source, ((size - source.width) // 2, (size - source.height) // 2), source)
+                    return tile
+        except (OSError, ValueError):
+            pass
+    return _achievement_stub(size)
+
+
+def _wrap_lines(draw, text, font, max_width) -> list[str]:
+    lines, line = [], ""
+    for char in _oneline(text):
+        candidate = line + char
+        if line and draw.textlength(candidate, font=font) > max_width:
+            split = line.rfind(" ")
+            if split > 0:
+                lines.append(line[:split])
+                line = line[split + 1:] + char
+            else:
+                lines.append(line)
+                line = char
+        else:
+            line = candidate
+    if line:
+        lines.append(line.strip())
+    return lines or [""]
+
+
+def _render_achievement_list(
+    *, display_name: str, achievements: list[dict], page: int = 0, page_size: int = 6,
+) -> bytes:
+    """Artwork is only loaded for earned entries, even on the detailed list."""
+    S, W, margin = SCALE, 560, 28
+    page_size = max(1, min(int(page_size), 12))
+    pages = max(1, (len(achievements) + page_size - 1) // page_size)
+    page = max(0, min(int(page), pages - 1))
+    entries = achievements[page * page_size:(page + 1) * page_size]
+    measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    title_font, body_font = _font(15 * S, True), _font(12 * S)
+    text_width = (W - margin * 2 - 74) * S
+    rows = []
+    for entry in entries:
+        title = _wrap_lines(measure, str(entry["title"]), title_font, text_width)
+        description = _wrap_lines(measure, str(entry["description"]), body_font, text_width)
+        height = max(78, 20 + len(title) * 19 + len(description) * 16
+                     + (18 if entry.get("earned") else 0))
+        rows.append((entry, title, description, height))
+    H = 100 + sum(r[3] + 8 for r in rows) + 36
+    if not rows:
+        H += 40
+    img = Image.new("RGBA", (W * S, H * S), BG + (255,))
+    draw = ImageDraw.Draw(img)
+    draw.text((margin * S, 22 * S), "Achievements", font=_font(22 * S, True), fill=INK)
+    draw.text((margin * S, 55 * S),
+              _truncate(draw, _oneline(display_name), _font(14 * S), (W - 2 * margin) * S),
+              font=_font(14 * S), fill=INK_SOFT)
+    y = 90
+    for entry, titles, descriptions, height in rows:
+        draw.rounded_rectangle((margin * S, y * S, (W - margin) * S, (y + height) * S),
+                               radius=10 * S, fill=PANEL_BG, outline=HAIRLINE, width=S)
+        art = _achievement_artwork(entry, 42 * S)
+        img.paste(art, ((margin + 12) * S, (y + 16) * S), art)
+        tx, ty = (margin + 68) * S, (y + 10) * S
+        for line in titles:
+            draw.text((tx, ty), line, font=title_font, fill=INK)
+            ty += 19 * S
+        for line in descriptions:
+            draw.text((tx, ty), line, font=body_font, fill=INK_SOFT)
+            ty += 16 * S
+        if entry.get("earned"):
+            stamp = "Date unavailable"
+            if entry.get("unlocked_at"):
+                try:
+                    dt = datetime.fromisoformat(entry["unlocked_at"].replace("Z", "+00:00"))
+                    dt = dt.replace(tzinfo=dt.tzinfo or timezone.utc).astimezone(timezone.utc)
+                    stamp = dt.strftime("%d %b %Y · %H:%M UTC")
+                except ValueError:
+                    pass
+            draw.text((tx, ty + 3 * S), stamp, font=_font(10 * S), fill=INK_SOFT)
+        y += height + 8
+    if not rows:
+        draw.text((margin * S, y * S), "No achievements available.", font=body_font, fill=INK_SOFT)
+    draw.text((W * S / 2, (H - 23) * S), f"Page {page + 1} of {pages}",
+              font=_font(11 * S), fill=INK_SOFT, anchor="mm")
+    _clip_round(img, (0, 0, W * S - 1, H * S - 1), 22 * S, HAIRLINE, S)
+    buffer = io.BytesIO()
+    img.resize((W, H), Image.Resampling.LANCZOS).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _render_userinfo(
     *,
     display_name: str,
@@ -1463,6 +1581,7 @@ def _render_userinfo(
     tadoku_linked: bool = False,
     footer: str = "",
     cleared_tiers: list | None = None,
+    achievements: list[dict] | None = None,
 ) -> bytes:
     """Profile card: points/clears/rank + open + completed lists.
 
@@ -1481,6 +1600,9 @@ def _render_userinfo(
     active = list(active or [])
     completed = list(completed or [])
     categories = categories or {}
+    achievements = list(achievements or [])
+    achievement_rows = (len(achievements) + 8) // 9
+    achievements_h = 28 + achievement_rows * 48 + 6 if achievements else 0
 
     # Measure body height
     header = 118
@@ -1493,6 +1615,7 @@ def _render_userinfo(
     body = (
         stats_h
         + category_h
+        + achievements_h
         + active_hdr
         + len(active) * row_h
         + list_hdr
@@ -1725,6 +1848,24 @@ def _render_userinfo(
                           f"{int(breakdown.get(name) or 0)} pts",
                           font=_font(10 * S, bold=True), fill=INK, anchor="mm")
     y += category_h
+
+    if achievements:
+        draw.text((margin * S, y * S), "Achievements", font=_font(15 * S, True), fill=INK)
+        y += 28
+        cell_w = (W - 2 * margin) / 9
+        for index, entry in enumerate(achievements):
+            row, col = divmod(index, 9)
+            center_x = (margin + cell_w * (col + .5)) * S
+            top = (y + row * 48) * S
+            art = _achievement_artwork(entry, 28 * S)
+            img.paste(art, (int(center_x - 14 * S), int(top)), art)
+            if entry.get("earned"):
+                for line_num, line in enumerate(_wrap_two_lines(
+                    draw, str(entry["title"]), _font(8 * S), (cell_w - 4) * S,
+                )):
+                    draw.text((center_x, top + (30 + line_num * 9) * S), line,
+                              font=_font(8 * S), fill=INK, anchor="mt")
+        y += achievement_rows * 48 + 6
 
     def _draw_rows(entries: list, *, title_fill=INK, show_progress: bool = False) -> None:
         nonlocal y
@@ -2092,6 +2233,10 @@ async def render_userinfo_card(**kwargs) -> bytes:
     return await asyncio.to_thread(_render_userinfo, **kwargs)
 
 
+async def render_achievement_list(**kwargs) -> bytes:
+    return await asyncio.to_thread(_render_achievement_list, **kwargs)
+
+
 async def avatar_bytes(user) -> Optional[bytes]:
     if user is None:
         return None
@@ -2109,6 +2254,7 @@ def as_discord_file(png: bytes, filename: str = "challenge-card.png"):
 
 # Embed chrome so attached images render inline (not as click-to-open files)
 _KIND_EMBED_COLOR = {
+    "achievements": 0x9680E2,
     "start": 0x9680E2,
     "scheduled": 0x5B9CFA,
     "active": 0x9680E2,

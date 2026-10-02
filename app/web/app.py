@@ -23,12 +23,14 @@ from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, set_settings
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
+from app.services import achievements as ach_svc
 
 security = HTTPBasic(auto_error=False)
 
 NAV_ITEMS = (
     ("/", "Attempts"),
     ("/challenges", "Challenges"),
+    ("/achievements", "Achievements"),
     ("/announcements", "Announcements"),
     ("/users", "Users"),
     ("/settings", "Settings"),
@@ -352,11 +354,11 @@ def _attempt_when_cell(a: dict) -> str:
     return _when_cell(a.get("completed_at") or a.get("started_at"))
 
 
-def _iso_to_date_time(iso: str | None) -> tuple[str, str]:
+def _iso_to_date_time(iso: str | None, *, seconds: bool = False) -> tuple[str, str]:
     dt = _parse_iso_dt(iso)
     if not dt:
         return "", ""
-    return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
+    return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S" if seconds else "%H:%M")
 
 
 def _date_time_to_iso(date_s: str, time_s: str) -> str | None:
@@ -590,6 +592,9 @@ def create_app(bot=None) -> FastAPI:
     from app.web.announcements import register_announcements
 
     register_announcements(app, _auth)
+    from app.web.achievements import register_achievements
+
+    register_achievements(app, _auth)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):  # noqa: ARG001
@@ -1005,6 +1010,7 @@ def create_app(bot=None) -> FastAPI:
             raise HTTPException(404)
         sd, st = _iso_to_date_time(a.get("started_at"))
         ed, et = _iso_to_date_time(a.get("ends_at"))
+        cd, ct = _iso_to_date_time(a.get("completed_at"), seconds=True)
         name = a.get("display_name") or a["discord_id"]
         status = a.get("status") or ""
         evidence = _pretty_evidence(a.get("evidence_json"))
@@ -1052,7 +1058,8 @@ def create_app(bot=None) -> FastAPI:
                   {_select_opts(ATTEMPT_STATUSES, status)}
                 </select>
                 <p class="muted" style="margin:.35rem 0 0">
-                  Setting <b>completed</b> stamps completed_at to now.
+                  Newly completed attempts use the current time unless a completion date is entered.
+                  Editing an existing completion preserves its date.
                 </p>
               </div>
               <div>
@@ -1086,6 +1093,14 @@ def create_app(bot=None) -> FastAPI:
               <div>
                 <label>End time (UTC)</label>
                 <input type="time" name="ends_time" value="{_esc(et)}" step="60"/>
+              </div>
+              <div>
+                <label for="completed-date">Completion date (UTC)</label>
+                <input id="completed-date" type="date" name="completed_date" value="{_esc(cd)}"/>
+              </div>
+              <div>
+                <label for="completed-time">Completion time (UTC)</label>
+                <input id="completed-time" type="time" name="completed_time" value="{_esc(ct)}" step="1"/>
               </div>
               <div class="span-2">
                 <p class="muted" style="margin:0">
@@ -1190,13 +1205,26 @@ def create_app(bot=None) -> FastAPI:
         started_time: str = Form(""),
         ends_date: str = Form(""),
         ends_time: str = Form(""),
+        completed_date: str = Form(""),
+        completed_time: str = Form(""),
         filter: str = Form("all"),
         q: str = Form(""),
         _: None = Depends(_auth),
     ):
         started_at = _date_time_to_iso(started_date, started_time)
         ends_at = _date_time_to_iso(ends_date, ends_time)
-        att_svc.admin_update_attempt(
+        completed_at = _date_time_to_iso(completed_date, completed_time)
+        if completed_date and not completed_at:
+            raise HTTPException(400, "Enter a valid completion date and time.")
+        if (started_date and not started_at) or (ends_date and not ends_at):
+            raise HTTPException(400, "Enter valid start and end dates and times.")
+        existing = att_svc.get_attempt(attempt_id)
+        if not existing:
+            raise HTTPException(404)
+        previous_date, previous_time = _iso_to_date_time(existing.get("completed_at"), seconds=True)
+        if (completed_date.strip(), completed_time.strip()) == (previous_date, previous_time):
+            completed_at = None  # Preserve precision on unchanged legacy timestamps.
+        result = att_svc.admin_update_attempt(
             attempt_id,
             status=status,
             verify_method=verify_method or None,
@@ -1205,7 +1233,10 @@ def create_app(bot=None) -> FastAPI:
             note=note,
             started_at=started_at,
             ends_at=ends_at,
+            completed_at=completed_at if status == "completed" else None,
         )
+        if not result["ok"]:
+            raise HTTPException(400, result["error"])
         qs = _qs(saved=1, filter=None if filter == "all" else filter, q=(q or "").strip() or None)
         return RedirectResponse(f"/attempts/{attempt_id}?{qs}", status_code=303)
 
@@ -1574,6 +1605,13 @@ def create_app(bot=None) -> FastAPI:
             saved="Saved." if saved and not unlinked else ("Tadoku unlinked." if unlinked else ("Saved." if saved else "")),
         )
         had_link = "1" if linked else "0"
+        achievements = ach_svc.for_user(discord_id)
+        achievement_rows = "".join(
+            f'<tr><td><a href="/achievements/{_esc(item["id"])}">{_esc(item["title"])}</a></td>'
+            f'<td>{_esc(_human_when(item["unlocked_at"])) if item["unlocked_at"] else "Date unavailable"}</td>'
+            f'<td><a href="/attempts/{int(item["source_attempt_id"])}">Source attempt</a></td></tr>'
+            for item in achievements if item["earned"]
+        )
         body = f"""
         {flash}
         <div class="stat-row">
@@ -1603,6 +1641,10 @@ def create_app(bot=None) -> FastAPI:
               <a class="btn secondary" href="/users">Back</a>
             </div>
           </form>
+        </div>
+        <div class="card" style="padding:0;overflow:auto">
+          <div style="padding:.65rem .85rem .2rem"><h2>Achievements</h2></div>
+          {"<table><thead><tr><th>Achievement</th><th>Unlocked (UTC)</th><th>Evidence</th></tr></thead><tbody>" + achievement_rows + "</tbody></table>" if achievement_rows else '<div class="empty">No achievements earned yet.</div>'}
         </div>
         <div class="card" style="padding:0;overflow:auto">
           <div style="padding:.65rem .85rem .2rem"><h2>Recent attempts</h2></div>
