@@ -4,14 +4,14 @@ challenges:
   - id: easy-1
     tier: easy
     number: 1
-    title: Manga Mini-Marathon
+    title: Manga 3
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
-    goal_amount: 5
+    goal_amount: 3
     media_filter: manga
-    description: Read at least 5 full manga volumes within 24 hours.
+    description: Read at least 3 full manga volumes within 24 hours.
 
   - id: easy-2
     tier: easy
@@ -57,14 +57,14 @@ challenges:
   - id: medium-1
     tier: medium
     number: 1
-    title: Manga 10
+    title: Manga 6
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
-    goal_amount: 10
+    goal_amount: 6
     media_filter: manga
-    description: Read at least 10 full manga volumes within 24 hours.
+    description: Read at least 6 full manga volumes within 24 hours.
 
   - id: medium-2
     tier: medium
@@ -122,14 +122,14 @@ challenges:
   - id: hard-2
     tier: hard
     number: 2
-    title: Manga 15
+    title: Manga 8
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
-    goal_amount: 15
+    goal_amount: 8
     media_filter: manga
-    description: Read at least 15 full manga volumes within 24 hours.
+    description: Read at least 8 full manga volumes within 24 hours.
 
   - id: hard-3
     tier: hard
@@ -189,14 +189,14 @@ challenges:
   - id: ota-2
     tier: ota_master
     number: 2
-    title: Manga 25
+    title: Manga 12
     param_label: null
     time_limit_hours: 24
     verify: tadoku
     goal_kind: volumes
-    goal_amount: 25
+    goal_amount: 12
     media_filter: manga
-    description: Read at least 25 full manga volumes within 24 hours.
+    description: Read at least 12 full manga volumes within 24 hours.
 
   - id: ota-3
     tier: ota_master
@@ -307,3 +307,118 @@ challenges:
     description: >-
       Complete at least one full manga series by Toriyama Akira within one year.
       May run concurrent with other challenges.
+
+  # Physical immersion challenges count toward their difficulty-tier sweeps.
+  - id: physical-walk-easy
+    tier: easy
+    number: 5
+    title: Walking Immersion Easy
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 2
+    media_filter: any
+    description: >-
+      Walk while immersing in any Japanese content for 2 hours total within
+      24 hours. Breaks are allowed but do not count toward the 2 hours.
+
+  - id: physical-walk-medium
+    tier: medium
+    number: 5
+    title: Walking Immersion Medium
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 4
+    media_filter: any
+    description: >-
+      Walk while immersing in any Japanese content for 4 hours total within
+      24 hours. Breaks are allowed but do not count toward the 4 hours.
+
+  - id: physical-walk-hard
+    tier: hard
+    number: 6
+    title: Walking Immersion Hard
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 6
+    media_filter: any
+    description: >-
+      Walk while immersing in any Japanese content for 6 hours total within
+      24 hours. Breaks are allowed but do not count toward the 6 hours.
+
+  - id: physical-walk-ota
+    tier: ota_master
+    number: 5
+    title: Walking Immersion Ota-Master
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 8
+    media_filter: any
+    description: >-
+      Walk while immersing in any Japanese content for 8 hours total within
+      24 hours. Breaks are allowed but do not count toward the 8 hours.
+
+  - id: physical-endurance-easy
+    tier: easy
+    number: 6
+    title: Endurance Immersion Easy
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 1
+    media_filter: any
+    description: >-
+      Within 24 hours, spend 1 hour running, cycling, dancing, climbing stairs,
+      doing Pilates, or working out at a gym while immersing in any Japanese content.
+      Walking alone does not count. Breaks are allowed but do not count.
+
+  - id: physical-endurance-medium
+    tier: medium
+    number: 6
+    title: Endurance Immersion Medium
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 2
+    media_filter: any
+    description: >-
+      Within 24 hours, spend 2 hours running, cycling, dancing, climbing stairs,
+      doing Pilates, or working out at a gym while immersing in any Japanese content.
+      Walking alone does not count. Breaks are allowed but do not count.
+
+  - id: physical-endurance-hard
+    tier: hard
+    number: 7
+    title: Endurance Immersion Hard
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 4
+    media_filter: any
+    description: >-
+      Within 24 hours, immerse in any Japanese content for 4 hours while
+      exercising: run, cycle, dance, climb stairs, do Pilates, or work out at
+      a gym. Walking alone does not count as endurance activity. Up to
+      0.5 hours may be an Active Break of light warmup or cooldown movement
+      instead, leaving 3.5 hours of endurance activity. Keep immersing during
+      the Active Break; it counts toward the 4 hours. Ordinary rest does not.
+
+  - id: physical-endurance-ota
+    tier: ota_master
+    number: 6
+    title: Endurance Immersion Ota-Master
+    time_limit_hours: 24
+    verify: honor
+    goal_kind: immersion_hours
+    goal_amount: 6
+    media_filter: any
+    description: >-
+      Within 24 hours, immerse in any Japanese content for 6 hours while
+      exercising: run, cycle, dance, climb stairs, do Pilates, or work out at
+      a gym. Walking alone does not count as endurance activity. Up to two
+      separate 0.5-hour Active Breaks may be light warmup or cooldown
+      movement instead, leaving 5 hours of endurance activity. Keep immersing
+      during Active Breaks; they count toward the 6 hours. Ordinary rest does not.

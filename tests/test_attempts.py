@@ -552,7 +552,7 @@ def test_completed_tiers_needs_every_challenge():
                 )
         assert att.completed_tiers("u") == []
         assert att.highest_completed_tier("u") is None
-        assert att.tier_slot_progress("u")["easy"] == [True, True, True, False]
+        assert att.tier_slot_progress("u")["easy"] == [True, True, True, False, False, False]
         with db_session() as conn:
             conn.execute(
                 "INSERT INTO attempts("
@@ -560,9 +560,19 @@ def test_completed_tiers_needs_every_challenge():
                 " VALUES(?,?,?,?,?)",
                 ("u", "easy-4", "completed", now, now),
             )
+        assert att.completed_tiers("u") == []
+        assert att.tier_slot_progress("u")["easy"] == [True, True, True, True, False, False]
+        with db_session() as conn:
+            for cid in ("physical-walk-easy", "physical-endurance-easy"):
+                conn.execute(
+                    "INSERT INTO attempts("
+                    "discord_id,challenge_id,status,started_at,ends_at)"
+                    " VALUES(?,?,?,?,?)",
+                    ("u", cid, "completed", now, now),
+                )
         assert att.completed_tiers("u") == ["easy"]
         assert att.highest_completed_tier("u") == "easy"
-        assert att.tier_slot_progress("u")["easy"] == [True, True, True, True]
+        assert att.tier_slot_progress("u")["easy"] == [True] * 6
         # extra completes of the same id don't invent other tiers
         with db_session() as conn:
             conn.execute(

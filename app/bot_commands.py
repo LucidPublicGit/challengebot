@@ -2628,7 +2628,7 @@ class AdminAddModal(discord.ui.Modal, title="New challenge"):
             label="Title",
             required=True,
             max_length=100,
-            placeholder="Manga Mini-Marathon",
+            placeholder="Manga 3",
         )
         self.goal_amount_in = discord.ui.TextInput(
             label="Goal amount",

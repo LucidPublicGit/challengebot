@@ -26,12 +26,38 @@ def test_seed_2026_count():
     path = setup_tmp_db()
     try:
         items = list_challenges(year=2026)
-        assert len(items) == 22
+        assert len(items) == 30
         tiers = {c["tier"] for c in items}
         assert tiers == {"easy", "medium", "hard", "ota_master", "special"}
-        assert sum(1 for c in items if c["tier"] == "easy") == 4
-        assert sum(1 for c in items if c["tier"] == "medium") == 4
+        assert {tier: sum(c["tier"] == tier for c in items) for tier in tiers} == {
+            "easy": 6, "medium": 6, "hard": 7, "ota_master": 6, "special": 5
+        }
         assert sum(1 for c in items if c["tier"] == "special") == 5
+        for level, tier, walk_hours, endurance_hours, walk_num, endurance_num in (
+            ("Easy", "easy", 2, 1, 5, 6),
+            ("Medium", "medium", 4, 2, 5, 6),
+            ("Hard", "hard", 6, 4, 6, 7),
+            ("Ota-Master", "ota_master", 8, 6, 5, 6),
+        ):
+            key = "ota" if tier == "ota_master" else tier
+            for kind, hours, number in (
+                ("walk", walk_hours, walk_num),
+                ("endurance", endurance_hours, endurance_num),
+            ):
+                ch = get_challenge(f"physical-{kind}-{key}")
+                assert ch["tier"] == tier and ch["number"] == number
+                assert ch["title"] == f"{'Walking' if kind == 'walk' else 'Endurance'} Immersion {level}"
+                assert ch["goal_amount"] == hours and f"{hours} hour" in ch["description"]
+                assert ch["time_limit_hours"] == 24 and ch["verify"] == "honor"
+                assert ch["points"] is None
+                assert special_points_note(ch) == ""
+        for cid, count in (
+            ("easy-1", 3), ("medium-1", 6), ("hard-2", 8), ("ota-2", 12),
+        ):
+            ch = get_challenge(cid)
+            assert ch["title"] == f"Manga {count}"
+            assert ch["goal_amount"] == count
+            assert f"{count} full manga volumes" in ch["description"]
         op = get_challenge("medium-7")
         assert op is not None and op["tier"] == "special"
         assert int(op.get("allows_concurrent") or 0) == 1
@@ -119,14 +145,14 @@ def test_special_mixed_points():
     try:
         now = utcnow_iso()
         with db_session() as conn:
-            for cid in ("easy-5", "medium-8", "medium-7"):
+            for cid in ("easy-5", "medium-8", "medium-7", "physical-walk-easy"):
                 conn.execute(
                     "INSERT INTO attempts("
                     "discord_id,challenge_id,status,started_at,ends_at)"
                     " VALUES(?,?,?,?,?)",
                     ("u", cid, "completed", now, now),
                 )
-        assert att.challenge_points("u") == 5  # 1 + 2 + 2
+        assert att.challenge_points("u") == 6  # 1 + 2 + 2 + easy 1
         assert att.completed_tiers("u") == []
         assert att.highest_completed_tier("u") is None
     finally:
