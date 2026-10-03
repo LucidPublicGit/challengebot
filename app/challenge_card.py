@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -179,6 +180,7 @@ _FONT_FILES: dict[bool, list[str | tuple[str, int]]] = {
         "C:/Windows/Fonts/meiryo.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/seguisym.ttf",
         "C:/Windows/Fonts/arial.ttf",
         "DejaVuSans.ttf",
         "arial.ttf",
@@ -190,6 +192,7 @@ _FONT_FILES: dict[bool, list[str | tuple[str, int]]] = {
         "C:/Windows/Fonts/meiryob.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "C:/Windows/Fonts/segoeuib.ttf",
+        "C:/Windows/Fonts/seguisym.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
         "DejaVuSans-Bold.ttf",
         "arialbd.ttf",
@@ -205,22 +208,190 @@ _PROGRESS_RE = re.compile(
 )
 
 
-def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    for entry in _FONT_FILES[bold]:
+_DROP_CAT = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Mn", "Me"})
+_NOTDEF_PROBES = ("\u0378", "\u0379", "\ufff0")
+_STACKS: dict[tuple[float, bool], list] = {}
+_NOTDEF_SIG: dict[int, tuple | None] = {}
+_HAS_GLYPH: dict[tuple[int, str], bool] = {}
+
+
+def _open_font(entry: str | tuple[str, int], size: int):
+    if isinstance(entry, tuple):
+        path, idx = entry
+        return ImageFont.truetype(path, size, index=idx)
+    return ImageFont.truetype(entry, size)
+
+
+def _stack(size: int, bold: bool = False) -> list:
+    key = (float(size), bool(bold))
+    hit = _STACKS.get(key)
+    if hit is not None:
+        return hit
+    fonts: list = []
+    seen: set[tuple] = set()
+    entries = list(_FONT_FILES[bold])
+    if bold:
+        entries.extend(_FONT_FILES[False])
+    for entry in entries:
+        ident = (entry[0], entry[1], int(size)) if isinstance(entry, tuple) else (entry, int(size))
+        if ident in seen:
+            continue
+        seen.add(ident)
         try:
-            if isinstance(entry, tuple):
-                path, idx = entry
-                return ImageFont.truetype(path, size, index=idx)
-            return ImageFont.truetype(entry, size)
+            font = _open_font(entry, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+        font._ct_bold = bold
+        fonts.append(font)
+    if not fonts:
+        font = ImageFont.load_default()
+        font._ct_bold = bold
+        fonts = [font]
+    _STACKS[key] = fonts
+    return fonts
+
+
+def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    return _stack(size, bold)[0]
+
+
+def _notdef_sig(font) -> tuple | None:
+    fid = id(font)
+    if fid in _NOTDEF_SIG:
+        return _NOTDEF_SIG[fid]
+    try:
+        sigs = []
+        for p in _NOTDEF_PROBES:
+            mask = font.getmask(p)
+            sigs.append((mask.getbbox(), round(font.getlength(p), 2), mask.size))
+        sig = sigs[0]
+    except Exception:  # noqa: BLE001
+        sig = None
+    _NOTDEF_SIG[fid] = sig
+    return sig
+
+
+def _has_glyph(font, ch: str) -> bool:
+    if not ch or ch.isspace() or ch == "\n":
+        return True
+    key = (id(font), ch)
+    cached = _HAS_GLYPH.get(key)
+    if cached is not None:
+        return cached
+    ok = True
+    try:
+        mask = font.getmask(ch)
+        bbox = mask.getbbox()
+        if bbox is None:
+            ok = False
+        else:
+            sig = _notdef_sig(font)
+            if sig is not None:
+                ok = (bbox, round(font.getlength(ch), 2), mask.size) != sig
+    except Exception:  # noqa: BLE001
+        ok = True
+    _HAS_GLYPH[key] = ok
+    return ok
+
+
+def _font_for(ch: str, font):
+    if _has_glyph(font, ch):
+        return font
+    size = getattr(font, "size", 16) or 16
+    bold = bool(getattr(font, "_ct_bold", False))
+    for alt in _stack(size, bold):
+        if alt is not font and _has_glyph(alt, ch):
+            return alt
+    return None
+
+
+def _shape(text: str, font) -> list[tuple]:
+    runs: list[tuple] = []
+    cur = None
+    buf: list[str] = []
+    for ch in text:
+        chosen = _font_for(ch, font)
+        if chosen is None:
+            continue
+        if chosen is not cur and buf:
+            runs.append((cur, "".join(buf)))
+            buf = []
+        cur = chosen
+        buf.append(ch)
+    if buf:
+        runs.append((cur, "".join(buf)))
+    return runs
+
+
+class _Draw(ImageDraw.ImageDraw):
+    """text/textlength with per-glyph font fallback; skip .notdef."""
+
+    def textlength(self, text, font=None, *args, **kwargs):
+        if not isinstance(text, str) or not text:
+            return super().textlength(text or "", font=font, *args, **kwargs)
+        font = font or ImageFont.load_default()
+        runs = _shape(text, font)
+        if not runs:
+            return 0.0
+        if len(runs) == 1 and runs[0][0] is font:
+            return super().textlength(text, font=font, *args, **kwargs)
+        width = 0.0
+        for f, s in runs:
+            width += super().textlength(s, font=f, *args, **kwargs)
+        return width
+
+    def text(self, xy, text, fill=None, font=None, anchor=None, spacing=4, align="left",
+             direction=None, features=None, language=None, stroke_width=0, stroke_fill=None,
+             embedded_color=False, *args, **kwargs):
+        if not isinstance(text, str):
+            return super().text(
+                xy, text, fill=fill, font=font, anchor=anchor, spacing=spacing,
+                align=align, direction=direction, features=features, language=language,
+                stroke_width=stroke_width, stroke_fill=stroke_fill,
+                embedded_color=embedded_color, *args, **kwargs,
+            )
+        font = font or ImageFont.load_default()
+        if "\n" in text:
+            x, y = xy
+            for line in text.split("\n"):
+                self.text(
+                    (x, y), line, fill=fill, font=font, anchor=anchor, spacing=spacing,
+                    align=align, direction=direction, features=features, language=language,
+                    stroke_width=stroke_width, stroke_fill=stroke_fill,
+                    embedded_color=embedded_color, *args, **kwargs,
+                )
+                y += (getattr(font, "size", 12) or 12) + spacing
+            return None
+        runs = _shape(text, font)
+        if not runs:
+            return None
+        kw = dict(
+            fill=fill, spacing=spacing, align=align, direction=direction,
+            features=features, language=language, stroke_width=stroke_width,
+            stroke_fill=stroke_fill, embedded_color=embedded_color,
+        )
+        if len(runs) == 1 and runs[0][0] is font:
+            return super().text(xy, text, font=font, anchor=anchor, *args, **kw, **kwargs)
+        x, y = xy
+        total = 0.0
+        for f, s in runs:
+            total += super().textlength(s, font=f)
+        a = anchor or "lt"
+        if a[0] == "m":
+            x -= total / 2
+        elif a[0] == "r":
+            x -= total
+        run_anchor = None if anchor is None else "l" + a[1:]
+        for f, s in runs:
+            super().text((x, y), s, font=f, anchor=run_anchor, *args, **kw, **kwargs)
+            x += super().textlength(s, font=f)
+        return None
 
 
 # Color emoji → .notdef tofu with Noto/DejaVu (no CBDT). Drop for card text.
 _EMOJI_RE = re.compile(
     "["
-    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U0001F000-\U0001F1FF"  # mahjong / cards / enclosed / flags
     "\U0001F300-\U0001F5FF"
     "\U0001F600-\U0001F64F"
     "\U0001F680-\U0001F6FF"
@@ -233,13 +404,26 @@ _EMOJI_RE = re.compile(
     "\U00002600-\U000026FF"
     "\U0000FE00-\U0000FE0F"  # variation selectors
     "\U0000200D"  # ZWJ
+    "\U000020E3"  # keycap combining
     "]+",
 )
 
 
 def _oneline(text: str) -> str:
-    text = _EMOJI_RE.sub("", text or "")
-    return " ".join(text.split())
+    text = _EMOJI_RE.sub("", unicodedata.normalize("NFKC", text or ""))
+    stack = _stack(16, False)
+    out: list[str] = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat in _DROP_CAT:
+            continue
+        if cat == "Zs":
+            out.append(" ")
+            continue
+        if not any(_has_glyph(f, ch) for f in stack):
+            continue
+        out.append(ch)
+    return " ".join("".join(out).split())
 
 
 def _truncate(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_w: float) -> str:
@@ -278,7 +462,7 @@ def _hanko_stamp(tier: str, S: int, *, compact: bool = False) -> Image.Image:
     stroke = max(1, S if compact else 2 * S)
     pad = 3 * S
     im = Image.new("RGBA", (side + pad * 2, side + pad * 2), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
+    d = _Draw(im)
     x0, y0 = pad, pad
     x1, y1 = pad + side - 1, pad + side - 1
     d.rectangle((x0, y0, x1, y1), outline=color, width=stroke)
@@ -486,7 +670,7 @@ def _poster_image(poster_bytes: bytes, w: int, h: int, radius: int) -> Optional[
     source = source.crop((left, top, left + w, top + h))
     over = 4
     mask = Image.new("L", (w * over, h * over), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
+    _Draw(mask).rounded_rectangle(
         (0, 0, w * over - 1, h * over - 1), radius=radius * over, fill=255
     )
     mask = mask.resize((w, h), Image.Resampling.LANCZOS)
@@ -498,7 +682,7 @@ def _poster_image(poster_bytes: bytes, w: int, h: int, radius: int) -> Optional[
 def _circular_avatar(avatar_bytes: Optional[bytes], size: int) -> Image.Image:
     over = size * 4
     mask = Image.new("L", (over, over), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, over - 1, over - 1), fill=255)
+    _Draw(mask).ellipse((0, 0, over - 1, over - 1), fill=255)
     mask = mask.resize((size, size), Image.Resampling.LANCZOS)
 
     source: Optional[Image.Image] = None
@@ -523,9 +707,9 @@ def _circular_avatar(avatar_bytes: Optional[bytes], size: int) -> Image.Image:
 
 def _clip_round(img: Image.Image, box, radius: int, outline, width: int) -> None:
     mask = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
+    _Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
     img.putalpha(ImageChops.multiply(img.getchannel("A"), mask))
-    ImageDraw.Draw(img).rounded_rectangle(box, radius=radius, outline=outline, width=width)
+    _Draw(img).rounded_rectangle(box, radius=radius, outline=outline, width=width)
 
 
 def _wrap_two_lines(
@@ -798,7 +982,7 @@ def _render_challenge(
         hero_label = line_primary
 
     # Measure title + works with a scratch draw so H tracks real line counts
-    scratch = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    scratch = _Draw(Image.new("RGB", (8, 8)))
     title_font_m = _font(20 * S, bold=True)
     focus_font_m = _font(15 * S)
     # content width estimate (avatar 72 + gaps); works indent ~16px for bullet
@@ -873,7 +1057,7 @@ def _render_challenge(
 
     card_w = WIDTH + poster_panel
     img = Image.new("RGBA", (card_w * S, H * S), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    draw = _Draw(img)
     outer = (0, 0, card_w * S - 1, H * S - 1)
     radius = 22 * S
     draw.rounded_rectangle(outer, radius=radius, fill=BG)
@@ -1210,7 +1394,7 @@ def _render_leaderboard(
     H = header + body + foot
 
     img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    draw = _Draw(img)
     outer = (0, 0, W * S - 1, H * S - 1)
     radius = 22 * S
     draw.rounded_rectangle(outer, radius=radius, fill=BG)
@@ -1452,7 +1636,7 @@ def _render_leaderboard(
 def _achievement_stub(size: int) -> Image.Image:
     """A neutral pixel card back; contains no hint of the hidden artwork."""
     tile = Image.new("RGBA", (28, 28), PANEL_BG + (255,))
-    pen = ImageDraw.Draw(tile)
+    pen = _Draw(tile)
     pen.rectangle((1, 3, 26, 24), outline=ACCENT_PURPLE)
     pen.line((3, 1, 24, 1), fill=ACCENT_PURPLE)
     pen.line((3, 26, 24, 26), fill=ACCENT_PURPLE)
@@ -1514,7 +1698,7 @@ def _render_achievement_list(
     pages = max(1, (len(achievements) + page_size - 1) // page_size)
     page = max(0, min(int(page), pages - 1))
     entries = achievements[page * page_size:(page + 1) * page_size]
-    measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    measure = _Draw(Image.new("RGBA", (1, 1)))
     title_font, body_font, date_font = _font(22 * S, True), _font(17 * S), _font(14 * S)
     text_width = (W - margin * 2 - 108) * S
     rows = []
@@ -1528,7 +1712,7 @@ def _render_achievement_list(
     if not rows:
         H += 40
     img = Image.new("RGBA", (W * S, H * S), BG + (255,))
-    draw = ImageDraw.Draw(img)
+    draw = _Draw(img)
     draw.text((margin * S, 22 * S), "Achievements", font=_font(24 * S, True), fill=INK)
     draw.text((margin * S, 56 * S),
               _truncate(draw, _oneline(display_name), _font(16 * S), (W - 2 * margin) * S),
@@ -1628,7 +1812,7 @@ def _render_userinfo(
     H = header + body + foot
 
     img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    draw = _Draw(img)
     outer = (0, 0, W * S - 1, H * S - 1)
     radius = 22 * S
     draw.rounded_rectangle(outer, radius=radius, fill=BG)
@@ -2010,7 +2194,7 @@ def _render_event_chip(
     S = SCALE
     W, H = width, 88
     img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    draw = _Draw(img)
     outer = (0, 0, W * S - 1, H * S - 1)
     draw.rounded_rectangle(outer, radius=14 * S, fill=BG)
     bar = accent or TIER_COLOR.get((tier or "").lower().strip(), ACCENT_PURPLE)
@@ -2078,7 +2262,7 @@ def _bottom_scrim(
     """Darken lower portion so white name/meta pop."""
     w, h = im.size
     g = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(g)
+    gd = _Draw(g)
     y0 = int(h * start_frac)
     span = max(1.0, h - y0)
     for i in range(y0, h):
@@ -2179,12 +2363,12 @@ def _render_unified_start(
     # On-art, slightly lower than original E (was h-100)
     name_y = h - 88 * S
     glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(glow).text(
+    _Draw(glow).text(
         (22 * S, name_y), display_name, font=name_f, fill=(*name_glow, 200)
     )
     glow = glow.filter(ImageFilter.GaussianBlur(max(4, 8 * S // 2)))
     canvas = Image.alpha_composite(canvas, glow)
-    draw = ImageDraw.Draw(canvas)
+    draw = _Draw(canvas)
     _stroke_text(
         draw,
         (22 * S, name_y),
@@ -2455,7 +2639,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
 def demo_avatar_png(color: tuple[int, int, int] = (120, 100, 200)) -> bytes:
     """Simple placeholder avatar for demos/tests."""
     img = Image.new("RGB", (256, 256), (40, 42, 51))
-    d = ImageDraw.Draw(img)
+    d = _Draw(img)
     d.ellipse((16, 16, 240, 240), fill=color)
     d.ellipse((90, 70, 166, 146), fill=(236, 237, 242))
     d.ellipse((70, 150, 186, 250), fill=(236, 237, 242))

@@ -104,6 +104,36 @@ def test_oneline_strips_emoji_tofu():
     # windchime global_name: two emoji became .notdef boxes beside the name
     assert _oneline("windchime \U0001f390\U0001f9ff") == "windchime"
     assert _oneline("魔法少女") == "魔法少女"
+    # math-bold / fullwidth Discord names → ASCII; CJK kept
+    assert _oneline("\U0001d411\U0001d415\U0001d40d") == "RVN"
+    assert _oneline("ＲＶＮ") == "RVN"
+    assert _oneline("Apathy/アパシー") == "Apathy/アパシー"
+    # zalgo / bidi / ZWSP / PUA / unrenderable
+    assert "\u0301" not in _oneline("R" + "\u0301" * 8 + "VN")
+    assert _oneline("\u202eRVN") == "RVN"
+    assert _oneline("RVN\u200bX") == "RVNX"
+    assert _oneline("RVN\ue000") == "RVN"
+    assert _oneline("x\U00010000y") == "xy"
+
+
+def test_shape_falls_back_to_cjk_font():
+    from pathlib import Path
+    from PIL import ImageFont
+    from app.challenge_card import _shape
+
+    for raw in (
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
+        p = Path(raw)
+        if p.is_file():
+            break
+    else:
+        return
+    font = ImageFont.truetype(str(p), 24)
+    font._ct_bold = False
+    joined = "".join(s for _, s in _shape("A/ア", font))
+    assert joined == "A/ア"
 
 
 def test_parse_progress_thousand_commas():
