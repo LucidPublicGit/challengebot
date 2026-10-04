@@ -35,6 +35,7 @@ Thumbs.db
 *~
 
 # Agent / local only
+docs/security-audit.md
 .pi/
 *.log
 docker-build.log

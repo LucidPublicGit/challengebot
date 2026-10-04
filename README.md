@@ -191,8 +191,7 @@ Single container / single SQLite writer — do not scale replicas.
 
 ## Sharing and security
 
-See [SECURITY.md](SECURITY.md) for deployment and disclosure guidance and
-[the audit report](docs/security-audit.md) for findings and release limitations.
+See [SECURITY.md](SECURITY.md) for deployment and disclosure guidance.
 Never share `.env`, `data/`, database backups, logs, agent sessions, or demo previews.
 Only share a sanitized release snapshot, not the original development Git history.
 
