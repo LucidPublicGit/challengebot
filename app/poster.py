@@ -10,7 +10,7 @@ import logging
 import os
 import re
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -20,6 +20,13 @@ _TIMEOUT = 8.0
 _MAX_Q = 64
 _CACHE: dict[tuple[str, str], Optional[bytes]] = {}
 _CACHE_MAX = 128
+_MAX_IMAGE_BYTES = 5_000_000
+_IMAGE_HOSTS = frozenset({
+    "s4.anilist.co", "t.vndb.org", "cdn.myanimelist.net",
+    "cdn.cloudflare.steamstatic.com", "shared.fastly.steamstatic.com",
+    "shared.akamai.steamstatic.com", "image.tmdb.org",
+    "books.google.com", "books.googleusercontent.com",
+})
 _NSFW = "nsfw"
 _VNDB_NSFW_THRESHOLD = 0.4
 _NSFW_POSTER_PATH = os.path.join(
@@ -129,7 +136,7 @@ async def fetch_poster(
 
     result: Optional[bytes] = None
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=False) as client:
             url = await _image_url(client, cat, q)
             if url == _NSFW:
                 result = nsfw_poster()
@@ -150,13 +157,23 @@ async def fetch_poster(
 
 
 async def _download(client: httpx.AsyncClient, url: str) -> Optional[bytes]:
-    r = await client.get(url)
-    if r.status_code != 200:
+    # Provider responses are untrusted too; never fetch arbitrary hosts or redirects.
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.hostname not in _IMAGE_HOSTS
+                or parsed.port not in (None, 443) or parsed.username or parsed.password):
+            return None
+    except ValueError:
         return None
-    data = r.content
-    if not data or len(data) < 200 or len(data) > 5_000_000:
-        return None
-    return data
+    async with client.stream("GET", url, follow_redirects=False) as response:
+        if response.status_code != 200:
+            return None
+        data = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+            if len(data) + len(chunk) > _MAX_IMAGE_BYTES:
+                return None
+            data.extend(chunk)
+        return bytes(data) if len(data) >= 200 else None
 
 
 async def _image_url(client: httpx.AsyncClient, cat: str, title: str) -> Optional[str]:

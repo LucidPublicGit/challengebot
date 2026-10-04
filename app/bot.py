@@ -115,14 +115,17 @@ def verify_label(ch: dict) -> str:
 
 
 def is_bot_admin(interaction: discord.Interaction) -> bool:
-    """Guild owner, Administrator permission, or ADMIN_ROLE_IDS."""
-    if interaction.guild and interaction.user.id == interaction.guild.owner_id:
+    """Only administrators of the operator-configured guild may mutate shared data."""
+    rt = _runtime()
+    guild_id = get_settings().discord_guild_id or rt.get("guild_id")
+    if not interaction.guild or not guild_id or str(interaction.guild.id) != str(guild_id):
+        return False
+    if interaction.user.id == interaction.guild.owner_id:
         return True
     if not isinstance(interaction.user, discord.Member):
         return False
     if interaction.user.guild_permissions.administrator:
         return True
-    rt = _runtime()
     allowed = set(rt.get("admin_role_ids") or []) | set(
         get_settings().admin_role_id_list()
     )
@@ -154,6 +157,7 @@ class ChallengeBot(commands.Bot):
             command_prefix="!",
             intents=intents,
             application_id=_application_id(),
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         self.tree_synced = False
 

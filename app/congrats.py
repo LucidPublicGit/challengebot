@@ -85,11 +85,13 @@ def slugify(text: str) -> str:
 
 
 def _is_media(path: Path) -> bool:
-    if not path.is_file() or path.suffix.lower() not in _EXTS:
-        return False
     try:
+        if not path.resolve().is_relative_to(congrats_root().resolve()):
+            return False
+        if not path.is_file() or path.suffix.lower() not in _EXTS:
+            return False
         return 0 < path.stat().st_size <= _MAX_BYTES
-    except OSError:
+    except (OSError, RuntimeError):
         return False
 
 
@@ -234,8 +236,8 @@ def _content_matches(root: Path, content: str) -> list[Path]:
 
 def _tier_pool(root: Path, tier: str) -> list[Path]:
     t = (tier or "").lower().strip().replace("-", "_")
-    if t == "ota-master":
-        t = "ota_master"
+    if t not in {"easy", "medium", "hard", "ota_master", "special"}:
+        return []
     return _iter_dir_images(root / t)
 
 
@@ -333,7 +335,12 @@ def as_discord_congrats(path: Path):
 
     import discord
 
-    data = path.read_bytes()
+    if not _is_media(path):
+        raise ValueError("Congrats image must be inside the managed collection.")
+    with path.open("rb") as source:
+        data = source.read(_MAX_BYTES + 1)
+    if len(data) > _MAX_BYTES:
+        raise ValueError("Congrats image exceeds the upload limit.")
     ext = (path.suffix or ".png").lower()
     if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
         ext = ".png"
@@ -367,7 +374,7 @@ def frame_congrats(
 
     Animated GIF/WebP: returns None so caller can attach the raw file instead.
     """
-    if not path or not path.is_file():
+    if not path or not _is_media(path):
         return None
     if _is_animated(path):
         return None

@@ -17,11 +17,17 @@ COPY achievements ./achievements
 COPY completion_pictures ./completion_pictures
 COPY new_challenger ./new_challenger
 
-RUN mkdir -p /app/data
+RUN groupadd --gid 10001 tracker \
+    && useradd --uid 10001 --gid tracker --no-create-home tracker \
+    && mkdir -p /app/data \
+    && chown tracker:tracker /app/data
 
 ENV DATABASE_PATH=/app/data/challenges.db
 ENV CHALLENGE_CATALOG=/app/challenges/2026.yaml
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+
+USER tracker:tracker
 
 CMD ["python", "-m", "app.main"]

@@ -1944,6 +1944,14 @@ class AdminPanelView(_OwnerView):
         self.target = target
         self.guild = guild
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        if not _admin_only(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return False
+        return True
+
     async def _run_mode(
         self,
         interaction: discord.Interaction,
@@ -3133,6 +3141,13 @@ async def challenge_announce(
         await interaction.response.send_message("Admin only.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
+    # Discord choices are UI hints, not a filesystem authorization boundary.
+    if change not in CHANGE_LABELS or category not in (None, "physical", "ota", "all"):
+        await interaction.followup.send("Invalid announcement selection.", ephemeral=True)
+        return
+    if image is not None and image not in range(1, 7):
+        await interaction.followup.send("Invalid saved banner.", ephemeral=True)
+        return
     if challenge_id and category:
         await interaction.followup.send(
             "Choose a challenge_id OR a category, not both.", ephemeral=True
