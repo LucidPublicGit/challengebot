@@ -163,26 +163,24 @@ def test_youtube_tadoku_tags_and_urls():
     assert set(r.matched_log_ids) == {"a", "b", "c"}
 
 
-def test_volumes_from_pages():
+def test_unique_volumes():
     logs = [
-        {
-            "id": "1",
-            "amount": 900,
-            "unit": "comic pages",
-            "tags": ["manga"],
-            "description": "One Piece",
-        }
+        {"id": "1", "amount": 204, "unit": "page", "tags": ["manga"],
+         "description": "Vagabond Vol 14"},
+        {"id": "2", "amount": 100, "unit": "page", "tags": ["manga"],
+         "description": "Vagabond Vol 14"},
+        {"id": "3", "amount": 216, "unit": "page", "tags": ["manga"],
+         "description": "Vagabond Vol 13"},
+        {"id": "4", "amount": 168, "unit": "page", "tags": ["manga"],
+         "description": "Made in Abyss メイドインアビス 第01巻"},
+        {"id": "5", "amount": 900, "unit": "comic pages", "tags": ["manga"],
+         "description": "One Piece"},
     ]
     r = evaluate_logs(
-        logs,
-        goal_kind="volumes",
-        goal_amount=5,
-        media_filter="manga",
-        pages_per_volume=180,
-        param="One Piece",
+        logs, goal_kind="volumes", goal_amount=3, media_filter="manga",
     )
-    assert r.ok
-    assert abs(r.progress - 5.0) < 0.01
+    assert r.ok, r.detail
+    assert r.progress == 3
 
 
 def test_shows_minutes_accepts_movies():

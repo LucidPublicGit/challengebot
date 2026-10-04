@@ -495,40 +495,33 @@ def evaluate_logs(
         )
 
     if kind == "volumes":
+        seen: set[str] = set()
         vols = 0.0
         used = []
         for log in filtered:
-            u = _unit_name(log)
-            amt = _amount(log)
             desc = _description(log)
-            if u in _VOLUME_UNITS:
-                vols += amt
-                used.append(str(log.get("id") or ""))
-                continue
             m = _VOL_RE.search(desc)
-            if m and amt <= 1:
-                # single volume mention counts 1 if amount is tiny/flag
-                vols += 1.0
-                used.append(str(log.get("id") or ""))
+            if m:
+                series = desc[: m.start()].strip() or str(log.get("series") or "")
+                key = f"{series.lower()}|{int(m.group('vol'))}"
+                if key not in seen:
+                    seen.add(key)
+                    vols += 1
+                if log.get("id"):
+                    used.append(str(log["id"]))
                 continue
-            if u in _PAGE_UNITS and pages_per_volume > 0:
-                vols += amt / pages_per_volume
-                used.append(str(log.get("id") or ""))
-                continue
-            if "char" in u and pages_per_volume > 0:
-                # weak: skip chars for volume goals
-                continue
+            if _unit_name(log) in _VOLUME_UNITS:
+                vols += _amount(log)
+                if log.get("id"):
+                    used.append(str(log["id"]))
         ok = vols >= target
         return VerifyResult(
             ok=ok,
             progress=vols,
             target=target,
             unit_label="volumes",
-            detail=(
-                f"{vols:.2f} / {target:.0f} volumes "
-                f"(pages÷{pages_per_volume:g} or volume units)"
-            ),
-            matched_log_ids=[x for x in used if x] or ids,
+            detail=f"{vols:g} / {target:.0f} volumes",
+            matched_log_ids=used or ids,
         )
 
     if kind == "episodes":
@@ -668,15 +661,13 @@ def synthetic_logs_for_goal(
             }
         ]
     if kind == "volumes":
-        pages = amt * float(pages_per_volume or 180.0)
         return [
             {
                 **base,
-                "amount": pages,
-                "unit": "comic pages",
+                "amount": amt,
+                "unit": "volumes",
                 "activity": "reading",
                 "tags": ["manga"],
-                "description": f"{title} vol 1",
             }
         ]
     if kind == "episodes":

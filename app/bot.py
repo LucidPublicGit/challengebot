@@ -80,7 +80,7 @@ def confirm_howto(ch: dict, *, attempt_id: int | None = None) -> str:
         goal_bits = {
             "characters": f"≥ **{amount:,.0f}** characters on Tadoku",
             "minutes": f"≥ **{amount:g}** minutes on Tadoku",
-            "volumes": f"≥ **{amount:g}** manga volumes (from Tadoku logs / page estimates)",
+            "volumes": f"≥ **{amount:g}** unique manga volumes (from Tadoku log titles)",
             "episodes": f"≥ **{amount:g}** show episodes (from Tadoku logs)",
             "immersion_hours": f"≥ **{amount:g}** hours from timed Tadoku logs",
         }.get(kind, f"meet goal `{kind}` = {amount} via Tadoku")
