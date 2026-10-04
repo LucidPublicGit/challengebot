@@ -13,7 +13,7 @@ from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -2098,7 +2098,9 @@ def create_app(bot=None) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"ok": True}
+        bot = getattr(app.state, "bot", None)
+        ready = bool(bot is not None and getattr(bot, "is_ready", lambda: False)())
+        return JSONResponse({"ok": ready, "discord": ready}, status_code=200 if ready else 503)
 
     return app
 

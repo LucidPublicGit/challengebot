@@ -19,7 +19,9 @@ def test_admin_http_security():
         client = TestClient(create_app())
         assert client.get("/").status_code == 503
         assert client.get("/api/achievements").status_code == 503
-        assert client.get("/health").json() == {"ok": True}
+        h = client.get("/health")
+        assert h.status_code == 503
+        assert h.json() == {"ok": False, "discord": False}
         assert client.get("/openapi.json").status_code == 404
     with patch("app.web.app.get_settings", return_value=Settings(ui_password="sëcret")):
         _auth(HTTPBasicCredentials(username="admin", password="sëcret"))
@@ -32,6 +34,15 @@ def test_admin_http_security():
             assert client.post("/backup/run", headers=headers).status_code == 403
         assert client.get("/health").headers["x-frame-options"] == "DENY"
         assert client.get("/health").headers["cache-control"] == "no-store"
+
+
+def test_health_ok_when_discord_ready():
+    bot = SimpleNamespace(is_ready=lambda: True)
+    with patch("app.web.app.get_settings", return_value=Settings()):
+        client = TestClient(create_app(bot))
+        r = client.get("/health")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "discord": True}
 
 
 def test_achievement_slash_security_and_crud():
