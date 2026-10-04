@@ -9,15 +9,30 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 from app.db import database_path, db_session, utcnow_iso
 
 IMAGE_DIR = Path(__file__).resolve().parents[1] / "images" / "achievements"
+DEFAULT_CATALOG = Path(__file__).resolve().parents[2] / "achievements" / "defaults.yaml"
+MAX_CATALOG_BYTES = 512 * 1024
+CATALOG_FIELDS = {"id", "title", "description", "rule", "image_file", "enabled", "position"}
 FORMATS = {"manga": "manga", "shows": "shows", "youtube": "youtube",
            "vn": "vn", "book": "novel"}
 SNAPSHOT_FIELDS = (
     "id", "year", "title", "category", "tier", "number", "media_filter",
     "goal_kind", "goal_amount", "time_limit_hours", "verify",
 )
+
+
+class _CatalogLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        mapping = super().construct_mapping(node, deep=deep)
+        if len(mapping) != len(node.value):
+            raise yaml.constructor.ConstructorError(
+                None, None, "Duplicate mapping keys are not allowed.", node.start_mark
+            )
+        return mapping
 
 
 def upload_dir() -> Path:
@@ -29,43 +44,6 @@ def completion_snapshot(challenge: dict) -> str:
     snapshot = {key: challenge.get(key) for key in SNAPSHOT_FIELDS}
     snapshot["id"] = challenge.get("challenge_id") or challenge.get("id")
     return json.dumps(snapshot)
-
-
-def _defaults() -> list[tuple]:
-    walk = [f"physical-walk-{t}" for t in ("easy", "medium", "hard", "ota")]
-    endurance = [f"physical-endurance-{t}" for t in ("easy", "medium", "hard", "ota")]
-    manga = ["easy-1", "medium-1", "hard-2", "ota-2"]
-    shows = ["easy-2", "medium-2", "hard-3", "ota-3"]
-    reading = manga + ["easy-4", "medium-4", "hard-4", "hard-1", "ota-1"]
-    listening = shows + ["easy-3", "medium-3"]
-    long_projects = ["medium-8", "medium-7", "medium-5", "medium-6"]
-    ota = reading + listening + ["hard-5", "ota-4"]
-
-    def groups(*choices):
-        return {"kind": "groups", "groups": list(choices)}
-
-    return [
-        ("First Clear", "Complete your first challenge.", {"kind": "clears", "count": 1}),
-        ("Getting Rolling", "Clear 5 distinct challenges.", {"kind": "clears", "count": 5}),
-        ("Double Digits", "Clear 10 distinct challenges.", {"kind": "clears", "count": 10}),
-        ("Seasoned Challenger", "Clear 20 distinct challenges.", {"kind": "clears", "count": 20}),
-        ("Media Sampler", "Clear challenges in any 4 of the 5 formats: manga, shows, YouTube, visual novels, and novels.",
-         {"kind": "formats", "count": 4}),
-        ("All-Rounder", "Clear a challenge in each format: manga, shows, YouTube, visual novels, and novels.",
-         {"kind": "formats", "count": 5}),
-        ("Double Feature", "Clear a reading challenge and a listening challenge.", groups(reading, listening)),
-        ("Two Worlds", "Clear an Ota challenge and a Physical challenge.", groups(ota, walk + endurance)),
-        ("Moving Mind", "Clear a walking challenge and an endurance challenge.", groups(walk, endurance)),
-        ("The Long Game", "Complete a long-running Special challenge.", groups(long_projects)),
-        ("Progress Published", "Complete the JP Progress Video challenge.", groups(["easy-5"])),
-        ("Grand Line", "Complete the One Piece challenge.", groups(["medium-7"])),
-        ("Into the Uncanny", "Complete the Umezu Kazuo manga challenge.", groups(["medium-8"])),
-        ("Toriyama's World", "Complete the Toriyama Akira manga challenge.", groups(["medium-6"])),
-        ("History Buff", "Complete the history manga challenge.", groups(["medium-5"])),
-        ("Cover to Cover", "Complete Novel in 24 Hours.", groups(["hard-1"])),
-        ("Page to Screen", "Clear a manga challenge and a shows challenge.", groups(manga, shows)),
-        ("Quarter Century", "Clear 25 distinct challenges.", {"kind": "clears", "count": 25}),
-    ]
 
 
 def image_path(filename: str | None) -> Path | None:
@@ -112,15 +90,9 @@ def validate_rule(rule: object) -> dict:
 def bootstrap(conn: sqlite3.Connection) -> None:
     # Seed once, never overwrite edits or restore an administrator's removals.
     if not conn.execute("SELECT 1 FROM meta WHERE key='achievements_seeded'").fetchone():
-        now = utcnow_iso()
-        for position, (title, description, rule) in enumerate(_defaults(), 1):
-            aid = f"achievement-{position:03}"
-            conn.execute(
-                "INSERT OR IGNORE INTO achievement_defs "
-                "(id,title,description,rule_json,image_file,position,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (aid, title, description, json.dumps(rule), f"{aid}.png", position, now, now),
-            )
+        # Challenges are seeded later in startup; shape/artwork validation happens here.
+        for data in parse_catalog(DEFAULT_CATALOG.read_bytes()):
+            _store_definition(conn, _definition_values(data), overwrite=False)
         conn.execute("INSERT INTO meta(key,value) VALUES ('achievements_seeded','1')")
     # Old completion dates are not guessed. Unknown dates remain NULL.
     for row in conn.execute(
@@ -272,7 +244,7 @@ def for_user(discord_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def save_definition(data: dict) -> str:
+def _definition_values(data: dict, known_ids: set[str] | None = None) -> tuple:
     aid = str(data.get("id") or uuid.uuid4())
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", aid):
         raise ValueError("Invalid achievement ID.")
@@ -304,23 +276,97 @@ def save_definition(data: dict) -> str:
         raise ValueError("Catalog order must be an integer.") from exc
     if not 0 <= position <= 100000:
         raise ValueError("Catalog order must be between 0 and 100000.")
+    if known_ids is not None and rule["kind"] == "groups":
+        required = {cid for group in rule["groups"] for cid in group}
+        if required - known_ids:
+            raise ValueError("Unknown challenge IDs: " + ", ".join(sorted(required - known_ids)))
+    return aid, title, description, json.dumps(rule), filename, enabled, position
+
+
+def _store_definition(conn: sqlite3.Connection, values: tuple, *, overwrite: bool = True) -> None:
+    now = utcnow_iso()
+    conflict = (
+        "DO UPDATE SET title=excluded.title, description=excluded.description,"
+        "rule_json=excluded.rule_json,image_file=excluded.image_file,"
+        "enabled=excluded.enabled,position=excluded.position,updated_at=excluded.updated_at"
+        if overwrite else "DO NOTHING"
+    )
+    conn.execute(
+        "INSERT INTO achievement_defs "
+        "(id,title,description,rule_json,image_file,enabled,position,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) " + conflict,
+        (*values, now, now),
+    )
+
+
+def save_definition(data: dict) -> str:
     with db_session() as conn:
-        if rule["kind"] == "groups":
-            required = {cid for group in rule["groups"] for cid in group}
-            known = {r["id"] for r in conn.execute("SELECT id FROM challenge_defs")}
-            if required - known:
-                raise ValueError("Unknown challenge IDs: " + ", ".join(sorted(required - known)))
-        now = utcnow_iso()
-        conn.execute(
-            "INSERT INTO achievement_defs "
-            "(id,title,description,rule_json,image_file,enabled,position,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, "
-            "description=excluded.description,rule_json=excluded.rule_json,image_file=excluded.image_file, "
-            "enabled=excluded.enabled,position=excluded.position,updated_at=excluded.updated_at",
-            (aid, title, description, json.dumps(rule), filename, enabled, position, now, now),
-        )
+        known = {r["id"] for r in conn.execute("SELECT id FROM challenge_defs")}
+        values = _definition_values(data, known)
+        _store_definition(conn, values)
         sync_all(conn)
-    return aid
+    return values[0]
+
+
+def parse_catalog(content: bytes) -> list[dict]:
+    """Read a bounded, versioned definition catalog; no user data or executable YAML."""
+    if len(content) > MAX_CATALOG_BYTES:
+        raise ValueError("Achievement catalogs must be 512 KB or smaller.")
+    try:
+        document = yaml.load(content.decode("utf-8"), Loader=_CatalogLoader)
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("Upload a valid UTF-8 YAML catalog.") from exc
+    if (
+        not isinstance(document, dict) or set(document) != {"version", "achievements"}
+        or type(document["version"]) is not int or document["version"] != 1
+    ):
+        raise ValueError("Use version: 1 and an achievements list.")
+    entries = document["achievements"]
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 1000:
+        raise ValueError("Provide between 1 and 1000 achievement definitions.")
+    seen, definitions = set(), []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != CATALOG_FIELDS:
+            raise ValueError("Each achievement needs exactly: " + ", ".join(sorted(CATALOG_FIELDS)))
+        if any(not isinstance(entry[key], str) for key in ("id", "title", "description")):
+            raise ValueError("Achievement IDs, titles, and descriptions must be strings.")
+        if not entry["id"] or entry["id"] in seen:
+            raise ValueError("Achievement IDs must be nonempty and unique.")
+        if (
+            type(entry["enabled"]) is not bool or type(entry["position"]) is not int
+            or (entry["image_file"] is not None and not isinstance(entry["image_file"], str))
+        ):
+            raise ValueError("Use true/false visibility, an integer position, and a PNG filename or null.")
+        seen.add(entry["id"])
+        data = {key: entry[key] for key in CATALOG_FIELDS - {"rule"}}
+        data["rule_json"] = entry["rule"]
+        _definition_values(data)
+        definitions.append(data)
+    return definitions
+
+
+def export_catalog() -> str:
+    """Export definitions, including removed ones, never member activity or receipts."""
+    entries = []
+    for item in list_definitions(include_removed=True):
+        entries.append(dict(
+            id=item["id"], title=item["title"], description=item["description"],
+            rule=json.loads(item["rule_json"]), image_file=item["image_file"],
+            enabled=bool(item["enabled"]), position=item["position"],
+        ))
+    return yaml.safe_dump(dict(version=1, achievements=entries), sort_keys=False, allow_unicode=True)
+
+
+def import_catalog(content: bytes) -> int:
+    """Explicit atomic merge by permanent ID. Omitted definitions are untouched."""
+    definitions = parse_catalog(content)
+    with db_session() as conn:
+        known = {r["id"] for r in conn.execute("SELECT id FROM challenge_defs")}
+        values = [_definition_values(data, known) for data in definitions]
+        for value in values:
+            _store_definition(conn, value)
+        sync_all(conn)
+    return len(definitions)
 
 
 def remove_definition(aid: str) -> None:

@@ -4,8 +4,11 @@ import asyncio
 import json
 import re
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import yaml
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
@@ -37,6 +40,150 @@ def _earned(user="u"):
 
 def _token(response):
     return re.search(r'name="token" value="([^"]+)"', response.text).group(1)
+
+
+def test_achievement_yaml_seed_ids_and_restart_preservation():
+    with TemporaryDirectory() as directory:
+        directory = Path(directory)
+        document = yaml.safe_load(ach.DEFAULT_CATALOG.read_text(encoding="utf-8"))
+        assert len(document["achievements"]) == 18
+        # Array order must never define identity or artwork assignments.
+        document["achievements"].reverse()
+        catalog = directory / "defaults.yaml"
+        catalog.write_text(yaml.safe_dump(document), encoding="utf-8")
+        path = str(directory / "seed.db")
+        with patch.object(ach, "DEFAULT_CATALOG", catalog):
+            init_db(path)
+            definitions = ach.list_definitions()
+            assert definitions[0]["id"] == "achievement-001"
+            assert definitions[0]["title"] == "First Clear"
+            assert definitions[-1]["id"] == "achievement-018"
+            assert definitions[-1]["image_file"] == "achievement-018.png"
+            # Legacy databases with an existing ID but missing seed marker retain edits.
+            definitions[0]["title"] = "An admin edit"
+            ach.save_definition(definitions[0])
+            with db_session() as conn:
+                conn.execute("DELETE FROM meta WHERE key='achievements_seeded'")
+            init_db(path)
+            assert ach.list_definitions()[0]["title"] == "An admin edit"
+            ach.remove_definition("achievement-002")
+        # Seeded databases do not even read a changed/missing default catalog.
+        with patch.object(ach, "DEFAULT_CATALOG", directory / "absent.yaml"):
+            init_db(path)
+            assert ach.list_definitions()[0]["title"] == "An admin edit"
+            assert "achievement-002" not in {d["id"] for d in ach.list_definitions()}
+
+
+def test_achievement_catalog_roundtrip_atomic_import_and_validation():
+    path = setup_tmp_db()
+    try:
+        _attempt(user="private-member")
+        ach.remove_definition("achievement-002")
+        with db_session() as conn:
+            known = {r["id"] for r in conn.execute("SELECT id FROM challenge_defs")}
+        for definition in ach.parse_catalog(ach.DEFAULT_CATALOG.read_bytes()):
+            ach._definition_values(definition, known)
+        original = yaml.safe_load(ach.export_catalog())
+        assert len(original["achievements"]) == 18
+        assert not original["achievements"][1]["enabled"]
+        assert all(set(d) == ach.CATALOG_FIELDS for d in original["achievements"])
+        assert "private-member" not in ach.export_catalog()
+        def receipts():
+            return {aid: (d["unlocked_at"], d["source_attempt_id"])
+                    for aid, d in _earned("private-member").items()}
+
+        before = receipts()
+        with patch.object(ach, "sync_all", wraps=ach.sync_all) as sync:
+            assert ach.import_catalog(ach.export_catalog().encode()) == 18
+            sync.assert_called_once()
+        assert receipts() == before
+        assert yaml.safe_load(ach.export_catalog()) == original
+
+        # A one-entry merge leaves omitted definitions and receipts alone.
+        item = {**original["achievements"][1], "title": "Restored", "enabled": True}
+        assert ach.import_catalog(yaml.safe_dump(dict(version=1, achievements=[item])).encode()) == 1
+        assert len(ach.list_definitions()) == 18
+        assert receipts() == before
+
+        baseline = ach.export_catalog()
+        good = {**original["achievements"][0], "title": "Must not be saved"}
+        bad_entries = [
+            {**good, "rule": {"kind": "groups", "groups": [["missing-challenge"]]}},
+            {**good, "id": "other", "image_file": "../private.png"},
+            {**good, "id": "other", "image_file": "missing.png"},
+            {**good, "id": "other", "rule": {"kind": "clears", "count": True}},
+            {**good, "id": "other", "enabled": "false"},
+            {**good, "id": "other", "position": 0.5},
+            {**good, "id": ""},
+            {**good, "id": "other", "source_attempt_id": 1},
+            good,  # Duplicate ID.
+        ]
+        invalid = [yaml.safe_dump(dict(version=1, achievements=[good, bad])).encode()
+                   for bad in bad_entries]
+        invalid += [
+            baseline.replace("title: First Clear\n", "title: First Clear\n  title: Duplicate\n").encode(),
+            b"version: [", b"\xff", b"!!python/object/apply:os.system ['echo unsafe']",
+            b"version: 1\nversion: 1\nachievements: []",
+            b"version: 2\nachievements: []", b"version: 1\nachievements: []",
+            b"x" * (ach.MAX_CATALOG_BYTES + 1),
+        ]
+        for content in invalid:
+            try:
+                ach.import_catalog(content)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Accepted an invalid catalog.")
+            assert ach.export_catalog() == baseline
+        # A failure during reconciliation rolls back every definition write too.
+        with patch.object(ach, "sync_all", side_effect=RuntimeError("reconciliation failed")):
+            try:
+                ach.import_catalog(yaml.safe_dump(dict(version=1, achievements=[good])).encode())
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Expected reconciliation failure.")
+        assert ach.export_catalog() == baseline
+    finally:
+        cleanup_db(path)
+
+
+def test_achievement_web_catalog_export_import_auth_and_confirmation():
+    from app.web.app import create_app
+
+    path = setup_tmp_db()
+    try:
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="secret")):
+            client = TestClient(create_app(), headers={"Origin": "http://testserver"})
+            assert client.get("/achievements/catalog/export.yaml").status_code == 401
+            assert client.post("/achievements/catalog/import", files={"catalog": ("c.yaml", b"invalid")}).status_code == 401
+            client.auth = ("admin", "secret")
+            exported = client.get("/achievements/catalog/export.yaml")
+            assert exported.status_code == 200
+            assert exported.headers["cache-control"] == "no-store"
+            assert "attachment" in exported.headers["content-disposition"]
+            document = yaml.safe_load(exported.text)
+            document["achievements"][0]["title"] = "Imported title"
+            payload = yaml.safe_dump(document).encode()
+
+            def post(token="", confirmed="yes", content=payload):
+                return client.post("/achievements/catalog/import", data=dict(token=token, confirmed=confirmed),
+                                   files={"catalog": ("catalog.yaml", content, "application/yaml")})
+
+            assert post().status_code == 403
+            assert post(_token(client.get("/achievements")), confirmed="").status_code == 400
+            token = _token(client.get("/achievements"))
+            imported = post(token)
+            assert imported.status_code == 200 and "Imported 18 definitions." in imported.text
+            assert ach.list_definitions()[0]["title"] == "Imported title"
+            assert post(token).status_code == 403
+            before = ach.export_catalog()
+            assert post(_token(client.get("/achievements")), content=b"invalid").status_code == 400
+            assert post(_token(client.get("/achievements")),
+                        content=b"x" * (ach.MAX_CATALOG_BYTES + 1)).status_code == 400
+            assert ach.export_catalog() == before
+    finally:
+        cleanup_db(path)
 
 
 def test_achievement_rules_dates_and_user_isolation():

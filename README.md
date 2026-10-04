@@ -129,11 +129,24 @@ the database before that import. Earlier changes cannot be reconstructed.
   an achievement. IDs are permanent and independent of names/images. Removal
   hides the definition while keeping its ID and receipts; change visibility to
   restore it. Set `UI_PASSWORD` before exposing the admin UI.
-- The 18 approved definitions are seeded once. Later restarts do not overwrite
+- The 18 approved definitions live in [`achievements/defaults.yaml`](achievements/defaults.yaml)
+  with explicit permanent IDs, rules, artwork filenames, visibility, and order.
+  The versioned YAML is validated and seeded once. Later restarts do not overwrite
   edits or restore removed definitions. Rules support distinct clears, media
   format counts, and one clear from each configured group of challenge IDs.
   Group rules explicitly list IDs; update them when adding relevant challenges.
   Failures, abandoned attempts, and repeats never advance clear milestones.
+- **Export / import achievement catalog** on the admin Achievements page downloads
+  the live definitions as YAML (including removed entries, never member activity).
+  SQLite stays authoritative: editing the default YAML does not change an existing
+  database. To apply changes, explicitly import a reviewed catalog.
+  Imports require confirmation and merge atomically by ID; omitted entries are
+  untouched, `enabled: false` hides an entry, and `enabled: true` can restore it.
+  Rules, challenge IDs, and artwork are validated before any writes. Invalid files
+  make no changes. Catalogs are UTF-8 YAML, up to 512 KB / 1000 entries.
+  The export does not bundle images; back up uploaded PNGs separately and make
+  referenced artwork available on the destination before importing. Keep IDs
+  unchanged when renaming, reordering, or retiring achievements.
 - Unlocks use the earliest qualifying completion history, not the time a user
   opens the card. Completion and unlock dates are stored in UTC, with a source
   attempt and a snapshot of challenge metadata. Editing a completed attempt
@@ -184,6 +197,7 @@ Admin **Settings** page (DB overrides env). Highlights:
 ```text
 app/          bot + FastAPI admin + verify + tadoku client
 challenges/   YAML catalogs
+achievements/ versioned default achievement catalog
 data/         SQLite volume (gitignored)
 ```
 

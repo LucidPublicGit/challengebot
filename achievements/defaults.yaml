@@ -1,0 +1,146 @@
+# Seeds new databases only. Existing admin edits remain authoritative.
+# IDs are permanent: never rename/reuse an ID when reordering or retiring entries.
+version: 1
+achievements:
+  - id: achievement-001
+    title: First Clear
+    description: Complete your first challenge.
+    rule: {kind: clears, count: 1}
+    image_file: achievement-001.png
+    enabled: true
+    position: 1
+  - id: achievement-002
+    title: Getting Rolling
+    description: Clear 5 distinct challenges.
+    rule: {kind: clears, count: 5}
+    image_file: achievement-002.png
+    enabled: true
+    position: 2
+  - id: achievement-003
+    title: Double Digits
+    description: Clear 10 distinct challenges.
+    rule: {kind: clears, count: 10}
+    image_file: achievement-003.png
+    enabled: true
+    position: 3
+  - id: achievement-004
+    title: Seasoned Challenger
+    description: Clear 20 distinct challenges.
+    rule: {kind: clears, count: 20}
+    image_file: achievement-004.png
+    enabled: true
+    position: 4
+  - id: achievement-005
+    title: Media Sampler
+    description: "Clear challenges in any 4 of the 5 formats: manga, shows, YouTube, visual novels, and novels."
+    rule: {kind: formats, count: 4}
+    image_file: achievement-005.png
+    enabled: true
+    position: 5
+  - id: achievement-006
+    title: All-Rounder
+    description: "Clear a challenge in each format: manga, shows, YouTube, visual novels, and novels."
+    rule: {kind: formats, count: 5}
+    image_file: achievement-006.png
+    enabled: true
+    position: 6
+  - id: achievement-007
+    title: Double Feature
+    description: Clear a reading challenge and a listening challenge.
+    rule:
+      kind: groups
+      groups:
+        - [easy-1, medium-1, hard-2, ota-2, easy-4, medium-4, hard-4, hard-1, ota-1]
+        - [easy-2, medium-2, hard-3, ota-3, easy-3, medium-3]
+    image_file: achievement-007.png
+    enabled: true
+    position: 7
+  - id: achievement-008
+    title: Two Worlds
+    description: Clear an Ota challenge and a Physical challenge.
+    rule:
+      kind: groups
+      groups:
+        - [easy-1, medium-1, hard-2, ota-2, easy-4, medium-4, hard-4, hard-1, ota-1, easy-2, medium-2, hard-3, ota-3, easy-3, medium-3, hard-5, ota-4]
+        - [physical-walk-easy, physical-walk-medium, physical-walk-hard, physical-walk-ota, physical-endurance-easy, physical-endurance-medium, physical-endurance-hard, physical-endurance-ota]
+    image_file: achievement-008.png
+    enabled: true
+    position: 8
+  - id: achievement-009
+    title: Moving Mind
+    description: Clear a walking challenge and an endurance challenge.
+    rule:
+      kind: groups
+      groups:
+        - [physical-walk-easy, physical-walk-medium, physical-walk-hard, physical-walk-ota]
+        - [physical-endurance-easy, physical-endurance-medium, physical-endurance-hard, physical-endurance-ota]
+    image_file: achievement-009.png
+    enabled: true
+    position: 9
+  - id: achievement-010
+    title: The Long Game
+    description: Complete a long-running Special challenge.
+    rule: {kind: groups, groups: [[medium-8, medium-7, medium-5, medium-6]]}
+    image_file: achievement-010.png
+    enabled: true
+    position: 10
+  - id: achievement-011
+    title: Progress Published
+    description: Complete the JP Progress Video challenge.
+    rule: {kind: groups, groups: [[easy-5]]}
+    image_file: achievement-011.png
+    enabled: true
+    position: 11
+  - id: achievement-012
+    title: Grand Line
+    description: Complete the One Piece challenge.
+    rule: {kind: groups, groups: [[medium-7]]}
+    image_file: achievement-012.png
+    enabled: true
+    position: 12
+  - id: achievement-013
+    title: Into the Uncanny
+    description: Complete the Umezu Kazuo manga challenge.
+    rule: {kind: groups, groups: [[medium-8]]}
+    image_file: achievement-013.png
+    enabled: true
+    position: 13
+  - id: achievement-014
+    title: Toriyama's World
+    description: Complete the Toriyama Akira manga challenge.
+    rule: {kind: groups, groups: [[medium-6]]}
+    image_file: achievement-014.png
+    enabled: true
+    position: 14
+  - id: achievement-015
+    title: History Buff
+    description: Complete the history manga challenge.
+    rule: {kind: groups, groups: [[medium-5]]}
+    image_file: achievement-015.png
+    enabled: true
+    position: 15
+  - id: achievement-016
+    title: Cover to Cover
+    description: Complete Novel in 24 Hours.
+    rule: {kind: groups, groups: [[hard-1]]}
+    image_file: achievement-016.png
+    enabled: true
+    position: 16
+  - id: achievement-017
+    title: Page to Screen
+    description: Clear a manga challenge and a shows challenge.
+    rule:
+      kind: groups
+      groups:
+        - [easy-1, medium-1, hard-2, ota-2]
+        - [easy-2, medium-2, hard-3, ota-3]
+    image_file: achievement-017.png
+    enabled: true
+    position: 17
+  - id: achievement-018
+    title: Quarter Century
+    description: Clear 25 distinct challenges.
+    rule: {kind: clears, count: 25}
+    image_file: achievement-018.png
+    enabled: true
+    position: 18

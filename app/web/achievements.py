@@ -8,7 +8,7 @@ import uuid
 from io import BytesIO
 
 from fastapi import Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from PIL import Image, UnidentifiedImageError
 
 from app.catalog import list_challenges
@@ -97,7 +97,7 @@ def register_achievements(app, auth) -> None:
             for c in list_challenges()
         )
         body = f"""
-        {_flash_html(saved="Saved." if saved else "")}
+        {_flash_html(saved=saved)}
         <div class="card"><table><thead><tr><th>Achievement</th><th>Requirement</th><th>Visibility</th></tr></thead>
         <tbody>{"".join(rows)}</tbody></table></div>
         <details class="block"><summary>Add an achievement</summary><div class="block-body">
@@ -108,10 +108,51 @@ def register_achievements(app, auth) -> None:
         </div></details>
         <details class="block"><summary>Challenge IDs for unlock rules</summary>
           <div class="block-body"><ul>{challenges}</ul></div></details>
+        <details class="block"><summary>Export / import achievement catalog</summary><div class="block-body">
+          <p><a class="btn secondary" href="/achievements/catalog/export.yaml">Download catalog YAML</a></p>
+          <p class="muted">Exports include published and removed definitions, not member data or artwork.
+            Import merges by permanent ID; omitted entries are unchanged. Rules are recalculated.
+            Importing an enabled definition can restore a removed achievement.
+            Back up the catalog first. Referenced PNGs must already exist on this server.</p>
+          <form method="post" action="/achievements/catalog/import" enctype="multipart/form-data">
+            {token_field()}
+            <label for="ach-catalog">YAML catalog (up to 512 KB)</label>
+            <input id="ach-catalog" type="file" name="catalog" accept=".yaml,.yml" required/>
+            <div class="check-row">
+              <input id="ach-import-confirm" type="checkbox" name="confirmed" value="yes" required/>
+              <label for="ach-import-confirm">I understand this updates existing definitions
+                and recalculates eligibility.</label>
+            </div>
+            <button type="submit">Import catalog</button>
+          </form>
+        </div></details>
         """
         response = _page("Achievements", body, "/achievements")
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.get("/achievements/catalog/export.yaml")
+    def achievement_export(_: None = Depends(auth)):
+        return Response(
+            ach.export_catalog(), media_type="application/yaml",
+            headers={"Content-Disposition": 'attachment; filename="achievements.yaml"',
+                     "Cache-Control": "no-store"},
+        )
+
+    @app.post("/achievements/catalog/import")
+    async def achievement_import(
+        token: str = Form(""), confirmed: str = Form(""), catalog: UploadFile = File(...),
+        _: None = Depends(auth),
+    ):
+        check_token(token)
+        if confirmed != "yes":
+            raise HTTPException(400, "Confirm the catalog import before continuing.")
+        content = await catalog.read(ach.MAX_CATALOG_BYTES + 1)
+        try:
+            count = await asyncio.to_thread(ach.import_catalog, content)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return RedirectResponse(f"/achievements?saved=Imported+{count}+definitions.", status_code=303)
 
     @app.get("/achievements/{aid}")
     def achievement_edit(aid: str, saved: str = "", _: None = Depends(auth)):
