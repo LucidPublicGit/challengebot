@@ -49,7 +49,7 @@ async def main() -> None:
     cover.save(buf, format="PNG")
     png = await render_challenge_card(
         kind="complete",
-        display_name="Monty",
+        display_name="Challenger",
         challenge_title="VN 30k",
         tier="easy",
         number=4,
@@ -65,7 +65,7 @@ async def main() -> None:
 
     png = await render_challenge_card(
         kind="start",
-        display_name="Monty",
+        display_name="Challenger",
         challenge_title="Very Long Challenge Title That Wraps Nicely",
         tier="medium",
         number=9,
@@ -81,7 +81,7 @@ async def main() -> None:
     for tier in ("easy", "medium", "hard", "ota_master"):
         png = await render_challenge_card(
             kind="complete",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="Manga Mini-Marathon",
             tier=tier,
             number=1,
@@ -129,7 +129,7 @@ async def main() -> None:
                 from app.challenge_card import render_unified_start_card
 
                 unified = await render_unified_start_card(
-                    display_name="Monty",
+                    display_name="Challenger",
                     challenge_title="Manga Mini-Marathon",
                     tier="easy",
                     number=1,

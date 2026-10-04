@@ -10,7 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -407,15 +407,17 @@ def _auth(
     settings = get_settings()
     password = settings.ui_password or ""
     if not password:
-        return
+        raise HTTPException(503, "Admin access disabled. Configure UI_PASSWORD.")
     if credentials is None:
         raise HTTPException(
             status_code=401,
             detail="Auth required",
             headers={"WWW-Authenticate": "Basic"},
         )
-    user_ok = secrets.compare_digest(credentials.username, settings.ui_username or "admin")
-    pass_ok = secrets.compare_digest(credentials.password, password)
+    user_ok = secrets.compare_digest(
+        credentials.username.encode(), (settings.ui_username or "admin").encode()
+    )
+    pass_ok = secrets.compare_digest(credentials.password.encode(), password.encode())
     if not (user_ok and pass_ok):
         raise HTTPException(
             status_code=401,
@@ -587,8 +589,31 @@ def _tier_goal_fields(
 
 
 def create_app(bot=None) -> FastAPI:
-    app = FastAPI(title="ChallengeTracker Admin", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ChallengeTracker Admin", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.bot = bot
+
+    @app.middleware("http")
+    async def protect_admin(request: Request, call_next):
+        # HTTP Basic is automatically sent by browsers, so all writes need CSRF protection.
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            source = request.headers.get("origin") or request.headers.get("referer", "")
+            try:
+                parsed = urlsplit(source)
+            except ValueError:
+                return HTMLResponse("Invalid request origin.", status_code=403)
+            if (
+                not source
+                or parsed.scheme != request.url.scheme
+                or parsed.netloc != request.url.netloc
+                or request.headers.get("sec-fetch-site") == "cross-site"
+            ):
+                return HTMLResponse("Same-origin requests required.", status_code=403)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
     from app.web.announcements import register_announcements
 
     register_announcements(app, _auth)

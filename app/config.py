@@ -100,9 +100,9 @@ class Settings:
     database_path: str = "./data/challenges.db"
     challenge_catalog: str = "./challenges/2026.yaml"
     tadoku_api_base: str = "https://tadoku.app/api/internal/immersion"
-    tadoku_contest_id: str = "90e6509e-bc32-49d4-936d-ea0776eee602"
-    announce_channel_id: str = "1187153489156124732"
-    announce_secondary_channel_id: str = "1523503572652916786"
+    tadoku_contest_id: str = ""
+    announce_channel_id: str = ""
+    announce_secondary_channel_id: str = ""
     reward_roles: str = ""
     allow_reattempt: bool = False
     allow_honor_override: bool = True
@@ -138,7 +138,7 @@ class Settings:
     monthly_digest_enabled: bool = True
     monthly_digest_tz: str = ""
     monthly_digest_hour: float = 12.0
-    ui_host: str = "0.0.0.0"
+    ui_host: str = "127.0.0.1"
     ui_port: int = 8090
     ui_username: str = "admin"
     ui_password: str = ""
@@ -174,13 +174,13 @@ def get_settings() -> Settings:
             "TADOKU_API_BASE", "https://tadoku.app/api/internal/immersion"
         ),
         tadoku_contest_id=_env(
-            "TADOKU_CONTEST_ID", "90e6509e-bc32-49d4-936d-ea0776eee602"
+            "TADOKU_CONTEST_ID", ""
         ),
         announce_channel_id=_env(
-            "ANNOUNCE_CHANNEL_ID", "1187153489156124732"
+            "ANNOUNCE_CHANNEL_ID", ""
         ),
         announce_secondary_channel_id=_env(
-            "ANNOUNCE_SECONDARY_CHANNEL_ID", "1523503572652916786"
+            "ANNOUNCE_SECONDARY_CHANNEL_ID", ""
         ),
         reward_roles=_env("REWARD_ROLES"),
         allow_reattempt=_env_bool("ALLOW_REATTEMPT", False),
@@ -214,7 +214,7 @@ def get_settings() -> Settings:
         monthly_digest_enabled=_env_bool("MONTHLY_DIGEST_ENABLED", True),
         monthly_digest_tz=_env("MONTHLY_DIGEST_TZ", ""),
         monthly_digest_hour=_env_float("MONTHLY_DIGEST_HOUR", 12.0),
-        ui_host=_env("UI_HOST", "0.0.0.0"),
+        ui_host=_env("UI_HOST", "127.0.0.1"),
         ui_port=int(_env("UI_PORT", "8090") or "8090"),
         ui_username=_env("UI_USERNAME", "admin"),
         ui_password=_env("UI_PASSWORD"),

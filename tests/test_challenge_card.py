@@ -22,7 +22,7 @@ from app.challenge_card import (
 def test_userinfo_unranked_renders():
     png = asyncio.run(
         render_userinfo_card(
-            display_name="Monty",
+            display_name="Challenger",
             best_tier=None,
             categories={
                 "ota": {"points": 2, "total_points": 10, "clears": 1, "total": 4},
@@ -202,7 +202,7 @@ def test_multi_works_grows_card_height():
         png = asyncio.run(
             render_challenge_card(
                 kind="complete",
-                display_name="Monty",
+                display_name="Challenger",
                 challenge_title="Manga Mini-Marathon",
                 tier="easy",
                 number=1,
@@ -223,7 +223,7 @@ def test_multi_works_grows_card_height():
     multi = asyncio.run(
         render_challenge_card(
             kind="complete",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="Manga Mini-Marathon",
             tier="easy",
             number=1,
@@ -256,7 +256,7 @@ def test_poster_on_card():
     png = asyncio.run(
         render_challenge_card(
             kind="complete",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="VN 30k",
             tier="easy",
             number=4,
@@ -273,7 +273,7 @@ def test_poster_on_card():
     bare = asyncio.run(
         render_challenge_card(
             kind="complete",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="VN 30k",
             tier="easy",
             number=4,
@@ -305,7 +305,7 @@ def test_focus_stays_inside_box():
     png = asyncio.run(
         render_challenge_card(
             kind="start",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="YouTube Deep Dive",
             tier="easy",
             number=3,

@@ -5,8 +5,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      UI_HOST: 0.0.0.0
     ports:
-      - "${UI_PORT:-8090}:8090"
+      - "127.0.0.1:${UI_PORT:-8090}:8090"
     volumes:
       - ./data:/app/data
       - ./challenges:/app/challenges:ro

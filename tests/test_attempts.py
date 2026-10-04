@@ -60,12 +60,13 @@ def test_category_progress_weights_points_and_deduplicates():
 
 
 def test_category_migration_and_yaml_import(tmp_path):
+    from contextlib import closing
     import sqlite3
     from app.db import SCHEMA, init_db
     from app.catalog import get_challenge, upsert_challenges_from_yaml
 
     path = str(tmp_path / "old.db")
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(SCHEMA.replace(
             "  category TEXT NOT NULL DEFAULT 'ota' CHECK(category IN ('ota', 'physical')),\n", ""
         ))

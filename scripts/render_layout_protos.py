@@ -23,7 +23,7 @@ from app.new_challenger import list_templates, render_new_challenger
 
 ROOT = Path("data/card_previews/prototypes")
 AV = demo_avatar_png()
-NAME = "Monty"
+NAME = "Challenger"
 TITLE = "Manga Mini-Marathon"
 TIER = "easy"
 FOCUS = "One Piece"
@@ -205,7 +205,7 @@ async def main() -> None:
     mock_discord_message(
         label="PROTO A — start (NC + text only)",
         caption_lines=[
-            "Easy #1 · @Monty started Manga Mini-Marathon · One Piece",
+            "Easy #1 · @Challenger started Manga Mini-Marathon · One Piece",
             "Ends Sat 28 Mar 18:00 (in 12 hours)",
         ],
         images=[nc_im],
@@ -214,7 +214,7 @@ async def main() -> None:
     mock_discord_message(
         label="PROTO A — status (text only, no image)",
         caption_lines=[
-            "Easy #1 · @Monty · Halfway through the window · Manga Mini-Marathon",
+            "Easy #1 · @Challenger · Halfway through the window · Manga Mini-Marathon",
             "4h 0m left · timer checkpoint",
             "Ends Sat 28 Mar 18:00 (in 4 hours)",
         ],
@@ -223,7 +223,7 @@ async def main() -> None:
     )
     mock_discord_message(
         label="PROTO A — complete (calm card)",
-        caption_lines=["Easy #1 · @Monty completed Manga Mini-Marathon"],
+        caption_lines=["Easy #1 · @Challenger completed Manga Mini-Marathon"],
         images=[complete_im],
         out=a / "mock_complete.png",
     )
@@ -240,7 +240,7 @@ async def main() -> None:
     mock_discord_message(
         label="PROTO B — start (NC + text)",
         caption_lines=[
-            "Easy #1 · @Monty started Manga Mini-Marathon · One Piece",
+            "Easy #1 · @Challenger started Manga Mini-Marathon · One Piece",
             "Ends Sat 28 Mar 18:00 (in 12 hours)",
         ],
         images=[nc_im],
@@ -248,13 +248,13 @@ async def main() -> None:
     )
     mock_discord_message(
         label="PROTO B — status (short banner, not log card)",
-        caption_lines=["Easy #1 · @Monty · checkpoint"],
+        caption_lines=["Easy #1 · @Challenger · checkpoint"],
         images=[strip],
         out=b / "mock_status.png",
     )
     mock_discord_message(
         label="PROTO B — complete",
-        caption_lines=["Easy #1 · @Monty completed Manga Mini-Marathon"],
+        caption_lines=["Easy #1 · @Challenger completed Manga Mini-Marathon"],
         images=[complete_im],
         out=b / "mock_complete.png",
     )
@@ -268,7 +268,7 @@ async def main() -> None:
     mock_discord_message(
         label="PROTO C — start (lifecycle card only, no NC)",
         caption_lines=[
-            "Easy #1 · @Monty started Manga Mini-Marathon · One Piece",
+            "Easy #1 · @Challenger started Manga Mini-Marathon · One Piece",
             "Ends Sat 28 Mar 18:00 (in 12 hours)",
         ],
         images=[card_im],
@@ -276,13 +276,13 @@ async def main() -> None:
     )
     mock_discord_message(
         label="PROTO C — status (full card)",
-        caption_lines=["Easy #1 · @Monty · Halfway through the window"],
+        caption_lines=["Easy #1 · @Challenger · Halfway through the window"],
         images=[status_card_im],
         out=c / "mock_status.png",
     )
     mock_discord_message(
         label="PROTO C — complete",
-        caption_lines=["Easy #1 · @Monty completed Manga Mini-Marathon"],
+        caption_lines=["Easy #1 · @Challenger completed Manga Mini-Marathon"],
         images=[complete_im],
         out=c / "mock_complete.png",
     )
@@ -291,7 +291,7 @@ async def main() -> None:
     d = ROOT / "D_text_thumb"
     d.mkdir(exist_ok=True)
     start_emb = text_thumb_mock(
-        title_line="Monty started a challenge",
+        title_line="Challenger started a challenge",
         fields=[
             ("Challenge", "Easy #1 · Manga Mini-Marathon"),
             ("Focus", "One Piece"),
@@ -311,7 +311,7 @@ async def main() -> None:
         fields=[
             ("Challenge", "Easy #1 · Manga Mini-Marathon"),
             ("Result", "5 / 5 volumes"),
-            ("By", "Monty"),
+            ("By", "Challenger"),
         ],
     )
     start_emb.save(d / "start_image.png")
@@ -319,7 +319,7 @@ async def main() -> None:
     complete_emb.save(d / "complete_image.png")
     mock_discord_message(
         label="PROTO D — start (embed fields + thumb)",
-        caption_lines=["@Monty started Easy #1"],
+        caption_lines=["@Challenger started Easy #1"],
         images=[start_emb],
         out=d / "mock_start.png",
     )
@@ -345,7 +345,7 @@ async def main() -> None:
     mock_discord_message(
         label="PROTO E — start (NC + micro chip — two images)",
         caption_lines=[
-            "Easy #1 · @Monty started Manga Mini-Marathon · One Piece",
+            "Easy #1 · @Challenger started Manga Mini-Marathon · One Piece",
             "Ends Sat 28 Mar 18:00 (in 12 hours)",
         ],
         images=[nc_im, chip],

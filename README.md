@@ -18,7 +18,8 @@ Discord bot + admin UI for yearly immersion challenges. Users log on **tadoku.ap
 cd ChallengeTracker
 copy .env.example .env
 # Edit .env: DISCORD_TOKEN (required), DISCORD_GUILD_ID (recommended)
-# optional: UI_PASSWORD, ANNOUNCE_CHANNEL_ID, ADMIN_ROLE_IDS, DISCORD_CLIENT_ID
+# Set UI_PASSWORD to a strong unique password (required for admin UI access).
+# optional: ANNOUNCE_CHANNEL_ID, ADMIN_ROLE_IDS, DISCORD_CLIENT_ID
 
 .\rebuild.bat          # build + start (after code changes)
 # .\start.bat          # start only
@@ -32,7 +33,11 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 **Never commit `.env`.** Only `.env.example` is tracked.
 
 - Bot: Discord slash commands (guild-synced when `DISCORD_GUILD_ID` set)
-- Admin UI: http://localhost:8090 (HTTP Basic if `UI_PASSWORD` set)
+- Admin UI: http://localhost:8090 (HTTP Basic required; disabled without `UI_PASSWORD`).
+  Docker publishes only to loopback. For remote administration use an SSH tunnel
+  or an authenticated HTTPS reverse proxy, never expose plain HTTP Basic to the internet.
+  Proxy deployments must preserve the browser-facing Host and scheme for same-origin
+  write checks; trust forwarded headers only from the proxy.
 
 ### Discord app
 
@@ -101,6 +106,15 @@ Previous definitions are explicitly marked unavailable unless recoverable from
 the database before that import. Earlier changes cannot be reconstructed.
 
 ### Achievements
+
+- Admins can use `/achievement_admin add`, `/achievement_admin edit`, and
+  `/achievement_admin remove` in a server. The guild owner, Administrator, and
+  configured `ADMIN_ROLE_IDS` are checked on every invocation.
+  Add requires `title`, `description`, `rule_json`, and a managed `image_file`
+  (e.g. `achievement-001.png`). Edit takes `achievement_id` and optional fields;
+  omitted fields are preserved. Remove requires `confirm:True` and keeps history.
+  Restore with edit `published:True`. Upload new artwork through the web UI.
+  Use `/challenge dump catalog:Achievements` to find published IDs.
 
 - `/challenge userinfo` shows small earned icons and `?` stubs below Category
   progress. **View Achievements** opens a paginated list; `/achievements` also
@@ -174,6 +188,13 @@ data/         SQLite volume (gitignored)
 ```
 
 Single container / single SQLite writer — do not scale replicas.
+
+## Sharing and security
+
+See [SECURITY.md](SECURITY.md) for deployment and disclosure guidance and
+[the audit report](docs/security-audit.md) for findings and release limitations.
+Never share `.env`, `data/`, database backups, logs, agent sessions, or demo previews.
+Only share a sanitized release snapshot, not the original development Git history.
 
 ## Tests (local, no Discord token required)
 

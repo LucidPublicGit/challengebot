@@ -55,9 +55,10 @@ def test_web_announcement_publish_and_one_use():
     try:
         target = _target()
         resolver = AsyncMock(return_value=target)
-        with patch("app.web.app.get_settings", return_value=Settings()), \
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="secret")), \
              patch("app.web.announcements.resolve_announce_channel", resolver):
-            client = TestClient(create_app(_bot()))
+            client = TestClient(create_app(_bot()), headers={"Origin": "http://testserver"})
+            client.auth = ("admin", "secret")
             data = {
                 "title": "Community news", "message": "@everyone\n" + "a" * 4100,
                 "image": "physical", "confirmed": "yes",
@@ -83,9 +84,10 @@ def test_web_announcement_upload_and_errors():
     path = setup_tmp_db()
     try:
         target = _target()
-        with patch("app.web.app.get_settings", return_value=Settings()), \
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="secret")), \
              patch("app.web.announcements.resolve_announce_channel", AsyncMock(return_value=target)):
-            client = TestClient(create_app(_bot()))
+            client = TestClient(create_app(_bot()), headers={"Origin": "http://testserver"})
+            client.auth = ("admin", "secret")
 
             def post(**overrides):
                 data = {
@@ -122,7 +124,8 @@ def test_web_announcement_upload_and_errors():
             ]
             failed = post()
             assert failed.status_code == 502 and "after 1 message(s)" in failed.text
-            disconnected = TestClient(create_app())
+            disconnected = TestClient(create_app(), headers={"Origin": "http://testserver"})
+            disconnected.auth = ("admin", "secret")
             result = disconnected.post("/announcements", data={
                 "token": _token(disconnected.get("/announcements")),
                 "title": "News", "message": "News", "confirmed": "yes",
@@ -136,9 +139,10 @@ def test_change_draft_marks_only_successful_publications():
     path = setup_tmp_db()
     try:
         target = _target()
-        with patch("app.web.app.get_settings", return_value=Settings()), \
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="secret")), \
              patch("app.web.announcements.resolve_announce_channel", AsyncMock(return_value=target)):
-            client = TestClient(create_app(_bot()))
+            client = TestClient(create_app(_bot()), headers={"Origin": "http://testserver"})
+            client.auth = ("admin", "secret")
             page = client.get("/announcements?preset=changes")
             assert "Manga 3" in page.text and "Walking Immersion Easy" in page.text
             assert "12 tracked changes" in page.text

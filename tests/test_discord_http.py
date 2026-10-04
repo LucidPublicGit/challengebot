@@ -12,7 +12,7 @@ from app.discord_http import (
     user_id_from_bot_token,
 )
 
-UID = "1545936864177946697"
+UID = "123456789012345678"
 
 
 def _token(uid: str = UID) -> str:

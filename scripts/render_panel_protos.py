@@ -81,7 +81,7 @@ def _card(
     primary: str,
     secondary: str,
     title: str = "Manga Mini-Marathon",
-    name: str = "Monty",
+    name: str = "Challenger",
     number: int = 1,
 ) -> Image.Image:
     badge, kind_accent = KIND_STYLE.get(kind, ("EVENT", ACCENT_PURPLE))

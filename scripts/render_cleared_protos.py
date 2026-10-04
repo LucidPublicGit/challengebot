@@ -51,7 +51,7 @@ def _sheet(rows: list[tuple[str, Image.Image]], path: Path) -> None:
 async def one(tier: str, detail: str, style: str) -> Image.Image:
     png = await render_challenge_card(
         kind="complete",
-        display_name="Monty",
+        display_name="Challenger",
         challenge_title="Manga Mini-Marathon",
         tier=tier,
         number=1,

@@ -62,7 +62,7 @@ async def _card(kind: str, tier: str, detail: str, style: str) -> Image.Image:
     if kind == "complete":
         png = await render_challenge_card(
             kind="complete",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="Manga Mini-Marathon",
             tier=tier,
             number=1,
@@ -76,7 +76,7 @@ async def _card(kind: str, tier: str, detail: str, style: str) -> Image.Image:
     else:
         png = await render_challenge_card(
             kind="abandon",
-            display_name="Monty",
+            display_name="Challenger",
             challenge_title="YouTube Deep Dive",
             tier=tier,
             number=3,

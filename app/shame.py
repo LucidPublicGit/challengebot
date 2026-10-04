@@ -218,7 +218,7 @@ def pick_shame_image():
 if __name__ == "__main__":
     # Small demo of what Discord captions look like
     random.seed(0)
-    mention = "@Monty"
+    mention = "@Challenger"
     samples = [
         ("fail", 0, f"💀 {mention} failed a check"),
         ("fail", 2, f"💀 {mention} failed a check"),

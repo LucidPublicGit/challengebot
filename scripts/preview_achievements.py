@@ -28,7 +28,7 @@ async def render_demo(user, label):
     # Keep the demo focused on the new section, rather than a 30-row clear history.
     completed = completed[:3]
     png = await render_userinfo_card(
-        display_name="Monty", avatar=demo_avatar_png(), tadoku_linked=True,
+        display_name="Challenger", avatar=demo_avatar_png(), tadoku_linked=True,
         points=att.challenge_points(user), clears=att.completion_counts(user)["total"],
         rank=standing["rank"], ranked=standing["ranked"],
         best_tier=swept[-1] if swept else None, cleared_tiers=swept,
@@ -37,7 +37,7 @@ async def render_demo(user, label):
     (OUT / f"achievements-{label}-usercard.png").write_bytes(png)
     n = ACHIEVEMENT_LIST_PAGE_SIZE
     for page in range((len(entries) + n - 1) // n):
-        png = await render_achievement_list(display_name="Monty", achievements=entries, page=page)
+        png = await render_achievement_list(display_name="Challenger", achievements=entries, page=page)
         (OUT / f"achievements-{label}-list-{page + 1}.png").write_bytes(png)
 
 

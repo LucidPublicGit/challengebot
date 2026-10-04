@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -28,6 +30,8 @@ MODULES = (
     "tests.test_shame",
     "tests.test_monthly_digest",
     "tests.test_runtime_settings",
+    "tests.test_security",
+    "tests.test_discord_http",
 )
 
 
@@ -44,7 +48,11 @@ def main() -> int:
         for name, fn in tests:
             label = f"{mod_name}.{name}"
             try:
-                fn()
+                if "tmp_path" in inspect.signature(fn).parameters:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        fn(tmp_path=Path(tmp))
+                else:
+                    fn()
                 print(f"PASS {label}")
                 passed += 1
             except Exception:

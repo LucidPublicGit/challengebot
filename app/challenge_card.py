@@ -2542,7 +2542,7 @@ def files_as_image_embeds(
 # Demo payloads for tests + /challenge testcards
 DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
     "start": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "Manga Mini-Marathon",
         "tier": "easy",
         "number": 1,
@@ -2553,7 +2553,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "cleared_tiers": ["easy"],
     },
     "scheduled": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "Shows Sprint",
         "tier": "easy",
         "number": 2,
@@ -2564,7 +2564,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "cleared_tiers": ["easy"],
     },
     "active": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "VN 30k",
         "tier": "easy",
         "number": 4,
@@ -2576,7 +2576,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "cleared_tiers": ["easy"],
     },
     "complete": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "VN 30k",
         "tier": "easy",
         "number": 4,
@@ -2587,7 +2587,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "cleared_tiers": ["easy"],
     },
     "fail": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "Manga 10",
         "tier": "medium",
         "number": 1,
@@ -2598,7 +2598,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "cleared_tiers": ["easy", "medium"],
     },
     "abandon": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "YouTube Deep Dive",
         "tier": "easy",
         "number": 3,
@@ -2609,7 +2609,7 @@ DEMO_CHALLENGE_SAMPLES: dict[str, dict] = {
         "cleared_tiers": ["easy"],
     },
     "expired": {
-        "display_name": "Monty",
+        "display_name": "Challenger",
         "challenge_title": "Shows 6h",
         "tier": "medium",
         "number": 2,
@@ -2688,7 +2688,7 @@ async def render_all_demo_cards(
         )
         out.append((kind, png))
     ui = await render_userinfo_card(
-        display_name=display_name or "Monty",
+        display_name=display_name or "Challenger",
         avatar=av,
         points=84,
         clears=30,

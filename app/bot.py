@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands, tasks
 
 from app.bot_commands import challenge_group, challenge_achievements
+from app.achievement_commands import achievement_admin
 from app.catalog import needs_focus_param
 from app.config import get_settings, merge_runtime
 from app.discord_http import patch_discord_http, user_id_from_bot_token
@@ -159,6 +160,7 @@ class ChallengeBot(commands.Bot):
     async def setup_hook(self) -> None:
         self.tree.add_command(challenge_group)
         self.tree.add_command(challenge_achievements)
+        self.tree.add_command(achievement_admin)
         self.expire_loop.start()
         self.monthly_digest_loop.start()
         settings = get_settings()

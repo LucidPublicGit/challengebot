@@ -186,7 +186,7 @@ def test_achievement_admin_crud_auth_csrf_and_uploads():
     uploaded = None
     try:
         with patch("app.web.app.get_settings", return_value=Settings(ui_password="secret")):
-            client = TestClient(create_app())
+            client = TestClient(create_app(), headers={"Origin": "http://testserver"})
             assert client.get("/achievements").status_code == 401
             assert client.get("/api/achievements").status_code == 401
             assert client.get("/achievements/achievement-001/image").status_code == 401
@@ -249,8 +249,8 @@ def test_achievement_cards_hide_artwork_and_publish_clean_copy():
             return original_text(draw, xy, value, *args, **kwargs)
 
         with patch.object(Image, "open", open_image), patch.object(ImageDraw.ImageDraw, "text", text):
-            card = asyncio.run(render_userinfo_card(display_name="Monty", achievements=entries))
-            listing = asyncio.run(render_achievement_list(display_name="Monty", achievements=entries))
+            card = asyncio.run(render_userinfo_card(display_name="Challenger", achievements=entries))
+            listing = asyncio.run(render_achievement_list(display_name="Challenger", achievements=entries))
         assert card.startswith(b"\x89PNG") and listing.startswith(b"\x89PNG")
         real_art = [p for p in image_calls if "achievement-" in p]
         assert real_art and all("achievement-001.png" in p for p in real_art)
@@ -258,10 +258,10 @@ def test_achievement_cards_hide_artwork_and_publish_clean_copy():
         assert not any("Newest" in t or "Earn an" in t or t in ("Locked", "Unlocked") for t in text_calls)
         assert "Getting Rolling" in text_calls  # Requirements are discoverable.
         small = original_open(BytesIO(card))
-        base = original_open(BytesIO(asyncio.run(render_userinfo_card(display_name="Monty"))))
+        base = original_open(BytesIO(asyncio.run(render_userinfo_card(display_name="Challenger"))))
         assert small.height - base.height == 280  # Three readable rows, no blank spacer.
         expanded = original_open(BytesIO(asyncio.run(render_userinfo_card(
-            display_name="Monty", achievements=entries + [entries[-1]],
+            display_name="Challenger", achievements=entries + [entries[-1]],
         ))))
         assert expanded.height - small.height == 82  # A 19th tile wraps to a fourth row.
         assert "Date unavailable" not in text_calls
@@ -279,8 +279,9 @@ def test_achievement_web_completion_dates_and_discord_pagination():
     path = setup_tmp_db()
     try:
         aid = _attempt(date="2026-02-01T12:34:56Z")
-        with patch("app.web.app.get_settings", return_value=Settings()):
-            client = TestClient(create_app())
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="secret")):
+            client = TestClient(create_app(), headers={"Origin": "http://testserver"})
+            client.auth = ("admin", "secret")
             page = client.get(f"/attempts/{aid}")
             assert 'name="completed_time" value="12:34:56"' in page.text
             response = client.post(f"/attempts/{aid}", data={
@@ -302,7 +303,7 @@ def test_achievement_web_completion_dates_and_discord_pagination():
             }).status_code == 400
 
         async def check():
-            view = AchievementListView(1, "u", "Monty")
+            view = AchievementListView(1, "u", "Challenger")
             file, embeds = await view.card()
             assert file.filename == "achievements.png"
             file.close()

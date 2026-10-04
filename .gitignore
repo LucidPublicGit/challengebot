@@ -16,6 +16,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-*/
 venv/
 .envrc
 .pytest_cache/
@@ -37,3 +38,12 @@ Thumbs.db
 .pi/
 *.log
 docker-build.log
+design-previews/
+scripts/proto_*.py
+nul
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite3-*
+*.sqlite-*
