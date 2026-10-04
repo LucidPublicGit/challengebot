@@ -44,6 +44,9 @@ def test_achievement_rules_dates_and_user_isolation():
     try:
         assert len(ach.for_user("u")) == 18
         assert not _earned()
+        text = ach.dump_text()
+        assert "ID: achievement-001" in text and "First Clear" in text
+        assert ach.dump_text([]) == "No achievements found."
         _attempt(status="expired")
         _attempt(status="abandoned")
         assert not _earned()  # Failures never contribute.

@@ -3054,17 +3054,31 @@ async def challenge_list(interaction: discord.Interaction) -> None:
 
 
 @challenge_group.command(
-    name="dump", description="Dump every challenge as copyable plain text (no buttons)"
+    name="dump", description="Dump challenges or achievements as copyable plain text (no buttons)"
 )
-@app_commands.describe(year="Only this year; omitted includes all years")
+@app_commands.choices(
+    catalog=[
+        app_commands.Choice(name="Challenges", value="challenges"),
+        app_commands.Choice(name="Achievements", value="achievements"),
+    ]
+)
+@app_commands.describe(
+    catalog="Challenges (default) or published achievements",
+    year="Challenges only: this year; omitted includes all years",
+)
 async def challenge_dump(
-    interaction: discord.Interaction, year: Optional[int] = None
+    interaction: discord.Interaction,
+    catalog: str = "challenges",
+    year: Optional[int] = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
-    text = catalog_dump(list_challenges(year=year))
+    if catalog == "achievements":
+        text, filename, label = ach_svc.dump_text(), "achievements.txt", "achievements"
+    else:
+        text, filename, label = catalog_dump(list_challenges(year=year)), "challenges.txt", "catalog"
     await interaction.followup.send(
-        "Full plain-text catalog attached; copyable messages below.",
-        file=discord.File(BytesIO(text.encode("utf-8")), filename="challenges.txt"),
+        f"Full plain-text {label} attached; copyable messages below.",
+        file=discord.File(BytesIO(text.encode("utf-8")), filename=filename),
         ephemeral=True,
     )
     for chunk in text_chunks(text):

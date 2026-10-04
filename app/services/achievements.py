@@ -250,6 +250,15 @@ def list_definitions(*, include_removed: bool = False) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def dump_text(items: list[dict] | None = None) -> str:
+    items = items if items is not None else list_definitions()
+    blocks = [
+        f"{a['title']}\nID: {a['id']}\n{a.get('description') or ''}"
+        for a in items
+    ]
+    return "\n\n".join(blocks) or "No achievements found."
+
+
 def for_user(discord_id: str) -> list[dict]:
     with db_session() as conn:
         sync_user(conn, discord_id)

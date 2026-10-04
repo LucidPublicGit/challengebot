@@ -54,6 +54,7 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 
 - `/challenge dump`: anyone can export **all years** as plain text, without buttons
   or embeds. Includes a `.txt` attachment for copying the entire catalog; optional `year`.
+  Set `catalog:Achievements` for published achievement IDs and requirements instead.
 - `/challenge announce`: admins can announce **new**, **updated**, or **retired**
   challenges. It does not add, edit, or delete catalog entries.
 - Choose one `challenge_id` from the dump, or a `category` (Physical, Ota, All).

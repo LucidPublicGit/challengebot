@@ -60,6 +60,11 @@ def test_dump_and_announcements_offline():
             assert all(c.kwargs["ephemeral"] for c in calls)
             assert calls[0].kwargs["file"].filename == "challenges.txt"
             assert "physical-walk-easy" in "".join(c.args[0] for c in calls[1:])
+            ach = _interaction()
+            await challenge_dump.callback(ach, catalog="achievements")
+            ach_calls = ach.followup.send.call_args_list
+            assert ach_calls[0].kwargs["file"].filename == "achievements.txt"
+            assert "achievement-001" in "".join(c.args[0] for c in ach_calls[1:])
             with patch("app.bot_commands._admin_only", return_value=False):
                 await challenge_announce.callback(_interaction(), publish=True, channel=target)
                 target.send.assert_not_awaited()
