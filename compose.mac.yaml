@@ -19,7 +19,9 @@ services:
         max-file: "3"
     networks:
       default: {}
-      apps: {}
+      apps:
+        # Reserve an address so Docker cannot claim the Immersion gateway IP.
+        ipv4_address: 172.30.50.251
   tailscale:
     image: tailscale/tailscale@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065
     container_name: challenge-tracker-tailscale

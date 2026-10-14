@@ -1,6 +1,14 @@
-# ChallengeTracker
+# Challengebot
 
 Discord bot + admin UI for yearly immersion challenges. Users log on **tadoku.app**; the bot verifies clears against Tadoku when possible.
+
+The current repository is [LucidPublicGit/challengebot](https://github.com/LucidPublicGit/challengebot).
+`ChallengeTracker` is the former repository name. The Mac mini checkout is
+`/Users/lucid/DevEnvPublic/challengebot`; its compatibility path
+`/Users/lucid/DevEnv/ChallengeTracker` points to that checkout.
+
+For the Mac mini deployment, run Docker Compose from the current checkout with
+`docker compose -f docker-compose.yml -f compose.mac.yaml up -d --build`.
 
 ## Features
 
@@ -15,7 +23,7 @@ Discord bot + admin UI for yearly immersion challenges. Users log on **tadoku.ap
 ## Quick start
 
 ```powershell
-cd ChallengeTracker
+cd challengebot
 copy .env.example .env
 # Edit .env: DISCORD_TOKEN (required), DISCORD_GUILD_ID (recommended)
 # Set UI_PASSWORD to a strong unique password (required for admin UI access).
@@ -212,7 +220,7 @@ Only share a sanitized release snapshot, not the original development Git histor
 ## Tests (local, no Discord token required)
 
 ```powershell
-cd ChallengeTracker
+cd challengebot
 python tests/run_all.py
 # or: pip install pytest && python -m pytest tests -q
 ```
