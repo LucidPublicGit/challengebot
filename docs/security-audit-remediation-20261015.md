@@ -29,7 +29,7 @@ Implemented:
 
 Validation:
 
-- All 128 tests passed in the Python 3.12 production image with Noto CJK fonts,
+- All 129 tests passed in the Python 3.12 production image with Noto CJK fonts,
   as UID 10001, with network disabled, read-only root, dropped capabilities, and
   temporary writable test data. The stdlib runner now includes poster and audit
   regression tests that it previously omitted.
@@ -46,16 +46,17 @@ Validation:
   dropped, no-new-privileges, a bounded temporary filesystem, and the single
   `python -m app.main` entry point. The Tailscale configuration proxies HTTPS.
 
-Rollout and remaining operational validation:
+Deployment verification:
 
-- Production was not restarted or migrated during this work. Back up SQLite and
-  uploaded artwork, then deploy using the documented Mac Compose configuration.
+- The Mac mini application was rebuilt and restarted after a consistent SQLite
+  backup. The running container is healthy and Discord is connected.
+- The isolated workflow test exercises the real link modal, automatic completion,
+  achievement unlock, and cosmetic-role assignment with synthetic Discord/Tadoku
+  boundaries. No test guild was used and no production rewards were issued.
 - Existing Tadoku links continue to work without migration or approval.
-- Exercise linking, automatic completion, achievements, and cosmetic
-  rewards in a test guild before rollout. Live Discord interactions and actual
-  role/channel mappings were not changed or verified here.
-- Inspect live tailnet access policy, TLS behavior, trusted forwarded-header
-  sources, and proxy authentication/throttling before expanding admin access.
-- An OS-package image scan remains outstanding: Docker Scout refused the scan
-  because it requires a Docker login. The clean Python advisory result does not
-  cover OS packages.
+- Live HTTPS, authentication, origin protection, forwarded-header handling, and
+  pre-body upload rejection passed after deployment. Forwarded-header trust now
+  includes only loopback and the Challengebot Tailscale proxy.
+- The image scan was completed with checksum-verified Grype, without Docker Scout
+  login. OS-package findings remain; see the full results and operational limits
+  in [deployment verification](deployment-verification-20261015.md).

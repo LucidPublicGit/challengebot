@@ -147,3 +147,63 @@ def test_rewards_only_assign_cosmetic_roles():
             assert await apply_rewards(member, tier="easy") == ["cosmetic"]
             member.add_roles.assert_awaited_once_with(roles[1], reason="Challenge clear (easy)")
     asyncio.run(check())
+
+
+def test_link_modal_to_automatic_completion_achievement_and_cosmetic_reward():
+    """Exercise the full application flow against synthetic Discord/Tadoku edges."""
+    import discord
+    from unittest.mock import MagicMock
+    from app.bot import ChallengeBot
+    from app.bot_commands import LinkModal
+    from app.db import db_session, set_setting
+    from app.services import achievements
+
+    path = setup_tmp_db()
+    try:
+        async def check():
+            uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            role = SimpleNamespace(name="Fixture cosmetic", managed=False,
+                                   is_default=lambda: False,
+                                   permissions=discord.Permissions.none())
+            guild = SimpleNamespace(id=456, get_role=lambda rid: role if rid == 42 else None)
+            member = MagicMock(spec=discord.Member)
+            member.id, member.guild, member.roles = 333, guild, []
+            member.add_roles = AsyncMock()
+            interaction = SimpleNamespace(user=member, guild=guild,
+                                          response=SimpleNamespace(send_message=AsyncMock()))
+            modal = LinkModal()
+            modal.user_id._value = uid
+            modal.display_name._value = "Fixture member"
+            await modal.on_submit(interaction)
+            assert att.get_user("333")["tadoku_user_id"] == uid
+            interaction.response.send_message.assert_awaited_once()
+            assert att.start_attempt("333", tier="easy", number=4,
+                                     param="Fixture Game", guild_id="456")["ok"]
+            attempt_id = att.active_attempt("333")["id"]
+            with db_session() as conn:
+                set_setting(conn, "reward_roles_json", '{"easy":"42"}')
+                set_setting(conn, "status_auto_complete", "true")
+            bot = SimpleNamespace(get_user=lambda user_id: member,
+                                  fetch_user=AsyncMock(return_value=member),
+                                  get_guild=lambda guild_id: guild)
+            logs = [{"id": "fixture", "amount": 40000, "unit": "characters",
+                     "activity": "reading", "tags": ["vn"],
+                     "description": "Fixture Game",
+                     "created_at": datetime.now(timezone.utc).isoformat()}]
+            with patch("app.tadoku.client.resolve_logs_for_user", new_callable=AsyncMock,
+                       return_value=logs), patch("app.services.attempts.resolve_logs_for_user",
+                                                new_callable=AsyncMock, return_value=logs), patch(
+                       "app.bot.announce", new_callable=AsyncMock) as announce:
+                assert await ChallengeBot._run_status_updates(bot) == 1
+                assert await ChallengeBot._run_status_updates(bot) == 0
+                announce.assert_awaited_once()
+            assert not att.active_attempt("333")
+            completed = att.list_attempts("333", status="completed")
+            assert len(completed) == 1 and completed[0]["verify_method"] == "tadoku_poll"
+            earned = [item for item in achievements.for_user("333") if item["earned"]]
+            first_clear = next(item for item in earned if item["id"] == "achievement-001")
+            assert first_clear["source_attempt_id"] == attempt_id
+            member.add_roles.assert_awaited_once_with(role, reason="Challenge clear (easy)")
+        asyncio.run(check())
+    finally:
+        cleanup_db(path)

@@ -3,7 +3,7 @@ services:
   challengetracker:
     environment:
       TZ: America/Los_Angeles
-      FORWARDED_ALLOW_IPS: "127.0.0.1,172.19.0.1,172.30.50.2,172.30.50.250"
+      FORWARDED_ALLOW_IPS: "127.0.0.1,172.30.50.250"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=5)"]
       interval: 30s
