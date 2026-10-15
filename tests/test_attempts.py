@@ -516,6 +516,7 @@ def test_preview_real_with_mock_logs():
     path = setup_tmp_db()
     try:
         att.link_tadoku("u7", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        assert att.approve_tadoku("u7", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "fixture-admin")
         att.start_attempt(
             "u7", tier="easy", number=4, param="Game X", guild_id="g"
         )
@@ -550,6 +551,7 @@ def test_preview_real_insufficient_logs():
     path = setup_tmp_db()
     try:
         att.link_tadoku("u8", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        assert att.approve_tadoku("u8", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "fixture-admin")
         att.start_attempt(
             "u8", tier="easy", number=4, param="Game X", guild_id="g"
         )

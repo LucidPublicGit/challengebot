@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import warnings
 import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import ImageOps, Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from app.catalog import sweep_bonus
 
@@ -659,15 +660,17 @@ def _parse_progress(text: str) -> tuple[Optional[float], str]:
 
 def _poster_image(poster_bytes: bytes, w: int, h: int, radius: int) -> Optional[Image.Image]:
     try:
-        source = Image.open(io.BytesIO(poster_bytes)).convert("RGB")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(poster_bytes)) as image:
+                sw, sh = image.size
+                if (image.format not in {"JPEG", "PNG", "WEBP"} or
+                        sw > 4096 or sh > 4096 or sw * sh > 8_000_000):
+                    return None
+                source = image.convert("RGB")
     except Exception:  # noqa: BLE001
         return None
-    sw, sh = source.size
-    scale = max(w / max(sw, 1), h / max(sh, 1))
-    nw, nh = max(1, round(sw * scale)), max(1, round(sh * scale))
-    source = source.resize((nw, nh), Image.Resampling.LANCZOS)
-    left, top = (nw - w) // 2, (nh - h) // 2
-    source = source.crop((left, top, left + w, top + h))
+    source = ImageOps.fit(source, (w, h), method=Image.Resampling.LANCZOS)
     over = 4
     mask = Image.new("L", (w * over, h * over), 0)
     _Draw(mask).rounded_rectangle(

@@ -61,6 +61,9 @@ async def apply_rewards(
         if role is None:
             logger.warning("reward role missing: %s", rid)
             continue
+        if role.managed or role.is_default() or role.permissions.value:
+            logger.warning("reward role must be cosmetic with no guild permissions: %s", rid)
+            continue
         if role in member.roles:
             continue
         try:

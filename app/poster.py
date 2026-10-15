@@ -14,6 +14,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from app.http_limits import bounded_request
+
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 8.0
@@ -222,7 +224,7 @@ async def _anilist_url(
         f"{{ isAdult coverImage {{ extraLarge large medium }} }} }}"
     )
     try:
-        r = await client.post(
+        r = await bounded_request(client, "POST",
             "https://graphql.anilist.co",
             json={"query": query, "variables": {"search": title}},
         )
@@ -244,7 +246,7 @@ async def _vndb_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
         "results": 1,
     }
     try:
-        r = await client.post(
+        r = await bounded_request(client, "POST",
             "https://api.vndb.org/kana/vn",
             json=body,
             headers={"Content-Type": "application/json"},
@@ -265,7 +267,7 @@ async def _vndb_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
 
 async def _steam_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
     try:
-        r = await client.get(
+        r = await bounded_request(client, "GET",
             "https://steamcommunity.com/actions/SearchApps/" + quote(title, safe="")
         )
         if r.status_code != 200:
@@ -292,7 +294,7 @@ async def _tmdb_url(client: httpx.AsyncClient, title: str) -> Optional[str]:
     if not key:
         return None
     try:
-        r = await client.get(
+        r = await bounded_request(client, "GET",
             "https://api.themoviedb.org/3/search/multi",
             params={
                 "api_key": key,
@@ -316,7 +318,7 @@ async def _google_books_url(client: httpx.AsyncClient, title: str) -> Optional[s
     if not key:
         return None
     try:
-        r = await client.get(
+        r = await bounded_request(client, "GET",
             "https://www.googleapis.com/books/v1/volumes",
             params={"q": title, "maxResults": 1, "country": "US", "key": key},
         )
@@ -337,7 +339,7 @@ async def _mal_url(client: httpx.AsyncClient, media: str, title: str) -> Optiona
     if not client_id:
         return None
     try:
-        r = await client.get(
+        r = await bounded_request(client, "GET",
             f"https://api.myanimelist.net/v2/{media}",
             params={"q": title, "limit": 1, "fields": "main_picture"},
             headers={"X-MAL-CLIENT-ID": client_id},

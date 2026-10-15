@@ -1872,7 +1872,7 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
             )
             await self._push_resume_panel(
                 interaction,
-                tip=f"Linked Tadoku `{linked}`. Start or schedule below.",
+                tip=f"Linked Tadoku `{linked}` (pending administrator ownership approval). Start or schedule below.",
                 view=view,
                 embed=view._when_embed(),
             )
@@ -1887,7 +1887,7 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
             view = TierPickView(owner, year=year, guild_id=self.guild_id)
             await self._push_resume_panel(
                 interaction,
-                tip=f"Linked Tadoku `{linked}`. Pick a difficulty below.",
+                tip=f"Linked Tadoku `{linked}` (pending administrator ownership approval). Pick a difficulty below.",
                 view=view,
                 embed=_start_tier_embed(
                     year=year, note=f"Tadoku linked · `{linked}`"
@@ -1896,7 +1896,7 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
             return
 
         await interaction.response.send_message(
-            f"Linked Tadoku user `{linked}`. Use `/challenge start` when ready.",
+            f"Linked Tadoku user `{linked}` (pending administrator ownership approval). Use `/challenge start` when ready.",
             ephemeral=True,
         )
 # ----- admin panel -----

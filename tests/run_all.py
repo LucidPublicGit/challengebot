@@ -31,6 +31,8 @@ MODULES = (
     "tests.test_monthly_digest",
     "tests.test_runtime_settings",
     "tests.test_security",
+    "tests.test_audit_fixes",
+    "tests.test_poster",
     "tests.test_discord_http",
 )
 

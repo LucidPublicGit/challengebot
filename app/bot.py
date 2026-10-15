@@ -90,7 +90,7 @@ def confirm_howto(ch: dict, *, attempt_id: int | None = None) -> str:
             "**How to complete (Tadoku-verified)**",
             "`/challenge confirm` checks your Tadoku logs in this window immediately.",
             f"Goal check: {goal_bits} (media filter: `{media}`).",
-            "1. Link once: `/challenge link` with your Tadoku user id/URL",
+            "1. `/challenge link` with your Tadoku user id/URL, then ask an admin to approve ownership",
             "2. Log immersion on tadoku.app **during** the timer",
             "3. `/challenge confirm` — no form; bot pulls Tadoku and clears if the goal is met",
             "If confirm **fails**: `/challenge failoverride` (honor, no admin) "
@@ -148,6 +148,16 @@ def _application_id() -> int | None:
     return None
 
 
+class GuildCommandTree(discord.app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        guild_id = get_settings().discord_guild_id or _runtime().get("guild_id")
+        if interaction.guild and guild_id and str(interaction.guild.id) == str(guild_id):
+            return True
+        await interaction.response.send_message(
+            "Use challenge commands in the configured server.", ephemeral=True)
+        return False
+
+
 class ChallengeBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
@@ -155,6 +165,7 @@ class ChallengeBot(commands.Bot):
         intents.guilds = True
         super().__init__(
             command_prefix="!",
+            tree_cls=GuildCommandTree,
             intents=intents,
             application_id=_application_id(),
             allowed_mentions=discord.AllowedMentions.none(),

@@ -1,0 +1,179 @@
+"""Audit regressions against real ASGI parsing and SQLite, with no network."""
+import asyncio
+import base64
+import io
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import httpx
+from PIL import Image
+from fastapi.testclient import TestClient
+
+from app.bot import GuildCommandTree
+from app.challenge_card import _poster_image
+from app.config import Settings
+from app.http_limits import bounded_request
+from app.services import attempts as att, progress_status as ps
+from app.web.app import create_app
+from app.web.security import BODY_LIMITS, FORM_LIMIT
+from tests.helpers import setup_tmp_db, cleanup_db
+
+
+def test_authentication_and_total_body_limits_precede_form_parsing():
+    async def check():
+        for password, auth, expected in (("test", None, 401), ("test", "bad", 401),
+                                         ("", None, 503)):
+            with patch("app.web.app.get_settings", return_value=Settings(ui_password=password)):
+                app = create_app()
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                             base_url="http://testserver") as client:
+                    async def unread():
+                        raise AssertionError("Unauthenticated body was consumed")
+                        yield b""
+                    headers = {"Origin": "http://testserver"}
+                    if auth:
+                        headers["Authorization"] = "Basic " + base64.b64encode(b"admin:bad").decode()
+                    for path in ("/achievements", "/announcements", "/settings"):
+                        response = await client.post(path, headers=headers, content=unread())
+                        assert response.status_code == expected
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="test")):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()),
+                                         base_url="http://testserver", auth=("admin", "test")) as client:
+                for path, limit in (("/settings", FORM_LIMIT), ("/achievements/fixture", BODY_LIMITS["/achievements"]), *BODY_LIMITS.items()):
+                    consumed = 0
+                    async def oversized():
+                        nonlocal consumed
+                        for _ in range(limit // 65536 + 2):
+                            consumed += 65536
+                            yield b"x" * 65536
+                        raise AssertionError("Continued reading beyond the byte ceiling")
+                    for declared in (False, True):
+                        consumed = 0
+                        headers = {"Origin": "http://testserver", "Content-Type":
+                                   "multipart/form-data; boundary=test"}
+                        if declared:
+                            headers["Content-Length"] = str(limit + 1)
+                        r = await client.post(path, headers=headers, content=oversized())
+                        assert r.status_code == 413
+                        assert consumed == (0 if declared else limit + 65536)
+    asyncio.run(check())
+
+
+def test_tadoku_approval_gates_manual_polling_and_relink_races():
+    path = setup_tmp_db()
+    uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    try:
+        async def check():
+            att.link_tadoku("audit", uid)
+            assert att.start_attempt("audit", tier="easy", number=4, param="Game", guild_id="g")["ok"]
+            logs = [{"id": "fixture", "amount": 40000, "unit": "characters",
+                     "activity": "reading", "tags": ["vn"], "description": "Game",
+                     "created_at": datetime.now(timezone.utc).isoformat()}]
+            with patch("app.services.attempts.resolve_logs_for_user", new_callable=AsyncMock,
+                       return_value=logs) as fetch, patch("app.tadoku.client.resolve_logs_for_user",
+                                                        new_callable=AsyncMock, return_value=logs) as poll:
+                assert not (await att.confirm_attempt("audit"))["ok"]
+                row = ps.list_active_attempts()[0]
+                meta = {"goal_ok": True}
+                assert await ps.check_goal_milestones(row, meta, force=True) == []
+                assert not meta["goal_ok"]
+                fetch.assert_not_awaited()
+                poll.assert_not_awaited()
+                assert att.approve_tadoku("audit", uid, "fixture-admin")
+                assert (await att.confirm_attempt("audit", dry_run=True))["ok"]
+                row = ps.list_active_attempts()[0]
+                await ps.check_goal_milestones(row, meta, force=True)
+                assert meta["goal_ok"]
+
+                async def relink_during_fetch(**kwargs):
+                    att.link_tadoku("audit", uid)  # Even relinking the same id revokes approval.
+                    return logs
+                fetch.side_effect = relink_during_fetch
+                assert not (await att.confirm_attempt("audit"))["ok"]
+                assert att.active_attempt("audit")
+                assert not att.get_user("audit")["tadoku_approved_at"]
+                assert att.approve_tadoku("audit", uid, "fixture-admin")
+                fetch.side_effect = None
+                completed = await att.confirm_attempt("audit")
+                assert completed["ok"] and completed["method"] == "tadoku_poll"
+                assert not att.active_attempt("audit")
+        asyncio.run(check())
+    finally:
+        cleanup_db(path)
+
+
+def test_admin_approval_is_explicit_and_bound_to_displayed_account():
+    path = setup_tmp_db()
+    try:
+        att.link_tadoku("audit", "fixture-id")
+        with patch("app.web.app.get_settings", return_value=Settings(ui_password="test")):
+            client = TestClient(create_app())
+            client.auth = ("admin", "test")
+            headers = {"Origin": "http://testserver"}
+            assert "Pending administrator" in client.get("/users/audit").text
+            endpoint = "/users/audit/tadoku/approve"
+            assert client.post(endpoint, headers=headers, data={"expected_id": "stale", "action": "approve"}).status_code == 409
+            assert client.post(endpoint, data={"expected_id": "fixture-id", "action": "approve"}).status_code == 403
+            assert client.post(endpoint, headers=headers, data={"expected_id": "fixture-id", "action": "approve"}, follow_redirects=False).status_code == 303
+            assert att.get_user("audit")["tadoku_approved_by"] == "admin"
+            client.post(endpoint, headers=headers, data={"expected_id": "fixture-id", "action": "revoke"})
+            assert not att.get_user("audit")["tadoku_approved_at"]
+    finally:
+        cleanup_db(path)
+
+
+def test_member_command_boundary_rejects_dms_and_foreign_guilds():
+    async def check():
+        interaction = SimpleNamespace(guild=None, response=SimpleNamespace(send_message=AsyncMock()))
+        with patch("app.bot.get_settings", return_value=Settings(discord_guild_id="456")):
+            for guild in (None, SimpleNamespace(id=789)):
+                interaction.guild = guild
+                assert not await GuildCommandTree.interaction_check(None, interaction)
+            interaction.guild = SimpleNamespace(id=456)
+            assert await GuildCommandTree.interaction_check(None, interaction)
+        with patch("app.bot.get_settings", return_value=Settings()), patch("app.bot._runtime", return_value={}):
+            assert not await GuildCommandTree.interaction_check(None, interaction)
+    asyncio.run(check())
+
+
+def test_remote_json_and_cover_decoding_are_bounded():
+    async def check():
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"x" * 65536
+                yield b"x" * 65536
+                raise AssertionError("Response limit failed")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, stream=Stream()))) as client:
+            with patch("app.http_limits.MAX_JSON_BYTES", 65536):
+                try:
+                    await bounded_request(client, "GET", "https://example.test")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Oversized JSON accepted")
+    asyncio.run(check())
+    for dimensions, allowed in (((100, 200), True), ((4097, 1), False), ((3000, 3000), False)):
+        output = io.BytesIO()
+        Image.new("RGB", dimensions).save(output, format="PNG")
+        assert (_poster_image(output.getvalue(), 40, 60, 4) is not None) == allowed
+
+
+def test_rewards_only_assign_cosmetic_roles():
+    from app.services.rewards import apply_rewards
+    async def check():
+        roles = {
+            1: SimpleNamespace(name="cosmetic", managed=False, is_default=lambda: False,
+                               permissions=SimpleNamespace(value=0)),
+            2: SimpleNamespace(name="privileged", managed=False, is_default=lambda: False,
+                               permissions=SimpleNamespace(value=8)),
+        }
+        member = SimpleNamespace(id=123, roles=[], guild=SimpleNamespace(get_role=roles.get),
+                                 add_roles=AsyncMock())
+        with patch("app.services.rewards._runtime", return_value={"reward_roles": {
+                "easy": "1", "any_clear": "2"}}), patch(
+                "app.services.rewards.completion_counts", return_value={}):
+            assert await apply_rewards(member, tier="easy") == ["cosmetic"]
+            member.add_roles.assert_awaited_once_with(roles[1], reason="Challenge clear (easy)")
+    asyncio.run(check())

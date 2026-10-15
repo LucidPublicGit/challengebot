@@ -114,9 +114,23 @@ def link_tadoku(discord_id: str, tadoku_user_id: str, tadoku_name: str | None = 
     now = utcnow_iso()
     with db_session() as conn:
         conn.execute(
-            "UPDATE users SET tadoku_user_id=?, tadoku_name=?, updated_at=? WHERE discord_id=?",
+            "UPDATE users SET tadoku_user_id=?, tadoku_name=?, updated_at=?, "
+            "tadoku_approved_at=NULL, tadoku_approved_by=NULL WHERE discord_id=?",
             (tadoku_user_id.strip(), tadoku_name, now, discord_id),
         )
+
+
+def approve_tadoku(discord_id: str, expected_id: str, approved_by: str, *, revoke: bool = False) -> bool:
+    """Admin-only callers must inspect ownership and approve the displayed binding."""
+    if not expected_id or not approved_by:
+        return False
+    with db_session() as conn:
+        return conn.execute(
+            "UPDATE users SET tadoku_approved_at=?, tadoku_approved_by=? "
+            "WHERE discord_id=? AND tadoku_user_id=?",
+            (None if revoke else datetime.now(timezone.utc).isoformat(),
+             None if revoke else approved_by, discord_id, expected_id),
+        ).rowcount == 1
 
 
 def get_user(discord_id: str) -> dict | None:
@@ -1036,6 +1050,9 @@ async def confirm_attempt(
                 "error": f"Link Tadoku first (`/challenge link`).{tip}",
                 "attempt": att,
             }
+        if not user.get("tadoku_approved_at"):
+            return {"ok": False, "error": "Tadoku link needs administrator ownership approval.",
+                    "attempt": att}
         started = parse_iso(att["started_at"])
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
@@ -1133,6 +1150,8 @@ async def confirm_attempt(
             "verify": _result_dict(result),
             "log_count": len(logs),
             "log_source": source,
+            "tadoku_user_id": (user or {}).get("tadoku_user_id"),
+            "tadoku_approved_at": (user or {}).get("tadoku_approved_at"),
             "test": source == "fake",
             "content": content_val,
             "verify_param": verify_param,
@@ -1370,6 +1389,14 @@ def _complete(
     evidence = {**evidence, "content": content_val}
     with db_session() as conn:
         from app.services.achievements import completion_snapshot, sync_user
+
+        if evidence.get("log_source") == "tadoku":
+            binding = conn.execute("SELECT tadoku_user_id, tadoku_approved_at FROM users "
+                                   "WHERE discord_id=?", (att["discord_id"],)).fetchone()
+            if (not binding or not binding["tadoku_approved_at"]
+                    or binding["tadoku_user_id"] != evidence.get("tadoku_user_id")
+                    or binding["tadoku_approved_at"] != evidence.get("tadoku_approved_at")):
+                return {"ok": False, "error": "Tadoku approval changed; confirm again.", "attempt": att}
 
         challenge = conn.execute("SELECT * FROM challenge_defs WHERE id=?",
                                  (att["challenge_id"],)).fetchone()

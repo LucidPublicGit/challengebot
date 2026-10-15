@@ -77,7 +77,7 @@ def list_active_attempts() -> list[dict]:
             "SELECT a.*, c.title, c.tier, c.number, c.verify, c.goal_kind, "
             "c.goal_amount, c.media_filter, c.param_label, c.time_limit_hours, "
             "c.description, "
-            "u.display_name, u.tadoku_user_id "
+            "u.display_name, u.tadoku_user_id, u.tadoku_approved_at "
             "FROM attempts a "
             "JOIN challenge_defs c ON c.id = a.challenge_id "
             "LEFT JOIN users u ON u.discord_id = a.discord_id "
@@ -405,7 +405,8 @@ async def check_goal_milestones(
     if verify != "tadoku":
         return []
     tadoku_id = (att.get("tadoku_user_id") or "").strip()
-    if not tadoku_id:
+    if not tadoku_id or not att.get("tadoku_approved_at"):
+        meta["goal_ok"] = False
         return []
 
     if poll_minutes is not None:

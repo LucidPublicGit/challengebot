@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 import httpx
 
+from app.http_limits import bounded_request
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE = "https://tadoku.app/api/internal/immersion"
@@ -48,7 +50,7 @@ async def fetch_contest_logs(
         for _ in range(max_pages):
             url = f"{base}/contests/{contest_id}/logs"
             params = {"page": page, "page_size": page_size, "include_deleted": "false"}
-            r = await client.get(url, params=params)
+            r = await bounded_request(client, "GET", url, params=params)
             if r.status_code != 200:
                 logger.warning("tadoku contest logs %s: %s", r.status_code, r.text[:200])
                 break
@@ -98,7 +100,7 @@ async def fetch_user_logs(
         page = 0
         for _ in range(max_pages):
             url = f"{base}/users/{user_id}/logs"
-            r = await client.get(url, params={"page": page, "page_size": page_size})
+            r = await bounded_request(client, "GET", url, params={"page": page, "page_size": page_size})
             if r.status_code != 200:
                 logger.warning("tadoku user logs %s: %s", r.status_code, r.text[:200])
                 break
