@@ -181,8 +181,6 @@ _ATTEMPT_MIGRATIONS = (
 )
 _USER_MIGRATIONS = (
     ("tz_offset", "ALTER TABLE users ADD COLUMN tz_offset TEXT"),
-    ("tadoku_approved_at", "ALTER TABLE users ADD COLUMN tadoku_approved_at TEXT"),
-    ("tadoku_approved_by", "ALTER TABLE users ADD COLUMN tadoku_approved_by TEXT"),
 )
 _CHALLENGE_MIGRATIONS = (
     (

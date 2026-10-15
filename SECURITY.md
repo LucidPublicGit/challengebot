@@ -22,11 +22,10 @@
 - Run one application worker/container. SQLite and one-use form tokens assume this.
 - Back up SQLite and its adjacent `achievement_images/` folder securely; they
   contain member identifiers and activity. Do not commit or distribute backups.
-- Tadoku links are self-declared until an administrator verifies ownership and
-  approves the displayed binding under **Users → member → Tadoku ownership**.
-  Existing links start unapproved after migration. Relinking revokes approval;
-  both manual and automatic clears require current approval. Honor clears remain
-  self-declared and are labelled accordingly. Past clears are not reclassified.
+- Tadoku links are self-declared and usable immediately, without administrator
+  approval. Log-based verification checks the linked profile's activity, not
+  ownership of that profile. Treat clears and rewards as community trust features.
+  Honor clears remain self-declared and are labelled accordingly.
 - Use only cosmetic reward roles with no guild permissions. The bot refuses
   roles with guild permissions, managed roles, and the default role. Also inspect
   channel permission overrides: a cosmetic role must not unlock sensitive access.

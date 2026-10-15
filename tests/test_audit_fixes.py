@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from PIL import Image
-from fastapi.testclient import TestClient
 
 from app.bot import GuildCommandTree
 from app.challenge_card import _poster_image
@@ -60,7 +59,7 @@ def test_authentication_and_total_body_limits_precede_form_parsing():
     asyncio.run(check())
 
 
-def test_tadoku_approval_gates_manual_polling_and_relink_races():
+def test_tadoku_link_works_immediately_and_relink_races_are_rejected():
     path = setup_tmp_db()
     uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     try:
@@ -72,53 +71,24 @@ def test_tadoku_approval_gates_manual_polling_and_relink_races():
                      "created_at": datetime.now(timezone.utc).isoformat()}]
             with patch("app.services.attempts.resolve_logs_for_user", new_callable=AsyncMock,
                        return_value=logs) as fetch, patch("app.tadoku.client.resolve_logs_for_user",
-                                                        new_callable=AsyncMock, return_value=logs) as poll:
-                assert not (await att.confirm_attempt("audit"))["ok"]
-                row = ps.list_active_attempts()[0]
-                meta = {"goal_ok": True}
-                assert await ps.check_goal_milestones(row, meta, force=True) == []
-                assert not meta["goal_ok"]
-                fetch.assert_not_awaited()
-                poll.assert_not_awaited()
-                assert att.approve_tadoku("audit", uid, "fixture-admin")
+                                                        new_callable=AsyncMock, return_value=logs):
                 assert (await att.confirm_attempt("audit", dry_run=True))["ok"]
                 row = ps.list_active_attempts()[0]
+                meta = {}
                 await ps.check_goal_milestones(row, meta, force=True)
                 assert meta["goal_ok"]
 
                 async def relink_during_fetch(**kwargs):
-                    att.link_tadoku("audit", uid)  # Even relinking the same id revokes approval.
+                    att.link_tadoku("audit", "11111111-1111-1111-1111-111111111111")
                     return logs
                 fetch.side_effect = relink_during_fetch
                 assert not (await att.confirm_attempt("audit"))["ok"]
                 assert att.active_attempt("audit")
-                assert not att.get_user("audit")["tadoku_approved_at"]
-                assert att.approve_tadoku("audit", uid, "fixture-admin")
                 fetch.side_effect = None
                 completed = await att.confirm_attempt("audit")
                 assert completed["ok"] and completed["method"] == "tadoku_poll"
                 assert not att.active_attempt("audit")
         asyncio.run(check())
-    finally:
-        cleanup_db(path)
-
-
-def test_admin_approval_is_explicit_and_bound_to_displayed_account():
-    path = setup_tmp_db()
-    try:
-        att.link_tadoku("audit", "fixture-id")
-        with patch("app.web.app.get_settings", return_value=Settings(ui_password="test")):
-            client = TestClient(create_app())
-            client.auth = ("admin", "test")
-            headers = {"Origin": "http://testserver"}
-            assert "Pending administrator" in client.get("/users/audit").text
-            endpoint = "/users/audit/tadoku/approve"
-            assert client.post(endpoint, headers=headers, data={"expected_id": "stale", "action": "approve"}).status_code == 409
-            assert client.post(endpoint, data={"expected_id": "fixture-id", "action": "approve"}).status_code == 403
-            assert client.post(endpoint, headers=headers, data={"expected_id": "fixture-id", "action": "approve"}, follow_redirects=False).status_code == 303
-            assert att.get_user("audit")["tadoku_approved_by"] == "admin"
-            client.post(endpoint, headers=headers, data={"expected_id": "fixture-id", "action": "revoke"})
-            assert not att.get_user("audit")["tadoku_approved_at"]
     finally:
         cleanup_db(path)
 

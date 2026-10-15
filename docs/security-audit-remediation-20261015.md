@@ -9,13 +9,11 @@ Implemented:
   streamed bodies at endpoint-specific total limits, including multipart overhead.
   Parsing starts only after the bounded body is received. Existing CSRF, image,
   catalog, and replay checks remain in effect.
-- **F02:** additive SQLite migration records explicit administrator approval of
-  Tadoku bindings. Existing bindings are unapproved. Relinking clears approval.
-  The user detail page provides approve/revoke controls bound to the displayed
-  account. Manual confirmation and background progress checks require approval;
-  completion rechecks the binding and approval inside the write transaction to
-  reject relinking/revocation while awaiting logs. Evidence records the approved
-  binding and approval timestamp. Honor clears retain their existing labels.
+- **F02 / accepted trust model:** Tadoku links remain self-declared and usable
+  immediately, per the maintainer's decision; there is no approval requirement.
+  Log verification does not establish account ownership. The ownership finding
+  remains an accepted limitation. Completion does reject a binding changed while
+  fetching logs, and evidence records the linked account used for verification.
 - **R01:** a shared Discord command-tree check rejects commands in foreign guilds,
   DMs, and when no guild is configured, including stale global registrations.
 - **R02:** provider and Tadoku JSON responses have a 2 MiB decoded-byte ceiling.
@@ -31,14 +29,14 @@ Implemented:
 
 Validation:
 
-- All 129 tests passed in the Python 3.12 production image with Noto CJK fonts,
+- All 128 tests passed in the Python 3.12 production image with Noto CJK fonts,
   as UID 10001, with network disabled, read-only root, dropped capabilities, and
   temporary writable test data. The stdlib runner now includes poster and audit
   regression tests that it previously omitted.
 - Regression checks cover zero body reads for missing/wrong credentials and
-  disabled admin access; declared and chunked oversized requests; approval and
-  revocation controls; unapproved polling/manual confirmation; relinking during
-  a fetch; approved completion; foreign-guild/DM rejection; remote-response and
+  disabled admin access; declared and chunked oversized requests; immediate
+  linked-account polling/manual confirmation; relinking during a fetch;
+  completion; foreign-guild/DM rejection; remote-response and
   cover limits; and cosmetic-only reward assignment.
 - `pip-audit -r requirements.lock`: no known vulnerabilities found.
 - The production Dockerfile built successfully with `--require-hashes`.
@@ -52,9 +50,8 @@ Rollout and remaining operational validation:
 
 - Production was not restarted or migrated during this work. Back up SQLite and
   uploaded artwork, then deploy using the documented Mac Compose configuration.
-- In the admin UI, independently verify ownership and approve existing Tadoku
-  links. Past clears are not retroactively invalidated.
-- Exercise approved linking, automatic completion, achievements, and cosmetic
+- Existing Tadoku links continue to work without migration or approval.
+- Exercise linking, automatic completion, achievements, and cosmetic
   rewards in a test guild before rollout. Live Discord interactions and actual
   role/channel mappings were not changed or verified here.
 - Inspect live tailnet access policy, TLS behavior, trusted forwarded-header

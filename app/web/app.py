@@ -1632,18 +1632,6 @@ def create_app(bot=None) -> FastAPI:
         flash = _flash_html(
             saved="Saved." if saved and not unlinked else ("Tadoku unlinked." if unlinked else ("Saved." if saved else "")),
         )
-        approval = ""
-        if linked:
-            status = ("Approved by " + str(u.get("tadoku_approved_by"))
-                      if u.get("tadoku_approved_at") else "Pending administrator ownership approval")
-            approval = f'''<div class="card"><h2>Tadoku ownership</h2><p>{_esc(status)}</p>
-              <p>Verify this member owns the displayed Tadoku profile before approving.
-              Relinking revokes approval. Existing links require approval too.</p>
-              <form method="post" action="/users/{_esc(discord_id)}/tadoku/approve">
-                <input type="hidden" name="expected_id" value="{_esc(u['tadoku_user_id'])}"/>
-                <button name="action" value="approve">Approve ownership</button>
-                <button name="action" value="revoke">Revoke approval</button>
-              </form></div>'''
         had_link = "1" if linked else "0"
         achievements = ach_svc.for_user(discord_id)
         achievement_rows = "".join(
@@ -1654,7 +1642,6 @@ def create_app(bot=None) -> FastAPI:
         )
         body = f"""
         {flash}
-        {approval}
         <div class="stat-row">
           <span class="pill">Attempts <b>{counts.get('total', 0)}</b></span>
           <span class="pill">Active <b>{n_active}</b></span>
@@ -1725,17 +1712,11 @@ def create_app(bot=None) -> FastAPI:
         att_svc.ensure_user(discord_id, display_name or None)
         cleared = not (tadoku_user_id or "").strip()
         if tadoku_user_id.strip():
-            if tadoku_user_id.strip() != prev.get("tadoku_user_id"):
-                att_svc.link_tadoku(discord_id, tadoku_user_id, tadoku_name or None)
-            else:
-                with db_session() as conn:
-                    conn.execute("UPDATE users SET tadoku_name=? WHERE discord_id=?",
-                                 (tadoku_name or None, discord_id))
+            att_svc.link_tadoku(discord_id, tadoku_user_id, tadoku_name or None)
         else:
             with db_session() as conn:
                 conn.execute(
-                    "UPDATE users SET tadoku_user_id=NULL, tadoku_approved_at=NULL, "
-                    "tadoku_approved_by=NULL, tadoku_name=?, display_name=? "
+                    "UPDATE users SET tadoku_user_id=NULL, tadoku_name=?, display_name=? "
                     "WHERE discord_id=?",
                     (tadoku_name or None, display_name or None, discord_id),
                 )
@@ -1743,16 +1724,6 @@ def create_app(bot=None) -> FastAPI:
         if had and cleared:
             qs += "&unlinked=1"
         return RedirectResponse(f"/users/{discord_id}?{qs}", status_code=303)
-
-    @app.post("/users/{discord_id}/tadoku/approve")
-    def user_approve_tadoku(discord_id: str, expected_id: str = Form(...),
-                           action: str = Form(...), _: None = Depends(_auth)):
-        if action not in ("approve", "revoke"):
-            raise HTTPException(400, "Invalid approval action")
-        if not att_svc.approve_tadoku(discord_id, expected_id, get_settings().ui_username or "admin",
-                                     revoke=action == "revoke"):
-            raise HTTPException(409, "Binding changed; reload and inspect ownership again")
-        return RedirectResponse(f"/users/{discord_id}?saved=1", status_code=303)
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(saved: str = "", _: None = Depends(_auth)):

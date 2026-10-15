@@ -58,9 +58,7 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 
 ### User flow
 
-1. `/challenge link` → paste your Tadoku UUID or profile URL, then ask an admin
-   to verify ownership and approve it in **Users → member → Tadoku ownership**.
-   Relinking revokes approval, including for previously linked accounts.
+1. `/challenge link` → paste your Tadoku UUID or profile URL.
 2. `/challenge list` → `/challenge start` (e.g. Easy #4 VN 30k — any VNs)  
 3. Log immersion on tadoku.app inside the window  
 4. `/challenge confirm` — bot pulls Tadoku logs immediately (no form); edit labels later with `/challenge content`  
