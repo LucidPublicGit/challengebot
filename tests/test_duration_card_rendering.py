@@ -22,10 +22,11 @@ NAMES = [
 BADGES = [
     [],
     [{"duration_group": "daily", "tier": "easy", "year": 2026}],
+    [{"duration_group": "weekly", "tier": "hard", "year": None}],
     [{"duration_group": "monthly", "tier": "medium", "year": None}],
     [{"duration_group": "yearly", "tier": "hard", "year": None}],
     [{"duration_group": duration, "tier": "ota_master"}
-     for duration in ("daily", "monthly", "yearly")],
+     for duration in ("daily", "weekly", "monthly", "yearly")],
 ]
 
 
@@ -55,7 +56,7 @@ def test_duration_selection_matches_service_contract_and_legacy_fallback():
     assert card._profile_duration_badges({"monthly": None, "daily": ["special"]}) == []
 
 
-@pytest.mark.parametrize("duration,glyph", [("daily", "日"), ("monthly", "月"), ("yearly", "年")])
+@pytest.mark.parametrize("duration,glyph", [("daily", "日"), ("weekly", "週"), ("monthly", "月"), ("yearly", "年")])
 def test_duration_glyphs_are_drawn_with_real_font_support(duration, glyph):
     font = card._font(40, bold=True)
     assert "".join(run for _, run in card._shape(glyph, font)) == glyph, (
@@ -99,7 +100,7 @@ def test_profile_duration_layout_and_mobile_previews(name_index, badge_index):
     assert image.width == 560 and image.height > 560
     name_draw, name_xy, shown_name, name_kw = next(t for t in texts if t[1] == (196, 56))
     expected = card._profile_duration_badges(badges)
-    assert len(expected) <= 3
+    assert len(expected) <= 4
     if expected:
         draw_badges.assert_called_once()
         _, badge_x, badge_mid, drawn, scale = draw_badges.call_args.args

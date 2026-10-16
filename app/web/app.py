@@ -1397,7 +1397,7 @@ def create_app(bot=None) -> FastAPI:
         <div class="filters">
           <span class="muted" style="align-self:center">Verify</span>{verify_chips}
         </div>
-        <div class="filters"><span class="muted">Duration</span>{''.join(chip('duration', d, d.title()) for d in ('daily', 'monthly', 'yearly', 'special') if any(c.get('duration_group') == d for c in items))}</div>
+        <div class="filters"><span class="muted">Duration</span>{''.join(chip('duration', d, d.title()) for d in ('daily', 'weekly', 'monthly', 'yearly', 'special') if any(c.get('duration_group') == d for c in items))}</div>
         <div class="filters"><span class="muted">Lifecycle</span>{''.join(chip('state', v, v.title()) for v in ('active', 'retired', 'all'))}</div>
         <div class="card" style="padding:0;overflow:auto">
           {"<table><thead><tr><th>ID</th><th>Year</th><th>Tier</th><th>Title</th><th>Goal</th><th>Verify</th><th></th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>" if rows else empty}

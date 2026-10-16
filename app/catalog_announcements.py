@@ -15,6 +15,8 @@ CHANGE_LABELS = {
 
 def _window_label(c: dict) -> str:
     group = c.get('duration_group') or ('special' if c.get('tier') == 'special' else 'daily')
+    if group == 'weekly':
+        return 'Weekly · seven days from actual start (UTC)'
     if group == 'monthly':
         return 'Monthly · one personal UTC calendar month (anniversary clamped)'
     if group == 'yearly':
@@ -38,7 +40,7 @@ def catalog_dump(items: list[dict]) -> str:
             f"Verify: {c.get('verify') or 'tadoku'} | "
             f"Media: {c.get('media_filter') or 'any'}",
             f"Focus: {c.get('fixed_param') or c.get('param_label') or 'none'} | "
-            f"Concurrent: {'yes' if c.get('allows_concurrent') or c.get('duration_group') in ('monthly', 'yearly') else 'no'}",
+            f"Concurrent: {'yes' if c.get('allows_concurrent') or c.get('duration_group') in ('weekly', 'monthly', 'yearly') else 'no'}",
             f"Published: {c.get('published_at') or 'unspecified'} | Available: {c.get('available_from') or 'unbounded'} to {c.get('available_until') or 'unbounded'} (exclusive) | Retired: {c.get('retired_at') or 'no'}",
         ]
         blocks.append("\n".join(lines))

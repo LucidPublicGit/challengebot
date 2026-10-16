@@ -41,7 +41,7 @@ from app.challenge_card import (
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
-from app.bot_ui import duration_group, duration_label, section_pages, timestamp, point_explanation
+from app.bot_ui import duration_group, duration_label, section_pages, timestamp, point_explanation, window_hours
 from app.new_challenger import list_templates
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
@@ -333,10 +333,7 @@ async def _finalize_start(
     kind = "scheduled" if status == "scheduled" else "start"
     media = ch.get("media_filter")
     focus = (result.get("param") or focus or "").strip() or None
-    try:
-        dur_h = float(ch.get("time_limit_hours") or 0) or None
-    except (TypeError, ValueError):
-        dur_h = None
+    dur_h = window_hours(result)
     png, caption = await build_event_card(
         kind=kind,
         user=interaction.user,
@@ -1530,10 +1527,6 @@ class TierPickView(_OwnerView):
 class ListTierView(TierPickView):
     def __init__(self, owner_id: int, *, year: int) -> None:
         super().__init__(owner_id, year=year, guild_id=None, mode="list")
-
-    @discord.ui.button(label="Past Challenges", style=discord.ButtonStyle.secondary, row=1)
-    async def history(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await _send_challenge_history(interaction)
 
 
 # ----- status / confirm / abandon -----
@@ -4050,10 +4043,13 @@ async def challenge_scores(interaction: discord.Interaction, attempt_id: Optiona
         "**How points work**\n"
         f"Base points: Easy **{base['easy']}** · Medium **{base['medium']}** · "
         f"Hard **{base['hard']}** · Ota-Master **{base['ota_master']}**.\n"
-        f"Duration multipliers: Daily **×{multipliers['daily']}** · Monthly **×{multipliers['monthly']}** · "
+        f"Duration multipliers: Daily **×{multipliers['daily']}** · Weekly **×{multipliers['weekly']}** · "
+        f"Monthly **×{multipliers['monthly']}** · "
         f"Yearly **×{multipliers['yearly']}**. Edition-specific policies and explicit point overrides can differ. "
+        + ("Long challenges use ceil(multiplier × (base + 1) ÷ 2). Daily uses its base points. "
+           if policy.get('formula_version') == 'compressed_long_v1' else "Points use difficulty base × duration multiplier. ") +
         "Browse/start shows the applicable award; existing attempts retain accepted points unless explicitly recalculated.\n"
-        "Daily sweep bonuses use the required roster for a year and tier. Monthly/Yearly badges add no sweep bonus.\n"
+        "Daily sweep bonuses use the required roster for a year and tier. Weekly/Monthly/Yearly badges add no sweep bonus.\n"
         "Totals use effective awards, including audited adjustments; clears and completion dates stay unchanged by point changes. "
         "Use `/challenge scores attempt_id:` for original points and adjustment reasons, or "
         "`/challenge list past:true` for yearly history.\n"

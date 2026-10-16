@@ -28,14 +28,14 @@ def client():
         cleanup_db(path)
 
 
-def _monthly():
+def _monthly(cid="web-tales", number=909):
     result = attempts.admin_upsert_challenge(dict(
-        id="web-tales", identity_id="web-tales", year=2026, tier="easy", number=909,
+        id=cid, identity_id=cid, year=2026, tier="easy", number=number,
         title="Web Tales <script>", goal_kind="complete_work", goal_amount=1,
         duration_group="monthly", repeat_policy="annual", verify="honor", time_limit_hours=24,
     ))
     assert result["ok"], result
-    return catalog.get_challenge("web-tales")
+    return catalog.get_challenge(cid)
 
 
 def _completed(challenge):
@@ -194,6 +194,73 @@ def test_global_policy_requires_explicit_all_scope(client):
     assert _apply(client, client.post("/lifecycle/scoring/preview", data={**data, "all_editions": "yes"})).status_code == 200
     with db_session() as conn:
         assert scoring.current_policy(conn)["multipliers"]["monthly"] == 5
+
+
+@pytest.mark.parametrize("scope_field", ["edition_ids", "identity_ids", "years"])
+@pytest.mark.parametrize("application", ["future", "retroactive"])
+def test_scoped_formula_preview_apply_and_revert(client, scope_field, application):
+    challenge = _monthly()
+    other = _monthly("web-other", 910)
+    if scope_field == "years":
+        # Year scopes must leave other catalog years untouched.
+        with db_session() as conn:
+            conn.execute("UPDATE challenge_defs SET year=2025 WHERE id=?", (other["id"],))
+            conn.execute("UPDATE challenge_editions SET year=2025 WHERE id=?", (other["edition_id"],))
+        other = catalog.get_challenge(other["id"])
+    aid, other_aid = _completed(challenge), _completed(other)
+    value = {"edition_ids": challenge["edition_id"], "identity_ids": challenge["identity_id"], "years": "2026"}[scope_field]
+    data = dict(policy_target="scoped", application=application, multiplier_monthly="5",
+                date_field="started_at", reason="Scoped inherited monthly formula", **{scope_field: value})
+    preview = client.post("/lifecycle/scoring/preview", data=data)
+    assert _award(aid)["effective_points"] == 10
+    response = _apply(client, preview)
+    assert response.status_code == 200, response.text
+    assert _apply(client, preview).status_code == 200
+    assert _award(aid)["effective_points"] == (5 if application == "retroactive" else 10)
+    assert _award(other_aid)["effective_points"] == 10
+    assert catalog.get_challenge(challenge["id"])["points"] is None
+    with db_session() as conn:
+        assert scoring.capture_snapshot(conn, challenge)["points"] == 5
+        assert scoring.capture_snapshot(conn, other)["points"] == 10
+        assert scoring.current_policy(conn)["multipliers"]["monthly"] == 10
+    op = re.search(r'Operation ID: <code>([^<]+)', response.text).group(1)
+    revert = client.post("/lifecycle/revert/preview", data={"operation_id": op, "reason": "Undo scoped formula"})
+    assert _apply(client, revert).status_code == 200
+    assert _award(aid)["effective_points"] == 10
+    with db_session() as conn:
+        assert scoring.capture_snapshot(conn, challenge)["points"] == 10
+
+
+def test_scoped_formula_requires_unambiguous_scope(client):
+    challenge = _monthly()
+    data = dict(policy_target="scoped", application="future", multiplier_monthly="5",
+                date_field="started_at", reason="Review scope")
+    for extra in ({}, {"all_editions": "yes"}, {"years": "2026", "all_editions": "yes"},
+                  {"edition_ids": "unknown"}, {"identity_ids": "unknown"},
+                  {"edition_ids": challenge["edition_id"], "points_override": "5"}):
+        assert client.post("/lifecycle/scoring/preview", data={**data, **extra}).status_code == 400
+    page = client.get("/lifecycle")
+    assert 'value="scoped"' in page.text
+    assert "Date filters below restrict historical attempts only" in page.text
+
+
+def test_weekly_duration_and_multiplier_are_editable_in_web(client):
+    page = client.get('/challenges')
+    assert page.status_code == 200
+    assert '<option value="weekly"' in page.text
+    data = dict(id='web-weekly', year='2026', tier='easy', number='991', title='Weekly test',
+                goal_kind='complete_work', goal_amount='1', duration_group='weekly', repeat_policy='annual',
+                verify='honor', time_limit_hours='24', reason='Publish Weekly')
+    response = _apply(client, client.post('/challenges/save', data=data))
+    assert response.status_code == 200, response.text
+    challenge = catalog.get_challenge('web-weekly')
+    assert challenge['duration_group'] == 'weekly'
+    assert 'duration=weekly' in client.get('/challenges').text
+    data = dict(policy_target='scoped', application='future', edition_ids=challenge['edition_id'],
+                multiplier_weekly='6', date_field='started_at', reason='Scoped Weekly multiplier')
+    assert _apply(client, client.post('/lifecycle/scoring/preview', data=data)).status_code == 200
+    with db_session() as conn:
+        assert scoring.capture_snapshot(conn, challenge)['points'] == 6
 
 
 def test_attempt_edits_use_real_correction_preview_and_history(client):

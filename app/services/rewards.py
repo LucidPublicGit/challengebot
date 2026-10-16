@@ -14,6 +14,7 @@ from app.challenge_card import (
     render_unified_start_card,
     tier_caption_mark,
 )
+from app.bot_ui import window_hours
 from app.config import announce_kind_enabled, get_settings, merge_runtime
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session, get_all_settings
@@ -854,10 +855,7 @@ async def repost_attempt_announce(
 
     starts = _ts(attempt.get("started_at"))
     ends = _ts(attempt.get("ends_at"))
-    try:
-        dur_h = float(attempt.get("time_limit_hours") or 0) or None
-    except (TypeError, ValueError):
-        dur_h = None
+    dur_h = window_hours(attempt)
     # Active + with_challenger → immediate-start (NC). Scheduled always NC.
     inc_nc: bool | None = None
     if kind == "start":

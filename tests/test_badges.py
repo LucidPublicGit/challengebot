@@ -97,8 +97,9 @@ def test_new_users_use_latest_only_and_empty_rosters_never_award(conn):
     assert receipts(conn) == []
 
 
-def test_lifetime_alternatives_snapshot_classification_and_unknown_dates(conn):
-    challenge(conn, "m", duration="monthly", tier="hard", year=2025)
+@pytest.mark.parametrize('duration', ['weekly', 'monthly'])
+def test_lifetime_alternatives_snapshot_classification_and_unknown_dates(conn, duration):
+    challenge(conn, "m", duration=duration, tier="hard", year=2025)
     challenge(conn, "y", duration="yearly")
     a = complete(conn, "m", when="2025-01-01T00:00:00+00:00")
     b = complete(conn, "m", when="2026-01-01T00:00:00+00:00")
@@ -119,7 +120,7 @@ def test_lifetime_alternatives_snapshot_classification_and_unknown_dates(conn):
     assert {r["tier"] for r in active} == {"easy", "medium"}
 
 
-def test_header_highest_max_three_year_scope_and_read_only(conn, monkeypatch):
+def test_header_highest_max_four_year_scope_and_read_only(conn, monkeypatch):
     from contextlib import contextmanager
     @contextmanager
     def session():
@@ -133,12 +134,12 @@ def test_header_highest_max_three_year_scope_and_read_only(conn, monkeypatch):
     badges.publish_rosters(conn)
     badges.sync_user(conn, "u")
     header = badges.duration_badges("u", 2026)
-    assert [r["glyph"] for r in header] == ["日", "月", "年"]
+    assert [r["glyph"] for r in header] == ["日", "週", "月", "年"]
     assert all(r["tier"] == "ota_master" for r in header)
     assert conn.execute("SELECT effective_points FROM award_ledger WHERE source_key='daily_bonus:u:2026:ota_master'").fetchone()[0] == 8
-    assert [r["glyph"] for r in badges.duration_badges("u", 2027)] == ["月", "年"]
+    assert [r["glyph"] for r in badges.duration_badges("u", 2027)] == ["週", "月", "年"]
     history = badges.badge_history("u")
-    assert len(history) == 12
+    assert len(history) == 16
     assert all(r["events"] for r in history)
 
 

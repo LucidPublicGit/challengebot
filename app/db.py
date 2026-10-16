@@ -365,6 +365,7 @@ def _migrate_lifecycle(conn: sqlite3.Connection) -> None:
                          (challenge['identity_id'], challenge['edition_id'], rules.get('year'), challenge['revision_id'],
                           json.dumps(rules), json.dumps(score), attempt['id']))
     scoring.bootstrap(conn)
+    scoring.upgrade_duration_defaults(conn)
     from app.services import badges
     badges.publish_rosters(conn)
     for row in conn.execute('SELECT DISTINCT discord_id FROM attempts').fetchall():

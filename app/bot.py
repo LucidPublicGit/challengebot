@@ -9,6 +9,7 @@ from discord.ext import commands, tasks
 from app.bot_commands import challenge_group, challenge_achievements
 from app.achievement_commands import achievement_admin
 from app.catalog import needs_focus_param
+from app.bot_ui import window_hours
 from app.config import get_settings, merge_runtime
 from app.discord_http import patch_discord_http, user_id_from_bot_token
 from app.db import db_session, get_all_settings
@@ -212,10 +213,7 @@ class ChallengeBot(commands.Bot):
             gid = att.get("guild_id") or _runtime().get("guild_id")
             if gid and str(gid).isdigit():
                 guild = self.get_guild(int(gid))
-            try:
-                dur_h = float(att.get("time_limit_hours") or 0) or None
-            except (TypeError, ValueError):
-                dur_h = None
+            dur_h = window_hours(att)
             kwargs = dict(
                 kind=kind,
                 guild=guild,
@@ -417,10 +415,7 @@ class ChallengeBot(commands.Bot):
                 except Exception:  # noqa: BLE001
                     pass
                 try:
-                    try:
-                        dur_h = float(att.get("time_limit_hours") or 0) or None
-                    except (TypeError, ValueError):
-                        dur_h = None
+                    dur_h = window_hours(att)
                     await announce(
                         self,
                         kind=ev.kind,

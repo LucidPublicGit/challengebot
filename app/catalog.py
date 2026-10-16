@@ -58,7 +58,7 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False,
             from datetime import datetime, timezone
             group = str(c.get('duration_group') or (existing['duration_group'] if existing else ('special' if c.get('tier') == 'special' else 'daily'))).lower()
             repeat = str(c.get('repeat_policy') or (existing['repeat_policy'] if existing else 'legacy')).lower()
-            if group not in ('daily', 'monthly', 'yearly', 'special') or repeat not in ('legacy', 'annual', 'once_ever'):
+            if group not in ('daily', 'weekly', 'monthly', 'yearly', 'special') or repeat not in ('legacy', 'annual', 'once_ever'):
                 raise ValueError('Invalid duration group or repeat policy')
             calculate_deadline({**c, 'duration_group': group}, datetime.now(timezone.utc))
             if existing and c.get('identity_id') and c['identity_id'] != existing['identity_id']:

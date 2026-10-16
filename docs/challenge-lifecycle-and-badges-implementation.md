@@ -1,9 +1,100 @@
 # Challenge lifecycle and badges: implementation and deployment handoff
 
-Status: **deployed on the Mac mini, 2026-10-16**. The lifecycle/badge release is
+Status: **deployed on the Mac mini, 2026-10-16**, including Weekly, compressed
+scoring, four duration badges and scoped formula administration. The release is
 running with Discord connected and commands synced. Advanced workflow limitations
 and the remaining manual acceptance coverage are listed below; deployment does
 not claim every item in the broader planning document is implemented.
+
+## Weekly and revised defaults — deployed 2026-10-16
+
+- Removed the **Past Challenges** button from the Discord difficulty picker.
+  The existing `/challenge list past:true` history command remains available.
+- Duration sections now use distinct colored markers, uppercase labels and
+  divider lines: 🟦 Daily, 🟩 Weekly, 🟪 Monthly, 🟨 Yearly. Discord embed text
+  cannot use custom font colors. Only populated sections and filters appear.
+- Added Weekly across catalog validation/import/export, admin duration and
+  correction controls, scoring policies, browsing and concurrent attempts.
+  Its deadline is exactly seven days from actual start, including scheduled
+  starts, with UTC storage and saved deadlines. Complete-work honor verification
+  retains the originally selected work. Event cards derive duration from the
+  actual saved window rather than a legacy hours field.
+- Daily uses the difficulty base (1/2/3/4). Weekly/Monthly/Yearly use
+  `ceil(multiplier × (difficulty base + 1) / 2)`, with multipliers 2/3/4.
+  The resulting Easy/Medium/Hard/Ota-Master awards are Daily 1/2/3/4,
+  Weekly 2/3/4/5, Monthly 3/5/6/8 and Yearly **4/6/8/10**.
+  Absolute overrides remain distinct. Formula versions are captured in policies
+  and attempt snapshots; earlier linear policies stay reproducible.
+- Per the user's follow-up, startup appends one audited default revision and
+  recalculates applicable open Weekly/Monthly/Yearly snapshots, retaining their
+  old snapshots in the operation record. Completed awards and Daily attempts are
+  unchanged. Scheduled attempts retain actual-start policy capture; explicit
+  revisions survive delayed activation. The cutover runs once, so later admin
+  changes survive restarts. Unknown historical awards retain the old migration
+  baseline rather than being reconstructed with the new formula.
+- Added lifetime Weekly **週** receipts, alternative-clear/revocation handling and
+  a fourth header badge, in 日/週/月/年 order. Weekly completions do not count
+  toward Daily sweep rosters or bonuses. Four-badge cards with long/Japanese
+  names were rendered and inspected at 320px.
+- **302 tests passed** using disposable SQLite and synthetic providers, with the
+  same two existing deprecation warnings. New coverage checks seven-day UTC
+  windows, year-end schedules/restarts, concurrency, honor completion and work
+  preservation, annual eligibility, compressed points at every difficulty, web
+  Weekly creation/scoped formulas, duration ordering/styling, button removal,
+  open-attempt cutover with completed awards preserved, formula-version revert,
+  and Weekly badge alternatives/history/glyphs/layout. Historical regression
+  fixtures explicitly retain their prior linear 1/10/50 policy; new-default tests
+  use fresh defaults.
+- Deployment explicitly authorized by the user. The Mac Compose pair built the
+  image from an allow-listed source/assets context excluding runtime data,
+  credentials and Tailscale state. The network-disabled, read-only Linux smoke
+  passed Yearly 4/6/8/10, Weekly timing/badge, Monthly 3→5→3 and idempotency,
+  effective category totals, restart, command limit/button removal, four-badge
+  CJK PNG rendering and SQLite integrity.
+- A private consistent online backup and matching catalogs/artwork/uploads/runtime
+  configuration were saved before cutover, with the exact prior image retained.
+  The first final-snapshot attempt rejected a read-only SQLite sidecar requirement
+  and automatically restarted the old app without migrating production. The
+  successful cutover then stopped the writer, verified there was no nonempty WAL,
+  obtained a consistent final snapshot, rehearsed migration and second startup,
+  and recreated only the application service. The gateway was unchanged.
+- Both rehearsals and the post-deployment production snapshot reconcile cleanly:
+  attempt/status counts and every member's effective points are unchanged;
+  integrity is `ok` and foreign keys are clean. There were **zero open attempts**
+  to revise. An isolated restore drill with the preserved old image and final
+  pre-upgrade backup also reconciles. All backups/reports/metadata remain private.
+- Deployed image manifest:
+  `sha256:1bdfc6af2c767843797b4c9ad7bd0dac932131812223dd00988bab9204d7c3c0`.
+  `/health` reports `{"ok":true,"discord":true}`; both app and gateway are healthy.
+  Discord command sync is confirmed. Authenticated lifecycle/history/roster/catalog
+  pages return 200 with Weekly controls and the new formula. No test announcements
+  were published. No independent review signoff is claimed.
+
+## Scoped formulas — deployed 2026-10-16
+
+- Added a **Shared formula — selected scope** target at `/lifecycle`. Edition,
+  permanent identity and catalog-year selections intersect. Future-only and
+  retroactive applications use the existing reviewed/idempotent operations;
+  inheritance remains intact. Whole-catalog changes still require explicit
+  all-editions confirmation, and ambiguous global/scoped selections are rejected.
+  Date filters restrict historical attempts, not future policy applicability.
+- Fixed formula reverts with overlapping prior scopes. A compensating revision
+  now withdraws the original formula at the revert cutover and replays the remaining
+  applicable revisions, rather than flattening different edition baselines into
+  one formula. Historical cutoffs and revision-bounded classification corrections
+  retain the original policy. Later overlapping formula changes still require a
+  fresh explicit operation. Awards and included open snapshots retain their
+  existing transactional compensation and conflict checks.
+- No schema migration is needed. New compensating revisions contain an internal
+  `reverts_policy_id` marker rejected by public policy validation. Older code does
+  not interpret this marker; rollback after using these operations requires the
+  matching database backup, not merely an older image against the newer database.
+- **289 tests passed** on disposable SQLite, including ten new scope/revert cases;
+  only the existing Starlette/httpx and Pillow deprecation warnings remain.
+  Real browser form submission on synthetic data passed scoped Monthly 10→5,
+  apply and compensating revert while the unrelated Monthly award stayed at 10.
+  The combined deployed release passed the Linux build/smoke and private
+  reconciliation checks above; no independent review signoff is claimed.
 
 ## Release verification — 2026-10-16
 
@@ -143,7 +234,7 @@ initial synthetic rehearsals and container smoke checks used no live database,
 member evidence, service credentials or Tailscale state. The release rehearsal
 above separately used a private recoverable production backup.
 
-- Latest follow-up local suite: **279 passed**, with Starlette/httpx and Pillow
+- Latest follow-up local suite: **302 passed**, with Starlette/httpx and Pillow
   deprecation warnings only. `git diff --check` is clean.
 - `tests/conftest.py` installs safety guards during collection: SQLite connections
   may target only memory or resolved OS temporary roots; repository runtime `.env`
@@ -209,21 +300,18 @@ python -m pytest -o addopts='' -q
 2. Edition/identity retirement, restoration and cancellation support one pending
    retirement/restoration pair. A dedicated editor for multiple disjoint future
    identity availability intervals is not implemented.
-3. Shared formula editing in the web UI is global; selected editions can use
-   absolute override previews. The backend supports scoped policy revisions, but
-   a scoped shared-formula editor is not exposed in the web UI.
-4. Catalog YAML exports preserve definition/duration/policy fields, not the entire
+3. Catalog YAML exports preserve definition/duration/policy fields, not the entire
    attempts/ledger/receipt/event graph. Use the verified SQLite backup plus matching
    assets for full recoverability.
-5. Reconstruction is bounded by known facts. `legacy_baseline`, unknown completion
+4. Reconstruction is bounded by known facts. `legacy_baseline`, unknown completion
    dates and unknown historical bonuses remain explicit provenance. The production
    rehearsal and deployed reconciliation passed without rewriting these unknowns.
-6. Startup observed successful live user-wide Tadoku pagination. A controlled live
+5. Startup observed successful live user-wide Tadoku pagination. A controlled live
    endpoint-contract/cross-contest/year acceptance test and large-dataset load test
    have not been performed. Incomplete evidence remains unavailable rather than
    definitive failure. Full-graph fingerprints and atomic recalculations favor
    correctness; staged background batches are not implemented.
-7. Calendar arithmetic is UTC. Host Compose timezone does not change captured
+6. Calendar arithmetic is UTC. Host Compose timezone does not change captured
    attempt deadlines.
 
 ## Repeatable private backup and rehearsal procedure

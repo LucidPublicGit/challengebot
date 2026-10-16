@@ -1,6 +1,12 @@
 # Challenge durations, lifecycle, scoring, and badges: implementation handoff
 
 Status: final planning handoff; application implementation has not started.
+Historical plan: implementation and later user-approved changes are tracked in
+`challenge-lifecycle-and-badges-implementation.md`. The 2026-10-16 follow-up adds
+Weekly (seven days) and a lifetime 週 badge, changes long-duration scoring to
+`ceil(multiplier × (base + 1) / 2)` with multipliers 2/3/4 (Yearly 4/6/8/10), styles
+duration headings and removes the Past Challenges button, superseding the
+corresponding original defaults below.
 Prepared: 2026-10-15.
 Repository: `/Users/lucid/DevEnvPublic/challengebot` (formerly ChallengeTracker).
 

@@ -13,7 +13,7 @@ from app.db import db_session, utcnow_iso
 from app.catalog import sweep_bonus
 
 TIERS = ("easy", "medium", "hard", "ota_master")
-GLYPHS = {"daily": "日", "monthly": "月", "yearly": "年"}
+GLYPHS = {"daily": "日", "weekly": "週", "monthly": "月", "yearly": "年"}
 RULE_VERSION = "duration-badges-v1"
 
 
@@ -285,7 +285,7 @@ def sync_user(conn: sqlite3.Connection, discord_id: str, *, operation_id=None, a
             candidates = original + [r for r in versions if r not in original]
         qualification = next((q for r in candidates if (q := _qualification(r, completions)) is not None), None)
         _record(conn, discord_id, "daily", tier, year, qualification, operation_id=operation_id, actor=actor, reason=reason)
-    for duration in (("monthly", "yearly") if include_lifetime else ()):
+    for duration in (("weekly", "monthly", "yearly") if include_lifetime else ()):
         for tier in TIERS:
             clear = next((c for c in completions if c["duration_group"] == duration and c["tier"] == tier), None)
             qualification = ({"roster_id": None, "qualifying_attempts_json": _json([clear["id"]]),
@@ -303,7 +303,7 @@ def _decorate(row):
 
 
 def duration_badges(discord_id: str, year: int | None = None) -> list[dict]:
-    """Highest valid 日/月/年 in header order, at most three; read-only."""
+    """Highest valid 日/週/月/年 in header order, at most four; read-only."""
     year = datetime.now(timezone.utc).year if year is None else int(year)
     with db_session() as conn:
         receipts = [_decorate(r) for r in conn.execute(

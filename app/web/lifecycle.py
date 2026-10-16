@@ -26,7 +26,7 @@ from app.db import db_session
 from app.services import attempts
 from app.web.app import _esc, _page
 
-DURATIONS = ("daily", "monthly", "yearly", "special")
+DURATIONS = ("daily", "weekly", "monthly", "yearly", "special")
 REPEATS = ("once_ever", "annual", "legacy")
 
 
@@ -111,7 +111,7 @@ def catalog_fields(c):
     repeat = c.get("repeat_policy") or ("legacy" if c.get("id") else "once_ever")
     return f"""
       <div><label>Duration group</label><select name="duration_group">{_options(DURATIONS, duration)}</select>
-        <p class="muted">Daily: configured hours, at most 24. Monthly / Yearly: one personal calendar month / year from actual start. Special: custom legacy window.</p></div>
+        <p class="muted">Daily: configured hours, at most 24. Weekly: seven days from actual start. Monthly / Yearly: one personal calendar month / year from actual start. Special: custom legacy window.</p></div>
       <div><label>Repeat eligibility</label><select name="repeat_policy">{_options(REPEATS, repeat)}</select>
         <p class="muted">Annual means once per published catalog-year edition; it does not republish a retired identity. Legacy preserves migrated exceptions.</p></div>
       <div><label>Permanent identity</label><input name="identity_id" value="{_esc(c.get('identity_id') or '')}" {"readonly" if c.get('id') else ''}/>
@@ -263,7 +263,7 @@ def register_lifecycle(app, auth):
           <p>This is an explicit historical correction, not an ordinary prospective catalog edit.
           Original requirements and receipts remain in history. A replacement version is appended;
           affected progress, awards and signed bonuses are recomputed for all members in this year/tier.
-          Monthly/Yearly challenges cannot be added as Daily requirements. An empty roster never awards a sweep.</p>
+          Weekly/Monthly/Yearly challenges cannot be added as Daily requirements. An empty roster never awards a sweep.</p>
           <form method="post" action="/lifecycle/rosters/preview"><div class="grid">
           <div><label>Roster to repair</label><select name="roster_id" required>{options}</select></div>
           <div class="span-2"><label>Replacement edition IDs (one per line or comma-separated; blank = empty roster)</label><textarea name="requirements" rows="6"></textarea></div>
@@ -299,20 +299,20 @@ def register_lifecycle(app, auth):
         identities = sorted({str(c.get("identity_id")) for c in items if c.get("identity_id")})
         identity_options = "".join(f'<option value="{_esc(identity)}">{_esc(identity)}</option>' for identity in identities)
         bases = "".join(f'<div><label>{_esc(tier.replace("_", " ").title())} base</label><input type="number" min="0" step="1" name="base_{tier}" placeholder="Unchanged"/></div>' for tier in ("easy", "medium", "hard", "ota_master"))
-        multipliers = "".join(f'<div><label>{duration.title()} multiplier</label><input type="number" min="0" step="1" name="multiplier_{duration}" placeholder="Unchanged"/></div>' for duration in DURATIONS[:3])
+        multipliers = "".join(f'<div><label>{duration.title()} multiplier</label><input type="number" min="0" step="1" name="multiplier_{duration}" placeholder="Unchanged"/></div>' for duration in DURATIONS[:-1])
         body = f"""
         <div class="card"><p><a href="/lifecycle/rosters">Preview historical Daily roster repair</a> · <a href="/lifecycle/history">Operation history</a></p><h2>Scoring policy</h2>
-          <p>Daily / Monthly / Yearly defaults are difficulty base × 1 / 10 / 50. Supply only values to change. Absolute overrides remain distinct from inherited points. Point changes preserve clear counts, completion dates and completion-based badges.</p>
+          <p>Daily points equal the difficulty base. Weekly / Monthly / Yearly use ceil(multiplier × (base + 1) / 2), with default multipliers 2 / 3 / 4. Yearly awards are Easy 4, Medium 6, Hard 8, Ota-Master 10. Earlier linear policies remain in accepted history. Supply only values to change. Absolute overrides remain distinct from inherited points. Point changes preserve clear counts, completion dates and completion-based badges.</p>
           <form method="post" action="/lifecycle/scoring/preview"><div class="grid">
-            <div><label>Policy target</label><select name="policy_target"><option value="global">Shared defaults</option><option value="override">Selected edition override</option></select></div>
-            <div><label>Application</label><select name="application"><option value="future">Future attempts only</option><option value="retroactive">Retroactive — explicit selected editions</option></select></div>
+            <div><label>Policy target</label><select name="policy_target"><option value="global">Shared defaults — whole catalog</option><option value="scoped">Shared formula — selected scope</option><option value="override">Selected edition override</option></select></div>
+            <div><label>Application</label><select name="application"><option value="future">Future attempts only</option><option value="retroactive">Retroactive — selected scope</option></select></div>
             <div class="span-2"><label><input type="checkbox" name="all_editions" value="yes"/> Shared defaults: explicitly select all catalog editions, including retired editions</label>
-              <p class="muted">The service currently supports shared default changes across the whole catalog. For a selected edition use an absolute override. Scoped shared formula revisions are unavailable.</p></div>
+              <p class="muted">Whole-catalog defaults require this confirmation and no edition, identity or year selections. For a scoped formula, leave it unchecked and select editions, identities or catalog years below.</p></div>
             {bases}{multipliers}
             <div><label>Absolute points override</label><input type="number" name="points_override" min="0" step="1"/></div>
             <div><label><input type="checkbox" name="clear_override" value="yes"/> Explicitly clear override and return to formula inheritance</label></div>
-            <div class="span-2"><label>Edition scope (select one or more for historical changes or overrides)</label><select multiple name="edition_ids" size="8">{options}</select>
-              <p class="muted">Retired editions are included in these choices. Select exactly which editions may change. Shared defaults with future-only and no selection apply globally.</p></div>
+            <div class="span-2"><label>Edition scope (required for absolute overrides; optional formula scope)</label><select multiple name="edition_ids" size="8">{options}</select>
+              <p class="muted">Retired editions are included. Edition, identity and year selections intersect. Scoped formula changes preserve inheritance and apply to future attempts in that scope; retroactive application also recalculates selected historical awards. Date filters below restrict historical attempts only.</p></div>
             <div class="span-2"><label>Permanent identity scope (optional intersection with editions)</label><select multiple name="identity_ids" size="4">{identity_options}</select></div>
             <div><label>Catalog years (optional comma-separated intersection)</label><input name="years" placeholder="2025,2026"/></div>
             <div><label>Date-filter semantics</label><select name="date_field"><option value="started_at">Actual attempt start</option><option value="completed_at">Actual completion (unknown dates are excluded)</option></select></div>
@@ -334,7 +334,7 @@ def register_lifecycle(app, auth):
         form = await request.form()
         reason = _reason(form)
         target, application = form.get("policy_target"), form.get("application")
-        if target not in ("global", "override") or application not in ("future", "retroactive"):
+        if target not in ("global", "scoped", "override") or application not in ("future", "retroactive"):
             raise HTTPException(400, "Choose a policy target and application scope.")
         editions = list(dict.fromkeys(str(x) for x in form.getlist("edition_ids") if str(x)))
         known = {str(c.get("edition_id") or c["id"]) for c in catalog.list_challenges(include_retired=True)}
@@ -376,7 +376,7 @@ def register_lifecycle(app, auth):
             else:
                 policy["points_override"] = _number(form.get("points_override"), "Override", integer=True)
         else:
-            for field, prefix, values in (("base_points", "base_", ("easy", "medium", "hard", "ota_master")), ("multipliers", "multiplier_", DURATIONS[:3])):
+            for field, prefix, values in (("base_points", "base_", ("easy", "medium", "hard", "ota_master")), ("multipliers", "multiplier_", DURATIONS[:-1])):
                 changes = {key: _number(form[prefix + key], key, integer=True) for key in values if str(form.get(prefix + key) or "").strip()}
                 if changes:
                     policy[field] = changes
@@ -384,10 +384,13 @@ def register_lifecycle(app, auth):
                 raise HTTPException(400, "Supply at least one shared policy value to change.")
             if str(form.get("points_override") or "").strip() or form.get("clear_override"):
                 raise HTTPException(400, "Choose the edition override target to change or clear an override.")
-            if editions or identities or scope.get("years"):
-                raise HTTPException(400, "Scoped shared formula changes are not supported by the service. Use a selected edition override or explicitly choose all editions for shared defaults.")
-            if form.get("all_editions") != "yes":
-                raise HTTPException(400, "Explicitly select all editions for a shared default change.")
+            if target == "global":
+                if editions or identities or scope.get("years"):
+                    raise HTTPException(400, "Choose the scoped formula target to select editions, identities or years.")
+                if form.get("all_editions") != "yes":
+                    raise HTTPException(400, "Explicitly select all editions for a shared default change.")
+            elif form.get("all_editions") == "yes" or not (editions or identities or scope.get("years")):
+                raise HTTPException(400, "Select editions, identities or years for a scoped formula and leave all editions unchecked.")
         if application == "future" and form.get("include_open") == "yes":
             raise HTTPException(400, "To include existing open attempts, choose retroactive application and review its explicit scope.")
         preview = _call(_service("scoring").preview_recalculation, policy, scope,

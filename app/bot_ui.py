@@ -7,8 +7,15 @@ from datetime import datetime, timezone
 
 
 DURATION_LABELS = {
-    "daily": "Daily", "monthly": "Monthly", "yearly": "Yearly", "special": "Special",
+    "daily": "Daily", "weekly": "Weekly", "monthly": "Monthly", "yearly": "Yearly", "special": "Special",
 }
+
+
+DURATION_ICONS = {"daily": "🟦", "weekly": "🟩", "monthly": "🟪", "yearly": "🟨", "special": "⬜"}
+
+
+def duration_heading(ch: dict) -> str:
+    return f"{DURATION_ICONS.get(duration_group(ch), '⬜')} **{duration_label(ch).upper()}** ━━━━━━━━━━\n"
 
 
 def duration_group(ch: dict) -> str:
@@ -20,6 +27,23 @@ def duration_group(ch: dict) -> str:
 def duration_label(ch: dict) -> str:
     group = duration_group(ch)
     return DURATION_LABELS.get(group, group.title())
+
+
+def window_hours(attempt: dict) -> float | None:
+    """Use the saved personal window for event cards, including anniversaries."""
+    try:
+        start = datetime.fromisoformat(attempt['started_at'].replace('Z', '+00:00'))
+        end = datetime.fromisoformat(attempt['ends_at'].replace('Z', '+00:00'))
+        return (end - start).total_seconds() / 3600
+    except (KeyError, TypeError, ValueError, AttributeError):
+        if duration_group(attempt) == 'weekly':
+            return 168
+        if duration_group(attempt) in ('monthly', 'yearly'):
+            return None
+        try:
+            return float(attempt.get('time_limit_hours') or 0) or None
+        except (TypeError, ValueError):
+            return None
 
 
 def timestamp(value: str | datetime | None) -> str:
@@ -55,7 +79,7 @@ def section_pages(
         group = duration_group(ch)
         remaining = render(ch)
         while remaining:
-            heading = f"**{duration_label(ch)}**\n" if previous != group else ""
+            heading = duration_heading(ch) if previous != group else ""
             prefix = ("\n\n" if body else "") + heading
             room = max_chars - len(body) - len(prefix)
             if len(rows) >= max_options or room < min(len(remaining), 150):

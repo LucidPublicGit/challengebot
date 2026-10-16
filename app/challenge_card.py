@@ -460,7 +460,7 @@ def _iter_cleared_tiers(tiers) -> list[str]:
 
 
 _BADGE_TIERS = ("easy", "medium", "hard", "ota_master")
-_DURATION_GLYPHS = {"daily": "日", "monthly": "月", "yearly": "年"}
+_DURATION_GLYPHS = {"daily": "日", "weekly": "週", "monthly": "月", "yearly": "年"}
 
 
 def _profile_duration_badges(
@@ -469,7 +469,7 @@ def _profile_duration_badges(
 ) -> list[tuple[str, str]]:
     """Select one highest earned tier per duration, in header order.
 
-    Callers supply current-catalog-year Daily and lifetime Monthly/Yearly
+    Callers supply current-catalog-year Daily and lifetime Weekly/Monthly/Yearly
     awards from the service. Rendering never derives eligibility from clears,
     points, mutable catalog definitions, or the date on the local machine.
     Accepts badges.duration_badges() rows directly, or a duration-to-tiers map.
@@ -1836,8 +1836,8 @@ def _render_userinfo(
     categories: {ota/physical: {points, total_points, clears, total, breakdown}}
     Ring fill uses catalog points, not clear counts or leaderboard bonuses.
     duration_badges: service badge rows with duration_group/tier, or a mapping
-    {daily/monthly/yearly: highest tier or earned tier list}.
-    Daily is current-year; Monthly/Yearly are lifetime. An explicit empty
+    {daily/weekly/monthly/yearly: highest tier or earned tier list}.
+    Daily is current-year; Weekly/Monthly/Yearly are lifetime. An explicit empty
     collection hides all badges; omission uses cleared_tiers as Daily sweeps.
     best_tier remains Daily-only and controls existing name/avatar styling.
     """

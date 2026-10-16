@@ -14,7 +14,16 @@ from typing import Any
 from app.db import db_session, utcnow_iso
 
 BASE_POINTS = {'easy': 1, 'medium': 2, 'hard': 3, 'ota_master': 4}
-MULTIPLIERS = {'daily': 1, 'monthly': 10, 'yearly': 50, 'special': 1}
+MULTIPLIERS = {'daily': 1, 'weekly': 2, 'monthly': 3, 'yearly': 4, 'special': 1}
+LEGACY_MULTIPLIERS = {**MULTIPLIERS, 'monthly': 10, 'yearly': 50}
+FORMULA_VERSION = 'compressed_long_v1'
+
+
+def _merge_policy(target, revision):
+    for field in ('base_points', 'multipliers'):
+        target[field].update(revision.get(field, {}))
+    if 'formula_version' in revision:
+        target['formula_version'] = revision['formula_version']
 
 
 def _json(value):
@@ -55,32 +64,41 @@ def _instant(value=None):
 
 def current_policy(conn, challenge=None, *, at=None, through_id=None) -> dict:
     cutoff = _instant(at)
-    result = {'base_points': dict(BASE_POINTS), 'multipliers': dict(MULTIPLIERS)}
-    for row in conn.execute('SELECT id,policy_json,scope_json,effective_at FROM scoring_policies ORDER BY id'):
-        if through_id is not None and row['id'] > through_id:
-            continue
-        if row['effective_at'] and _instant(row['effective_at']) > cutoff:
+    result = {'base_points': dict(BASE_POINTS), 'multipliers': dict(LEGACY_MULTIPLIERS), 'formula_version': 'linear_v1'}
+    rows = [row for row in conn.execute('SELECT id,policy_json,scope_json,effective_at FROM scoring_policies ORDER BY id')
+            if (through_id is None or row['id'] <= through_id)
+            and (not row['effective_at'] or _instant(row['effective_at']) <= cutoff)]
+    # A compensating revision withdraws the original formula at its own cutover.
+    # Replaying the remaining revisions restores each challenge's applicable
+    # baseline even when prior edition/identity/year scopes overlap differently.
+    # Filtering first retains the original formula for historical snapshots.
+    reverted = {_load(row['policy_json'])['reverts_policy_id'] for row in rows
+                if 'reverts_policy_id' in _load(row['policy_json'])}
+    for row in rows:
+        if row['id'] in reverted:
             continue
         scope = _load(row['scope_json'])
         scoped = any(k in scope for k in ('edition_ids', 'identity_ids', 'years'))
         if scoped and (challenge is None or not _scope_match(challenge, scope)):
             continue
         policy = _load(row['policy_json'])
-        for field in ('base_points', 'multipliers'):
-            result[field].update(policy.get(field, {}))
+        _merge_policy(result, policy)
     return result
 
 
 def points_for_challenge(challenge: dict, policy: dict | None = None) -> int:
     """Resolve an accepted rules snapshot; points=None means inheritance."""
-    policy = policy or {'base_points': BASE_POINTS, 'multipliers': MULTIPLIERS}
+    policy = policy or {'base_points': BASE_POINTS, 'multipliers': MULTIPLIERS, 'formula_version': FORMULA_VERSION}
     override = challenge.get('points')
     if override is not None:
         return _points(int(override))
     tier = str(challenge.get('tier', '')).lower()
     group = challenge.get('duration_group') or ('special' if tier == 'special' else 'daily')
-    return _points(policy.get('base_points', BASE_POINTS).get(tier, 0) *
-                   policy.get('multipliers', MULTIPLIERS).get(group, 1))
+    base = policy.get('base_points', BASE_POINTS).get(tier, 0)
+    multiplier = policy.get('multipliers', MULTIPLIERS).get(group, 1)
+    if policy.get('formula_version') == FORMULA_VERSION and group in ('weekly', 'monthly', 'yearly'):
+        return _points(((base + 1) * multiplier + 1) // 2)
+    return _points(base * multiplier)
 
 
 def reward_points(conn, challenge: dict | None) -> int:
@@ -198,7 +216,9 @@ def ensure_completion_award(conn, attempt_id, *, actor='system', reason=None, op
             conn.execute('UPDATE award_ledger SET metadata_json=? WHERE source_key=?', (_json(metadata), key))
         return conn.execute('SELECT effective_points FROM award_ledger WHERE source_key=?', (key,)).fetchone()[0]
     legacy = a.get('provenance') == 'legacy_baseline' or not snap
-    points = snap.get('points', points_for_challenge(ch))
+    # Missing historical snapshots retain the release's migration baseline,
+    # independent of later prospective product defaults.
+    points = snap.get('points', points_for_challenge(ch, {'base_points': BASE_POINTS, 'multipliers': LEGACY_MULTIPLIERS}))
     classification_correction = None
     if snap and any(facts.get(k) != rules.get(k) for k in ('tier', 'duration_group')):
         # A deliberate correction can precede completion (including scheduled
@@ -241,10 +261,50 @@ def user_points(conn, discord_id):
                             (str(discord_id),)).fetchone()[0])
 
 
+def upgrade_duration_defaults(conn):
+    """One audited cutover including open attempts; completed awards stay intact."""
+    operation_id = 'duration-defaults-compressed-v1'
+    if conn.execute('SELECT 1 FROM meta WHERE key=?', (operation_id,)).fetchone():
+        return
+    # Preserve a pre-cutover baseline for partially captured active attempts.
+    for row in conn.execute("SELECT a.id AS attempt_id,c.* FROM attempts a JOIN challenge_defs c ON c.id=a.challenge_id "
+                            "WHERE a.status='active' AND a.scoring_snapshot_json IS NULL").fetchall():
+        challenge = dict(row)
+        attempt_id = challenge.pop('attempt_id')
+        conn.execute('UPDATE attempts SET scoring_snapshot_json=? WHERE id=?',
+                     (_json(capture_snapshot(conn, challenge)), attempt_id))
+    policy = {'multipliers': {key: MULTIPLIERS[key] for key in ('weekly', 'monthly', 'yearly')},
+              'formula_version': FORMULA_VERSION}
+    # Reuse classification/override-aware preview calculation, then deliberately
+    # apply only its open snapshots. Completed awards are never recalculated here.
+    preview = _preview(conn, policy, {'retroactive': True}, True, False)
+    opens = []
+    for change in preview['open_attempts']:
+        row = conn.execute('SELECT a.rules_snapshot_json,a.effective_completion_json,c.duration_group '
+                           'FROM attempts a JOIN challenge_defs c ON c.id=a.challenge_id WHERE a.id=?',
+                           (change['attempt_id'],)).fetchone()
+        accepted = {**_load(row['rules_snapshot_json']), **_load(row['effective_completion_json'])}
+        if accepted.get('duration_group', row['duration_group']) in ('weekly', 'monthly', 'yearly'):
+            opens.append(change)
+    recorded_at = utcnow_iso()
+    reason = 'Compressed Weekly/Monthly/Yearly scoring, including open attempts; completed awards retained'
+    previous = current_policy(conn)
+    cursor = conn.execute('INSERT INTO scoring_policies(policy_json,effective_at,recorded_at,actor,reason,operation_id) VALUES(?,?,?,?,?,?)',
+                          (_json(policy), recorded_at, recorded_at, 'migration', reason, operation_id))
+    for change in opens:
+        snapshot = {**change['new_snapshot'], 'policy_id': cursor.lastrowid,
+                    'explicit_scoring_revision': {'operation_id': operation_id, 'effective_at': recorded_at,
+                                                 'actor': 'migration', 'reason': reason}}
+        conn.execute('UPDATE attempts SET scoring_snapshot_json=? WHERE id=?', (_json(snapshot), change['attempt_id']))
+    _record(conn, operation_id, 'duration_defaults', {'previous_policy': previous, 'policy': policy, 'open_attempts': opens},
+            {'policy_id': cursor.lastrowid, 'open_attempts': len(opens)}, 'migration', reason)
+    conn.execute('INSERT INTO meta(key,value) VALUES(?,?)', (operation_id, recorded_at))
+
+
 def bootstrap(conn):
     if not conn.execute('SELECT 1 FROM scoring_policies LIMIT 1').fetchone():
         conn.execute('INSERT INTO scoring_policies(policy_json,recorded_at,actor,reason) VALUES(?,?,?,?)',
-                     (_json({'base_points': BASE_POINTS, 'multipliers': MULTIPLIERS}), utcnow_iso(),
+                     (_json({'base_points': BASE_POINTS, 'multipliers': MULTIPLIERS, 'formula_version': FORMULA_VERSION}), utcnow_iso(),
                       'migration', 'initial defaults'))
     for row in conn.execute('SELECT DISTINCT discord_id FROM attempts').fetchall():
         sync_user(conn, row[0])
@@ -269,8 +329,10 @@ def bootstrap(conn):
 
 
 def _validate_policy(policy):
-    if not isinstance(policy, dict) or set(policy) - {'base_points', 'multipliers', 'points_override'}:
+    if not isinstance(policy, dict) or set(policy) - {'base_points', 'multipliers', 'points_override', 'formula_version'}:
         raise ValueError('unsupported policy fields')
+    if 'formula_version' in policy and policy['formula_version'] not in ('linear_v1', FORMULA_VERSION):
+        raise ValueError('invalid scoring formula version')
     for field, allowed in (('base_points', BASE_POINTS), ('multipliers', MULTIPLIERS)):
         for key, value in policy.get(field, {}).items():
             if key not in allowed or _points(value) < 0:
@@ -323,8 +385,7 @@ def _preview(conn, policy, scope, include_open, include_overrides):
     for row in conn.execute('SELECT DISTINCT discord_id FROM attempts').fetchall():
         sync_user(conn, row[0])
     merged = current_policy(conn)
-    for name in ('base_points', 'multipliers'):
-        merged[name] = {**merged.get(name, {}), **policy.get(name, {})}
+    _merge_policy(merged, policy)
     changes, definitions, opens, excluded = [], [], [], []
     selected = {}
     for row in conn.execute('SELECT * FROM challenge_defs').fetchall():
@@ -367,8 +428,7 @@ def _preview(conn, policy, scope, include_open, include_overrides):
                     if historical['points'] is not None and not include_overrides:
                         continue
             replacement = current_policy(conn, ch)
-            for field in ('base_points', 'multipliers'):
-                replacement[field].update(policy.get(field, {}))
+            _merge_policy(replacement, policy)
             target = points_for_challenge(historical, replacement)
             if a['status'] == 'completed' and receipt and (
                 target != receipt['effective_points'] or (
@@ -434,7 +494,7 @@ def apply_recalculation(preview, *, actor, reason, operation_id):
             raise ValueError('stale or modified scoring preview; preview again')
         # Partial revisions compose in order. Scoped policies affect only matching
         # future starts; unrelated defaults and accepted open snapshots stay intact.
-        policy_value = {k: v for k, v in preview['policy'].items() if k in ('base_points', 'multipliers')}
+        policy_value = {k: v for k, v in preview['policy'].items() if k in ('base_points', 'multipliers', 'formula_version')}
         cursor = conn.execute('''INSERT INTO scoring_policies
             (policy_json,scope_json,effective_at,recorded_at,actor,reason,operation_id) VALUES(?,?,?,?,?,?,?)''',
             (_json(policy_value), _json(preview['scope']), utcnow_iso(), utcnow_iso(), str(actor), reason, operation_id))
@@ -514,20 +574,21 @@ def revert_operation(operation_id, *, actor, reason, revert_operation_id):
             conn.execute('UPDATE attempts SET scoring_snapshot_json=? WHERE id=?', (a['old_snapshot'], a['attempt_id']))
         # Revert only changed fields. Reject later overlapping formula revisions.
         original_policy_id = _load(original['result_json'])['policy_id']
-        policy = {}
         for field in ('base_points', 'multipliers'):
             keys = preview['policy'].get(field, {})
             if not keys:
                 continue
             for later in conn.execute('SELECT policy_json FROM scoring_policies WHERE id>?', (original_policy_id,)):
-                if set(_load(later[0]).get(field, {})) & set(keys):
+                if 'formula_version' in _load(later[0]) or set(_load(later[0]).get(field, {})) & set(keys):
                     raise ValueError('policy changed since operation; explicit new preview required')
-            before = dict(BASE_POINTS if field == 'base_points' else MULTIPLIERS)
-            for prior in conn.execute('SELECT policy_json,scope_json FROM scoring_policies WHERE id<? ORDER BY id', (original_policy_id,)):
-                prior_scope = _load(prior['scope_json'])
-                if prior_scope == preview['scope'] or not any(k in prior_scope for k in ('edition_ids','identity_ids','years')):
-                    before.update(_load(prior['policy_json']).get(field, {}))
-            policy[field] = {key: before[key] for key in keys}
+        if 'formula_version' in preview['policy']:
+            for later in conn.execute('SELECT policy_json FROM scoring_policies WHERE id>?', (original_policy_id,)):
+                if set(_load(later[0])) & {'formula_version', 'base_points', 'multipliers'}:
+                    raise ValueError('policy changed since operation; explicit new preview required')
+        # Do not flatten heterogeneous prior scopes into a single replacement.
+        # This internal marker is append-only and cannot be supplied as a policy
+        # through preview_recalculation's public validation.
+        policy = {'reverts_policy_id': original_policy_id}
         conn.execute('INSERT INTO scoring_policies(policy_json,scope_json,effective_at,recorded_at,actor,reason,operation_id) VALUES(?,?,?,?,?,?,?)',
                      (_json(policy), _json(preview['scope']), utcnow_iso(), utcnow_iso(), str(actor), reason, revert_operation_id))
         result = {'operation_id': revert_operation_id, 'reverts': operation_id, 'adjusted': adjusted}

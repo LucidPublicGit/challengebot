@@ -65,6 +65,8 @@ def calculate_deadline(challenge: dict, start: datetime) -> datetime:
     challenge = dict(challenge)
     start = _date(start)
     group = _group(challenge)
+    if group == "weekly":
+        return start + timedelta(days=7)
     if group in {"monthly", "yearly"}:
         year, month = start.year, start.month
         if group == "monthly":
@@ -452,7 +454,7 @@ def _corrected(att: dict, changes: dict, recompute_deadline: bool, exception_rea
     elif "actual_completed_at" in changes:
         after["completed_at"] = after["actual_completed_at"]
     rules = effective_rules({**after, "effective_completion_json": _json(metadata)})
-    if rules.get("duration_group") not in {"daily", "monthly", "yearly", "special"}:
+    if rules.get("duration_group") not in {"daily", "weekly", "monthly", "yearly", "special"}:
         raise ValueError("Invalid duration group")
     if rules.get("category") not in {"ota", "physical"}:
         raise ValueError("Invalid category")

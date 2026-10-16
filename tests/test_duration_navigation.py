@@ -1,7 +1,7 @@
 """Pure Discord limits and duration grouping with synthetic catalog rows."""
 from collections import Counter
 
-from app.bot_ui import section_pages
+from app.bot_ui import section_pages, duration_heading
 
 
 def test_catalog_beyond_25_and_empty_groups():
@@ -21,7 +21,7 @@ def test_long_description_not_truncated_and_durations_ordered():
     long = 'synthetic-' * 2000
     pages = section_pages([{'id': 'long', 'duration_group': 'monthly'}], lambda c: long)
     assert len(pages) > 1
-    assert ''.join(body.replace('**Monthly**\n', '') for _, body in pages) == long
+    assert ''.join(body.replace(duration_heading({'duration_group': 'monthly'}), '') for _, body in pages) == long
     assert all(options[0]['id'] == 'long' for options, _ in pages)
 
 

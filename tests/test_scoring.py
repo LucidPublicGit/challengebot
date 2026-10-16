@@ -20,6 +20,8 @@ class ScoringTests(unittest.TestCase):
         self.catalog_patch = patch.object(scoring, '_catalog_records', lambda conn: None)
         self.catalog_patch.start()
         with db.db_session() as conn:
+            conn.execute("INSERT INTO scoring_policies(policy_json,recorded_at,actor,reason) VALUES(?, '2026-01-01T00:00:00+00:00', 'fixture', 'Historical scoring regression')",
+                         ('{"formula_version":"linear_v1","multipliers":{"monthly":10,"yearly":50}}',))
             for i, group, points in [('tales', 'monthly', None), ('other', 'monthly', None), ('fixed', 'monthly', 20)]:
                 conn.execute('''INSERT INTO challenge_defs
                     (id,year,tier,number,title,goal_kind,goal_amount,duration_group,points,edition_id,identity_id)
@@ -53,7 +55,7 @@ class ScoringTests(unittest.TestCase):
     def test_formula_and_overrides(self):
         for tier, base in scoring.BASE_POINTS.items():
             for group, multiplier in scoring.MULTIPLIERS.items():
-                self.assertEqual(scoring.points_for_challenge({'tier': tier, 'duration_group': group}), base * multiplier)
+                self.assertEqual(scoring.points_for_challenge({'tier': tier, 'duration_group': group}, {'base_points': scoring.BASE_POINTS, 'multipliers': scoring.MULTIPLIERS, 'formula_version': 'linear_v1'}), base * multiplier)
         self.assertEqual(scoring.points_for_challenge({'points': 0}), 0)
 
     def test_10_to_5_idempotent_and_revert(self):
@@ -85,6 +87,64 @@ class ScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scoring.apply_recalculation(preview, actor='a', reason='stale', operation_id='stale')
         self.assertEqual(self.total(), 20)
+
+    def test_scoped_formula_revert_replays_overlapping_prior_scopes(self):
+        with patch.object(scoring, 'utcnow_iso', return_value='2026-01-01T00:00:00+00:00'):
+            self.apply({'multipliers': {'monthly': 7}}, {'years': [2026]}, operation='year')
+            self.apply({'base_points': {'easy': 3}}, {'identity_ids': ['tales']}, operation='identity')
+        self.completion()
+        self.completion('other')
+        self.assertEqual(self.total(), 28)
+        scope = {'edition_ids': ['tales', 'other']}
+        with patch.object(scoring, 'utcnow_iso', return_value='2026-11-01T00:00:00+00:00'):
+            change = self.apply({'multipliers': {'monthly': 5}}, scope, operation='scoped')
+        self.assertEqual(self.total(), 20)
+        with patch.object(scoring, 'utcnow_iso', return_value='2026-12-01T00:00:00+00:00'):
+            scoring.revert_operation('scoped', actor='a', reason='restore scopes', revert_operation_id='undo-scoped')
+        self.assertEqual(self.total(), 28)
+        with db.db_session() as conn:
+            for cid, base in [('tales', 3), ('other', 1)]:
+                ch = dict(conn.execute('SELECT * FROM challenge_defs WHERE id=?', (cid,)).fetchone())
+                before = scoring.capture_snapshot(conn, ch, at='2026-11-15T00:00:00+00:00')
+                after = scoring.capture_snapshot(conn, ch, at='2026-12-01T00:00:00+00:00')
+                self.assertEqual(before['points'], base * 5)
+                self.assertEqual(after['points'], base * 7)
+                self.assertEqual(scoring.current_policy(conn, ch, at='2026-12-02T00:00:00+00:00',
+                                                        through_id=change['policy_id'])['multipliers']['monthly'], 5)
+
+    def test_global_formula_revert_preserves_prior_edition_formula(self):
+        self.apply({'multipliers': {'monthly': 7}}, {'edition_ids': ['tales']}, operation='edition')
+        self.apply({'multipliers': {'monthly': 5}}, operation='global')
+        scoring.revert_operation('global', actor='a', reason='undo global', revert_operation_id='undo-global')
+        with db.db_session() as conn:
+            for cid, expected in [('tales', 7), ('other', 10)]:
+                ch = dict(conn.execute('SELECT * FROM challenge_defs WHERE id=?', (cid,)).fetchone())
+                self.assertEqual(scoring.capture_snapshot(conn, ch)['points'], expected)
+
+    def test_revert_marker_is_not_a_public_policy_input(self):
+        with self.assertRaisesRegex(ValueError, 'unsupported policy fields'):
+            scoring.preview_recalculation({'reverts_policy_id': 1})
+
+    def test_formula_version_recalculation_and_revert_preserve_linear_history(self):
+        self.completion()
+        open_id = self.completion(status='active')
+        scheduled_id = self.completion(status='scheduled')
+        self.apply({'multipliers': {'monthly': 3}, 'formula_version': scoring.FORMULA_VERSION},
+                   operation='compressed', include_open=True)
+        self.assertEqual(self.total(), 3)
+        with db.db_session() as conn:
+            for aid in (open_id, scheduled_id):
+                snapshot = json.loads(conn.execute('SELECT scoring_snapshot_json FROM attempts WHERE id=?', (aid,)).fetchone()[0])
+                self.assertEqual(snapshot['points'], 3)
+                self.assertEqual(snapshot['policy']['formula_version'], scoring.FORMULA_VERSION)
+        scoring.revert_operation('compressed', actor='a', reason='restore linear', revert_operation_id='undo-compressed')
+        self.assertEqual(self.total(), 10)
+        with db.db_session() as conn:
+            for aid in (open_id, scheduled_id):
+                snapshot = json.loads(conn.execute('SELECT scoring_snapshot_json FROM attempts WHERE id=?', (aid,)).fetchone()[0])
+                self.assertEqual(snapshot['points'], 10)
+                self.assertEqual(snapshot['policy']['formula_version'], 'linear_v1')
+            self.assertEqual(scoring.current_policy(conn)['formula_version'], 'linear_v1')
 
     def test_global_multiplier_excludes_override_and_retains_open(self):
         self.completion()

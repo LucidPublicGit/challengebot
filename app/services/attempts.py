@@ -187,7 +187,7 @@ def challenge_allows_concurrent(ch: dict | None) -> bool:
     """True when challenge_defs.allows_concurrent is set (opt-in long-term)."""
     if not ch:
         return False
-    if ch.get('duration_group') in ('monthly', 'yearly'):
+    if ch.get('duration_group') in ('weekly', 'monthly', 'yearly'):
         return True
     raw = ch.get("allows_concurrent")
     if isinstance(raw, bool):
@@ -977,7 +977,7 @@ async def confirm_attempt(
         _parse_exclude(log_ids),
     )
 
-    if att.get('duration_group') in ('monthly', 'yearly') and att.get('goal_kind') == 'complete_work':
+    if att.get('duration_group') in ('weekly', 'monthly', 'yearly') and att.get('goal_kind') == 'complete_work':
         selected = str(att.get('param') or '').strip()
         supplied = str(param_override if param_override is not None else content or selected).strip()
         if supplied != selected:
@@ -1651,7 +1651,7 @@ def admin_upsert_challenge(data: dict[str, Any], *, conn=None, publish=True) -> 
             return {'ok': False, 'error': 'Publish a new edition ID rather than changing its catalog year.'}
         group = str(data.get('duration_group') or (existing['duration_group'] if existing else ('special' if data['tier'] == 'special' else 'daily'))).lower()
         repeat = str(data.get('repeat_policy') or (existing['repeat_policy'] if existing else 'legacy')).lower()
-        if group not in ('daily', 'monthly', 'yearly', 'special') or repeat not in ('legacy', 'annual', 'once_ever'):
+        if group not in ('daily', 'weekly', 'monthly', 'yearly', 'special') or repeat not in ('legacy', 'annual', 'once_ever'):
             return {'ok': False, 'error': 'Invalid duration group or repeat policy'}
         from app.services.lifecycle import calculate_deadline, ensure_catalog_records
         try:
