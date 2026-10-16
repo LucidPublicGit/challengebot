@@ -430,23 +430,27 @@ def test_achievement_web_completion_dates_and_discord_pagination():
             client = TestClient(create_app(), headers={"Origin": "http://testserver"})
             client.auth = ("admin", "secret")
             page = client.get(f"/attempts/{aid}")
-            assert 'name="completed_time" value="12:34:56"' in page.text
+            # Legacy completed_at is a confirmation-time proxy, not a known
+            # actual completion. Never prefill the latter from the former.
+            assert 'name="completed_time" value=""' in page.text
+            before = att.get_attempt(aid)
+            assert before["actual_completed_at"] is None
+            assert client.post(f"/attempts/{aid}", data={
+                "status": "completed", "note": "Missing audit reason",
+            }).status_code == 400
             response = client.post(f"/attempts/{aid}", data={
                 "status": "completed", "note": "Note edited through the web UI.",
                 "completed_date": "2026-02-01", "completed_time": "12:34:56",
+                "reason": "Attest known actual completion date",
             })
             assert response.status_code == 200
-            assert att.get_attempt(aid)["completed_at"] == "2026-02-01T12:34:56+00:00"
-            with db_session() as conn:
-                conn.execute("UPDATE attempts SET completed_at=? WHERE id=?",
-                             ("2026-02-01T12:34:56.123+00:00", aid))
-            assert client.post(f"/attempts/{aid}", data={
-                "status": "completed", "note": "Keep legacy subsecond precision.",
-                "completed_date": "2026-02-01", "completed_time": "12:34:56",
-            }).status_code == 200
-            assert att.get_attempt(aid)["completed_at"] == "2026-02-01T12:34:56.123+00:00"
+            assert 'name="token"' in response.text
+            # Preview must not mutate dates, evidence, achievements or totals.
+            assert att.get_attempt(aid)["completed_at"] == before["completed_at"]
+            assert att.get_attempt(aid)["actual_completed_at"] is None
             assert client.post(f"/attempts/{aid}", data={
                 "status": "completed", "completed_date": "not-a-date",
+                "reason": "Reject malformed date",
             }).status_code == 400
 
         async def check():

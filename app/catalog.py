@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from app.db import db_session
+from app.db import db_session, utcnow_iso
 from app.catalog_changes import record_import, snapshot
 
 
@@ -26,27 +26,43 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False) -> int:
+def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False, seed_only: bool = False) -> int:
     data = load_yaml(path)
     year = int(data["year"])
     items = data.get("challenges") or []
     with db_session() as conn:
         before = snapshot(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        incoming_ids = {str(c['id']) for c in items}
+        if len(incoming_ids) != len(items):
+            raise ValueError("Duplicate catalog IDs")
         if replace_year:
-            # ponytail: specials are evergreen — a new year must not wipe them.
-            conn.execute(
-                "DELETE FROM challenge_defs WHERE year = ? AND tier != 'special'",
-                (year,),
-            )
+            # Omission is retirement, never permission to erase published history.
+            for old in conn.execute("SELECT id FROM challenge_defs WHERE year=? AND tier!='special'", (year,)):
+                if old['id'] not in incoming_ids:
+                    conn.execute("UPDATE challenge_defs SET lifecycle_state='retired', retired_at=COALESCE(retired_at,?) WHERE id=?", (utcnow_iso(), old['id']))
         n = 0
         for c in items:
             existing = conn.execute(
-                "SELECT year, tier FROM challenge_defs WHERE id=?", (c["id"],)
+                "SELECT * FROM challenge_defs WHERE id=?", (c["id"],)
             ).fetchone()
+            if existing and seed_only:
+                continue
             if existing and str(existing["tier"] or "").lower() == "special":
                 incoming = str(c.get("tier") or "").lower()
                 if incoming != "special" or int(existing["year"]) != year:
                     continue
+            if existing and int(existing['year']) != year:
+                raise ValueError("An edition ID cannot be moved to a different year; publish a new ID with an explicit identity_id")
+            from app.services.lifecycle import calculate_deadline
+            from datetime import datetime, timezone
+            group = str(c.get('duration_group') or (existing['duration_group'] if existing else ('special' if c.get('tier') == 'special' else 'daily'))).lower()
+            repeat = str(c.get('repeat_policy') or (existing['repeat_policy'] if existing else 'legacy')).lower()
+            if group not in ('daily', 'monthly', 'yearly', 'special') or repeat not in ('legacy', 'annual', 'once_ever'):
+                raise ValueError('Invalid duration group or repeat policy')
+            calculate_deadline({**c, 'duration_group': group}, datetime.now(timezone.utc))
+            if existing and c.get('identity_id') and c['identity_id'] != existing['identity_id']:
+                raise ValueError('A published edition cannot change permanent identity')
             param = c.get("param_label")
             if param in (None, "null", ""):
                 param = None
@@ -105,14 +121,59 @@ def upsert_challenges_from_yaml(path: str | Path, *, replace_year: bool = False)
                     category,
                 ),
             )
+            # Missing lifecycle fields preserve admin edits, especially retirement.
+            state = c.get('lifecycle_state') or (existing['lifecycle_state'] if existing else 'active')
+            if state not in ('active', 'retired'):
+                raise ValueError('Invalid lifecycle state')
+            conn.execute("UPDATE challenge_defs SET identity_id=?, edition_id=?, duration_group=?, repeat_policy=?, lifecycle_state=?, available_from=?, available_until=?, published_at=? WHERE id=?", (
+                c.get('identity_id') or (existing['identity_id'] if existing else c['id']),
+                existing['edition_id'] if existing else c.get('edition_id') or c['id'],
+                group, repeat, state,
+                c.get('available_from', existing['available_from'] if existing else None),
+                c.get('available_until', existing['available_until'] if existing else None),
+                c.get('published_at', existing['published_at'] if existing else None), c['id']))
             n += 1
+        from app.services.lifecycle import ensure_catalog_records
+        ensure_catalog_records(conn)
+        from app.services.badges import publish_rosters
+        publish_rosters(conn)
         record_import(conn, before)
         return n
 
 
-def list_challenges(year: int | None = None, tier: str | None = None) -> list[dict]:
+def availability_sql(alias='challenge_defs', *, at=None):
+    """Shared effective-time predicate for catalog and progress projections.
+
+    Alias is an internal SQL identifier; all timestamp values remain bound data.
+    One captured instant is reused across every predicate in a query.
+    """
+    if alias not in ('challenge_defs', 'c'):
+        raise ValueError('Unsupported catalog SQL alias')
+    from datetime import datetime, timezone
+    from app.services.lifecycle import _date
+    instant = _date(at).isoformat() if at is not None else datetime.now(timezone.utc).isoformat()
+    a = alias
+    sql = f"""({a}.lifecycle_state='active' OR ({a}.lifecycle_state='retired' AND julianday({a}.retired_at)>julianday(?)) OR julianday({a}.restore_at)<=julianday(?))
+      AND ({a}.retired_at IS NULL OR julianday({a}.retired_at)>julianday(?) OR julianday({a}.restore_at)<=julianday(?))
+      AND ({a}.published_at IS NULL OR julianday({a}.published_at)<=julianday(?))
+      AND ({a}.available_from IS NULL OR julianday({a}.available_from)<=julianday(?))
+      AND ({a}.available_until IS NULL OR julianday({a}.available_until)>julianday(?))
+      AND NOT EXISTS(SELECT 1 FROM challenge_identities i WHERE i.id={a}.identity_id
+        AND i.lifecycle_state='retired' AND (i.retired_at IS NULL OR julianday(i.retired_at)<=julianday(?))
+        AND (i.restore_at IS NULL OR julianday(i.restore_at)>julianday(?)))"""
+    return sql, [instant] * sql.count('?')
+
+
+def list_challenges(year: int | None = None, tier: str | None = None, *, duration_group: str | None = None, include_retired: bool = False) -> list[dict]:
     q = "SELECT * FROM challenge_defs WHERE 1=1"
     args: list[Any] = []
+    if not include_retired:
+        predicate, times = availability_sql()
+        q += ' AND ' + predicate
+        args.extend(times)
+    if duration_group:
+        q += " AND duration_group=?"
+        args.append(duration_group)
     if year is not None:
         q += " AND (year = ? OR tier = 'special')"
         args.append(year)
@@ -127,10 +188,10 @@ def list_challenges(year: int | None = None, tier: str | None = None) -> list[di
 
 
 def challenge_count(year: int | None = None) -> int:
-    q = "SELECT COUNT(*) AS n FROM challenge_defs"
+    q = "SELECT COUNT(*) AS n FROM challenge_defs WHERE lifecycle_state='active'"
     args: list[Any] = []
     if year is not None:
-        q += " WHERE year = ? OR tier = 'special'"
+        q += " AND (year = ? OR tier = 'special')"
         args.append(int(year))
     with db_session() as conn:
         row = conn.execute(q, args).fetchone()
@@ -168,10 +229,9 @@ def sweep_bonus(tier: str) -> int:
 def reward_points(ch: dict | None) -> int:
     if not ch:
         return 0
-    raw = ch.get("points")
-    if raw not in (None, ""):
-        return int(raw)
-    return _TIER_POINTS.get(str(ch.get("tier") or "").lower(), 0)
+    from app.services import scoring
+    with db_session() as conn:
+        return scoring.reward_points(conn, ch)
 
 
 def special_points_note(ch: dict | None) -> str:

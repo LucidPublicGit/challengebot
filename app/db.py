@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import json
+import math
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,6 +172,84 @@ CREATE TABLE IF NOT EXISTS user_achievements (
 );
 """
 
+LIFECYCLE_SCHEMA = """
+-- Shared backend schema contract. Executed additively by app/db.py.
+-- IDs are TEXT except attempt IDs/revision/event sequence IDs. JSON is TEXT.
+-- Nullable timestamps represent unknown facts, never fabricated completion dates.
+CREATE TABLE IF NOT EXISTS challenge_identities (
+ id TEXT PRIMARY KEY, legacy_id TEXT UNIQUE, lifecycle_state TEXT NOT NULL DEFAULT 'active',
+ repeat_policy TEXT NOT NULL DEFAULT 'legacy', created_at TEXT, recorded_at TEXT,
+ retired_at TEXT, retirement_reason TEXT, available_from TEXT, available_until TEXT, restore_at TEXT,
+ actor TEXT, source TEXT
+);
+CREATE TABLE IF NOT EXISTS challenge_editions (
+ id TEXT PRIMARY KEY, identity_id TEXT NOT NULL REFERENCES challenge_identities(id),
+ challenge_id TEXT UNIQUE REFERENCES challenge_defs(id), year INTEGER NOT NULL,
+ catalog_year INTEGER, display_number INTEGER, lifecycle_state TEXT NOT NULL DEFAULT 'active',
+ published_at TEXT, available_from TEXT, available_until TEXT, retired_at TEXT, restore_at TEXT,
+ revision_id INTEGER, created_at TEXT, updated_at TEXT, UNIQUE(identity_id, year)
+);
+CREATE TABLE IF NOT EXISTS definition_revisions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, challenge_id TEXT, identity_id TEXT, edition_id TEXT,
+ predecessor_id INTEGER, before_json TEXT, after_json TEXT, snapshot_json TEXT,
+ recorded_at TEXT, effective_at TEXT, actor TEXT, source TEXT, reason TEXT, operation_id TEXT
+);
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, identity_id TEXT, edition_id TEXT, challenge_id TEXT,
+ event_type TEXT, before_json TEXT, after_json TEXT, effective_at TEXT, recorded_at TEXT,
+ actor TEXT, source TEXT, reason TEXT, operation_id TEXT
+);
+CREATE TABLE IF NOT EXISTS attempt_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id INTEGER REFERENCES attempts(id),
+ event_type TEXT, before_json TEXT, after_json TEXT, effective_at TEXT, recorded_at TEXT,
+ actor TEXT, source TEXT, reason TEXT, operation_id TEXT
+);
+CREATE TABLE IF NOT EXISTS scoring_policies (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, policy_json TEXT NOT NULL, scope_json TEXT NOT NULL DEFAULT '{}',
+ effective_at TEXT, recorded_at TEXT NOT NULL, actor TEXT, reason TEXT, operation_id TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS award_ledger (
+ source_key TEXT PRIMARY KEY, discord_id TEXT NOT NULL, attempt_id INTEGER REFERENCES attempts(id),
+ badge_receipt_id INTEGER, identity_id TEXT, edition_id TEXT, edition_year INTEGER,
+ award_type TEXT NOT NULL DEFAULT 'completion', original_points INTEGER NOT NULL,
+ effective_points INTEGER NOT NULL, original_policy_id INTEGER, current_policy_id INTEGER,
+ original_awarded_at TEXT, recorded_at TEXT NOT NULL, provenance TEXT,
+ metadata_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_award_user ON award_ledger(discord_id);
+CREATE TABLE IF NOT EXISTS point_adjustments (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, source_key TEXT NOT NULL REFERENCES award_ledger(source_key),
+ old_points INTEGER NOT NULL, new_points INTEGER NOT NULL, delta INTEGER NOT NULL,
+ operation_id TEXT NOT NULL, actor TEXT, reason TEXT, effective_at TEXT, recorded_at TEXT NOT NULL,
+ UNIQUE(operation_id, source_key)
+);
+CREATE TABLE IF NOT EXISTS admin_operations (
+ operation_id TEXT PRIMARY KEY, operation_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+ result_json TEXT, actor TEXT, reason TEXT, effective_at TEXT, recorded_at TEXT NOT NULL,
+ reverts_operation_id TEXT
+);
+CREATE TABLE IF NOT EXISTS daily_rosters (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, year INTEGER NOT NULL, tier TEXT NOT NULL,
+ version INTEGER NOT NULL DEFAULT 1, requirements_json TEXT NOT NULL DEFAULT '[]',
+ published_at TEXT, recorded_at TEXT, actor TEXT, reason TEXT, rule_version TEXT DEFAULT '1',
+ supersedes_roster_id INTEGER REFERENCES daily_rosters(id),
+ UNIQUE(year, tier, version)
+);
+CREATE TABLE IF NOT EXISTS badge_receipts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id TEXT NOT NULL, duration_group TEXT NOT NULL,
+ tier TEXT NOT NULL, scope TEXT NOT NULL, year INTEGER, roster_id INTEGER REFERENCES daily_rosters(id),
+ qualifying_attempts_json TEXT NOT NULL DEFAULT '[]', requirements_json TEXT,
+ unlocked_at TEXT, issued_at TEXT, recorded_at TEXT, rule_version TEXT DEFAULT '1',
+ status TEXT NOT NULL DEFAULT 'active', revoked_at TEXT, provenance TEXT,
+ UNIQUE(discord_id, duration_group, tier, scope)
+);
+CREATE TABLE IF NOT EXISTS badge_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_id INTEGER REFERENCES badge_receipts(id),
+ event_type TEXT, before_json TEXT, after_json TEXT, reason TEXT, actor TEXT,
+ operation_id TEXT, effective_at TEXT, recorded_at TEXT
+);
+"""
+
 # Additive columns for DBs created before content / tz existed.
 _ATTEMPT_MIGRATIONS = (
     ("content", "ALTER TABLE attempts ADD COLUMN content TEXT"),
@@ -204,6 +284,93 @@ _CHALLENGE_MIGRATIONS = (
 )
 
 
+_LIFECYCLE_ATTEMPT_COLUMNS = {
+    **{k: 'TEXT' for k in (
+        'identity_id', 'edition_id', 'rules_snapshot_json', 'scoring_snapshot_json',
+        'original_deadline', 'original_started_at', 'scheduled_start_original',
+        'created_at', 'confirmed_at', 'verified_at', 'actual_completed_at',
+        'original_completion_json', 'effective_completion_json', 'provenance',
+        'calendar_timezone', 'calculation_version',
+    )},
+    'edition_year': 'INTEGER', 'definition_revision_id': 'INTEGER',
+    'correction_revision': 'INTEGER NOT NULL DEFAULT 0',
+}
+_LIFECYCLE_CHALLENGE_COLUMNS = {
+    **{k: 'TEXT' for k in ('identity_id', 'edition_id', 'available_from',
+                          'available_until', 'retired_at', 'published_at')},
+    'duration_group': "TEXT NOT NULL DEFAULT 'daily'",
+    'repeat_policy': "TEXT NOT NULL DEFAULT 'legacy'",
+    'lifecycle_state': "TEXT NOT NULL DEFAULT 'active'",
+    'revision_id': 'INTEGER',
+}
+
+
+def _add_columns(conn, table, columns):
+    existing = {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}
+    for name, declaration in columns.items():
+        if name not in existing:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {declaration}')
+
+
+def _migrate_lifecycle(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('catalog_calendar_timezone','UTC')")
+    _add_columns(conn, 'attempts', _LIFECYCLE_ATTEMPT_COLUMNS)
+    _add_columns(conn, 'challenge_defs', _LIFECYCLE_CHALLENGE_COLUMNS)
+    # execute(), not executescript(): keep the entire migration in one transaction.
+    for statement in LIFECYCLE_SCHEMA.split(';'):
+        if statement.strip():
+            conn.execute(statement)
+    for table in ('challenge_defs', 'challenge_identities', 'challenge_editions'):
+        _add_columns(conn, table, {'restore_at': 'TEXT'})
+    _add_columns(conn, 'daily_rosters', {
+        'supersedes_roster_id': 'INTEGER REFERENCES daily_rosters(id)',
+    })
+    conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_roster_repair_parent ON daily_rosters(supersedes_roster_id) WHERE supersedes_roster_id IS NOT NULL')
+    first_migration = not conn.execute("SELECT 1 FROM meta WHERE key='lifecycle_schema_v1'").fetchone()
+    if first_migration:
+        conn.execute("UPDATE challenge_defs SET duration_group='special' WHERE LOWER(tier)='special'")
+        review = []
+        for definition in conn.execute("SELECT id,time_limit_hours FROM challenge_defs WHERE duration_group='daily'").fetchall():
+            hours = definition['time_limit_hours']
+            if hours is None or not math.isfinite(float(hours)) or not 0 < float(hours) <= 24:
+                review.append({'challenge_id': definition['id'], 'time_limit_hours': hours,
+                               'reason': 'Legacy ladder window is incompatible with Daily; kept as custom Special duration pending review'})
+                conn.execute("UPDATE challenge_defs SET duration_group='special' WHERE id=?", (definition['id'],))
+        if review:
+            conn.execute("INSERT INTO meta(key,value) VALUES('lifecycle_review_required',?)", (json.dumps(review),))
+        conn.execute("UPDATE attempts SET original_started_at=started_at, original_deadline=ends_at, "
+                     "confirmed_at=completed_at, provenance='legacy_baseline', "
+                     "calendar_timezone='UTC', calculation_version='legacy'")
+        # completed_at in the old system is confirmation time, not a known actual clear.
+        conn.execute("INSERT INTO meta(key,value) VALUES('lifecycle_schema_v1',?)", (utcnow_iso(),))
+    from app.services import scoring
+    from app.services.lifecycle import materialize_restorations
+    materialize_restorations(conn)
+    scoring._catalog_records(conn)
+    if first_migration:
+        # Capture a labeled reproducible baseline BEFORE any startup catalog
+        # import. This is not evidence of originally advertised historical rules.
+        definitions = {r['id']: dict(r) for r in conn.execute('SELECT * FROM challenge_defs')}
+        for row in conn.execute('SELECT * FROM attempts').fetchall():
+            attempt = dict(row)
+            challenge = definitions.get(attempt['challenge_id'])
+            if not challenge:
+                continue  # Read-only reconciliation reports orphaned references.
+            rules = dict(challenge)
+            if attempt.get('challenge_snapshot_json'):
+                snapshot = json.loads(attempt['challenge_snapshot_json'])
+                rules.update({k: v for k, v in snapshot.items() if v is not None and k != 'id'})
+            score = scoring.capture_snapshot(conn, challenge)
+            conn.execute('UPDATE attempts SET identity_id=?,edition_id=?,edition_year=?,definition_revision_id=?,rules_snapshot_json=COALESCE(rules_snapshot_json,?),scoring_snapshot_json=COALESCE(scoring_snapshot_json,?) WHERE id=?',
+                         (challenge['identity_id'], challenge['edition_id'], rules.get('year'), challenge['revision_id'],
+                          json.dumps(rules), json.dumps(score), attempt['id']))
+    scoring.bootstrap(conn)
+    from app.services import badges
+    badges.publish_rosters(conn)
+    for row in conn.execute('SELECT DISTINCT discord_id FROM attempts').fetchall():
+        badges.sync_user(conn, row['discord_id'])
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(attempts)").fetchall()
@@ -236,7 +403,9 @@ def init_db(path: Optional[str] = None) -> None:
         configure(path)
     with db_session() as conn:
         conn.executescript(SCHEMA)
+        conn.execute('BEGIN IMMEDIATE')
         _migrate(conn)
+        _migrate_lifecycle(conn)
         from app.services.achievements import bootstrap
 
         bootstrap(conn)

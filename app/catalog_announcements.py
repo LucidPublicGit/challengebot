@@ -13,21 +13,33 @@ CHANGE_LABELS = {
 }
 
 
+def _window_label(c: dict) -> str:
+    group = c.get('duration_group') or ('special' if c.get('tier') == 'special' else 'daily')
+    if group == 'monthly':
+        return 'Monthly · one personal UTC calendar month (anniversary clamped)'
+    if group == 'yearly':
+        return 'Yearly · one personal UTC calendar year (anniversary clamped)'
+    return f"{group.title()} · {c['time_limit_hours']:g}h"
+
+
 def catalog_dump(items: list[dict]) -> str:
     blocks = []
     for c in items:
         lines = [
             f"{c['year']} | {c.get('category') or 'ota'} | {c['tier']} "
             f"#{c['number']} | {c['title']}",
-            f"ID: {c['id']}",
+            f"ID: {c['id']} | Identity: {c.get('identity_id') or c['id']} | Edition: {c.get('edition_id') or c['id']}",
+            f"State: {c.get('lifecycle_state') or 'active'} | Repeat: {c.get('repeat_policy') or 'legacy'} | "
+            f"Scoring: {'inherited formula' if c.get('points') is None else 'absolute override'}",
             str(c.get("description") or ""),
             f"Goal: {c['goal_amount']:g} {c['goal_kind']} | "
-            f"Time: {c['time_limit_hours']:g}h | "
+            f"Window: {_window_label(c)} | "
             f"Points: {reward_points(c)} | "
             f"Verify: {c.get('verify') or 'tadoku'} | "
             f"Media: {c.get('media_filter') or 'any'}",
             f"Focus: {c.get('fixed_param') or c.get('param_label') or 'none'} | "
-            f"Concurrent: {'yes' if c.get('allows_concurrent') else 'no'}",
+            f"Concurrent: {'yes' if c.get('allows_concurrent') or c.get('duration_group') in ('monthly', 'yearly') else 'no'}",
+            f"Published: {c.get('published_at') or 'unspecified'} | Available: {c.get('available_from') or 'unbounded'} to {c.get('available_until') or 'unbounded'} (exclusive) | Retired: {c.get('retired_at') or 'no'}",
         ]
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks) or "No challenges found."
@@ -54,7 +66,9 @@ def announcement_text(items: list[dict], change: str, message: str = "") -> str:
         if change != "retired":
             lines.append(
                 f"Goal: {c['goal_amount']:g} {c['goal_kind']} · "
-                f"{c['time_limit_hours']:g}h · {reward_points(c)} points"
+                f"{_window_label(c)} · {reward_points(c)} points · "
+                f"repeat {c.get('repeat_policy') or 'legacy'} · "
+                f"{'inherited formula' if c.get('points') is None else 'absolute override'}"
             )
             if needs_focus_param(c):
                 lines.append(f"Choose your {c['param_label']} when starting.")

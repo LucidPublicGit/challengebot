@@ -46,7 +46,8 @@ def test_crud_and_import_track_real_diffs():
         admin_delete_challenge("easy-2")
         event = list_changes()[0]
         assert event["change"] == "retired" and event["before"]["title"] == "Shows Sprint"
-        assert event["after"] is None and get_challenge("easy-2") is None
+        assert event["after"]["lifecycle_state"] == "retired"
+        assert get_challenge("easy-2")["lifecycle_state"] == "retired"
         admin_delete_challenge("easy-2")
         assert len(list_changes(pending_only=True)) == 2
         with tempfile.TemporaryDirectory() as directory:
@@ -58,7 +59,8 @@ def test_crud_and_import_track_real_diffs():
             upsert_challenges_from_yaml(catalog, replace_year=True)
             events = list_changes()
             assert any(c["challenge_id"] == "easy-3" and c["change"] == "retired" for c in events)
-            assert any(c["challenge_id"] == "easy-2" and c["change"] == "new" for c in events)
+            assert get_challenge("easy-2")["lifecycle_state"] == "retired"
+            assert not any(c["challenge_id"] == "easy-2" and c["change"] == "new" for c in events)
             assert events[0]["before_json"] or events[0]["after_json"]
     finally:
         cleanup_db(path)

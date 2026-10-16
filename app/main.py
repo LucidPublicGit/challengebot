@@ -39,7 +39,7 @@ async def run() -> None:
     settings = get_settings()
     init_db(settings.database_path)
     try:
-        n = upsert_challenges_from_yaml(settings.challenge_catalog, replace_year=False)
+        n = upsert_challenges_from_yaml(settings.challenge_catalog, replace_year=False, seed_only=True)
         logger.info(
             "Catalog seed/upsert: %s challenges from %s", n, settings.challenge_catalog
         )

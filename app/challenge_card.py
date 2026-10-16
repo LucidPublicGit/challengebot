@@ -7,6 +7,7 @@ import io
 import warnings
 import re
 import unicodedata
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -179,6 +180,7 @@ _FONT_FILES: dict[bool, list[str | tuple[str, int]]] = {
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "C:/Windows/Fonts/msgothic.ttc",
         "C:/Windows/Fonts/meiryo.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/seguisym.ttf",
@@ -191,6 +193,7 @@ _FONT_FILES: dict[bool, list[str | tuple[str, int]]] = {
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
         "C:/Windows/Fonts/msgothic.ttc",
         "C:/Windows/Fonts/meiryob.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "C:/Windows/Fonts/segoeuib.ttf",
         "C:/Windows/Fonts/seguisym.ttf",
@@ -456,8 +459,44 @@ def _iter_cleared_tiers(tiers) -> list[str]:
     return [t for t in TIER_LABEL if t in seen]
 
 
-def _hanko_stamp(tier: str, S: int, *, compact: bool = False) -> Image.Image:
-    """Tilted 完 chop in tier color (double-frame square)."""
+_BADGE_TIERS = ("easy", "medium", "hard", "ota_master")
+_DURATION_GLYPHS = {"daily": "日", "monthly": "月", "yearly": "年"}
+
+
+def _profile_duration_badges(
+    duration_badges: list[dict] | Mapping[str, str | list[str] | None] | None,
+    cleared_tiers=None,
+) -> list[tuple[str, str]]:
+    """Select one highest earned tier per duration, in header order.
+
+    Callers supply current-catalog-year Daily and lifetime Monthly/Yearly
+    awards from the service. Rendering never derives eligibility from clears,
+    points, mutable catalog definitions, or the date on the local machine.
+    Accepts badges.duration_badges() rows directly, or a duration-to-tiers map.
+    An explicit collection (even empty) overrides the legacy Daily fallback.
+    """
+    badges = {"daily": cleared_tiers} if duration_badges is None else duration_badges
+    if not isinstance(badges, Mapping):
+        grouped: dict[str, list[str]] = {}
+        for badge in badges:
+            grouped.setdefault(badge.get("duration_group"), []).append(badge.get("tier"))
+        badges = grouped
+    out = []
+    for duration in _DURATION_GLYPHS:
+        tiers = badges.get(duration)
+        if isinstance(tiers, str):
+            tiers = [tiers]
+        earned = _iter_cleared_tiers(tiers)
+        highest = next((t for t in reversed(_BADGE_TIERS) if t in earned), None)
+        if highest:
+            out.append((duration, highest))
+    return out
+
+
+def _hanko_stamp(
+    tier: str, S: int, *, compact: bool = False, duration: str = "daily"
+) -> Image.Image:
+    """Tilted duration chop in tier color (double-frame square)."""
     color = ACCENT_GOLD if tier == "ota_master" else TIER_COLOR.get(tier, ACCENT_GREEN)
     side = (20 if compact else 32) * S
     stroke = max(1, S if compact else 2 * S)
@@ -475,7 +514,8 @@ def _hanko_stamp(tier: str, S: int, *, compact: bool = False) -> Image.Image:
             width=max(1, S),
         )
     gf = _font(max(10, int(side * 0.64)), bold=True)
-    d.text(((x0 + x1) / 2, (y0 + y1) / 2), "完", font=gf, fill=color, anchor="mm")
+    d.text(((x0 + x1) / 2, (y0 + y1) / 2), _DURATION_GLYPHS[duration],
+           font=gf, fill=color, anchor="mm")
     return im.rotate(-10, resample=Image.Resampling.BICUBIC, expand=True)
 
 
@@ -494,7 +534,7 @@ def _complete_badges_width(
     compact: bool = False,
     gap: int | None = None,
 ) -> float:
-    keys = _iter_cleared_tiers(tiers)
+    keys = [tier for _, tier in _profile_duration_badges(None, tiers)]
     if not keys:
         return 0.0
     g = (2 if compact else 4) * S if gap is None else gap * S
@@ -512,9 +552,9 @@ def _draw_complete_badges(
     *,
     compact: bool = False,
 ) -> float:
-    """Hanko 完 stamps, one per swept tier."""
+    """One highest-tier Daily 日 stamp for compact event/board headers."""
     _ = draw
-    keys = _iter_cleared_tiers(tiers)
+    keys = [tier for _, tier in _profile_duration_badges(None, tiers)]
     if not keys:
         return 0.0
     g = (2 if compact else 4) * S
@@ -525,6 +565,20 @@ def _draw_complete_badges(
         img.alpha_composite(stamp, (int(round(cx)), int(round(y_mid - th / 2))))
         cx += tw + g
     return cx - g - x
+
+
+def _duration_badges_width(badges: list[tuple[str, str]], S: int) -> float:
+    if not badges:
+        return 0.0
+    return sum(_hanko_stamp(tier, S, duration=duration).width
+               for duration, tier in badges) + 4 * S * (len(badges) - 1)
+
+
+def _draw_duration_badges(img, x: float, y_mid: float, badges, S: int) -> None:
+    for duration, tier in badges:
+        stamp = _hanko_stamp(tier, S, duration=duration)
+        img.alpha_composite(stamp, (round(x), round(y_mid - stamp.height / 2)))
+        x += stamp.width + 4 * S
 
 
 def _tier_flair(tier_key: str) -> dict:
@@ -928,6 +982,8 @@ def _render_challenge(
             title · focus (if no poster)
       [ outcome: hero + progress bar; time left is its own right-side slot ]
       optional cover on the right
+
+    cleared_tiers/name_tier are current-year Daily sweep awards only.
     """
     S = SCALE
     badge, accent = KIND_STYLE.get(kind, ("EVENT", ACCENT_PURPLE))
@@ -1372,7 +1428,8 @@ def _render_leaderboard(
 ) -> bytes:
     """entries: {rank, name, clears|score, points?, fails?, avatar?, best_tier?}.
 
-    best_tier = highest fully swept prestige tier (themes row; None → UNRANKED).
+    best_tier = highest current-year Daily sweep tier (themes row; None → UNRANKED).
+    cleared_tiers contains current-year Daily sweeps only, never duration badges.
     Right side: PTS · BNS · CLR · F (points bold = sort key).
     """
     S = SCALE
@@ -1771,12 +1828,18 @@ def _render_userinfo(
     footer: str = "",
     cleared_tiers: list | None = None,
     achievements: list[dict] | None = None,
+    duration_badges: list[dict] | Mapping[str, str | list[str] | None] | None = None,
 ) -> bytes:
     """Profile card: points/clears/rank + open + completed lists.
 
     active/completed entries: {title, tier, number?, status?}
     categories: {ota/physical: {points, total_points, clears, total, breakdown}}
     Ring fill uses catalog points, not clear counts or leaderboard bonuses.
+    duration_badges: service badge rows with duration_group/tier, or a mapping
+    {daily/monthly/yearly: highest tier or earned tier list}.
+    Daily is current-year; Monthly/Yearly are lifetime. An explicit empty
+    collection hides all badges; omission uses cleared_tiers as Daily sweeps.
+    best_tier remains Daily-only and controls existing name/avatar styling.
     """
     S = SCALE
     accent = ACCENT_PURPLE
@@ -1863,7 +1926,8 @@ def _render_userinfo(
 
     name_x = margin + 56 + 14
     nf = _font(22 * S, bold=True)
-    badges_w = _complete_badges_width(draw, cleared_tiers, S)
+    badges = _profile_duration_badges(duration_badges, cleared_tiers)
+    badges_w = _duration_badges_width(badges, S)
     name_max = (W - name_x - margin) * S - (badges_w + 10 * S if badges_w else 0)
     draw.text(
         (name_x * S, 28 * S),
@@ -1872,12 +1936,11 @@ def _render_userinfo(
         fill=INK,
     )
     if badges_w:
-        _draw_complete_badges(
+        _draw_duration_badges(
             img,
-            draw,
             (W - margin) * S - badges_w,
             28 * S + nf.size * 0.55,
-            cleared_tiers,
+            badges,
             S,
         )
     # Swept-tier pill under name (UNRANKED until a full tier is cleared)
@@ -2293,7 +2356,8 @@ def _render_unified_start(
     """One-image start/scheduled card (Gbar_E_glow).
 
     NC banner full-bleed; name + challenge tier/meta on the art.
-    name_tier = highest fully swept prestige tier (colors the display name).
+    name_tier = highest current-year Daily sweep tier (colors the display name).
+    cleared_tiers contains only current-year Daily sweeps.
     tier = challenge being started (colors the tier label under the name).
     poster_bytes ignored (no series underlay).
     """
@@ -2363,6 +2427,7 @@ def _render_unified_start(
     w, h = canvas.size
 
     name_f = _font(40 * S, bold=True)
+    display_name = _truncate(_Draw(canvas), display_name, name_f, w - 44 * S)
     # On-art, slightly lower than original E (was h-100)
     name_y = h - 88 * S
     glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))

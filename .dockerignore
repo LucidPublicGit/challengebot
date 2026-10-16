@@ -3,6 +3,7 @@
 .env
 .env.*
 data
+data.*
 design-previews
 tests
 __pycache__

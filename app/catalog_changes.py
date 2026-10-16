@@ -14,7 +14,11 @@ def record_change(conn, before, after, *, change=None, note="") -> None:
     after = dict(after) if after is not None else None
     if before == after:
         return
-    kind = change or ("new" if before is None else "retired" if after is None else "updated")
+    retired = (after is None or (
+        before is not None and before.get("lifecycle_state") != "retired"
+        and after.get("lifecycle_state") == "retired"
+    ))
+    kind = change or ("new" if before is None else "retired" if retired else "updated")
     conn.execute(
         "INSERT INTO challenge_changes(challenge_id,change,before_json,after_json,note,created_at) "
         "VALUES(?,?,?,?,?,?)",
@@ -89,7 +93,7 @@ def changes_text(changes: list[dict]) -> str:
         return text if len(text) <= limit else text[:limit] + "…"
 
     sections = []
-    for kind, label in (("new", "New challenges"), ("updated", "Modified challenges"), ("retired", "Removed challenges")):
+    for kind, label in (("new", "New challenges"), ("updated", "Modified challenges"), ("retired", "Retired challenges")):
         blocks = []
         for event in changes:
             if event["change"] != kind:

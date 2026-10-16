@@ -14,7 +14,9 @@ For the Mac mini deployment, run Docker Compose from the current checkout with
 
 - Slash commands: list / start / status / confirm / abandon / link / leaderboard
 - **Tadoku-required** confirm for measurable goals; **honor** only for `verify: honor` (e.g. full novel)
-- One active challenge per user, rolling timer (default 24h)
+- Exclusive Daily slot (positive window up to 24h), concurrent distinct Monthly/Yearly challenges with personal UTC anniversaries; evergreen Specials retain custom windows
+- Versioned catalog editions, safe retirement/history, captured attempt rules and audited scoring adjustments
+- Up to three duration badges: current-year Daily 日 sweep, lifetime Monthly 月 and Yearly 年
 - SQLite durability (`./data`), survive restarts
 - Admin web UI: attempts, users, challenges, settings (roles, contest id, re-attempt, announce channel)
 - Pixel Arcade achievements: dated unlocks, hidden-artwork stubs, and editable admin definitions
@@ -73,8 +75,7 @@ Scripts live under `scripts\*.ps1`; the `.bat` wrappers bypass execution policy.
 - Choose one `challenge_id` from the dump, or a `category` (Physical, Ota, All).
   Category announcements default to the latest year; optional `year` selects another.
   Add `message` for context and `title` for a custom heading.
-- For challenges already removed, omit `challenge_id`/`category` and put their
-  names and details in `message`. Announce removals before deleting to use catalog details.
+- Retired challenges remain resolvable for history and announcements; retirement blocks new attempts, not valid in-flight completion. Published entries are not hard-deleted.
 - `image` selects a saved Physical banner in `app/images/announcements/`
   (the approved Japanese-only banner is option 6);
   `banner` accepts an uploaded image for future announcements (use one or the other).
@@ -174,14 +175,13 @@ the database before that import. Earlier changes cannot be reconstructed.
 
 | Command | Purpose |
 |---------|---------|
-| `/challenge test link` | Probe linked Tadoku id (or paste UUID) + fetch recent real logs |
-| `/challenge test preview` | Dry-run confirm with **real** Tadoku logs (no complete) |
-| `/challenge test fake` | Synthetic logs pass/fail; optional `apply` to mark complete as `test_fake` |
-| `/challenge test accept` | One-shot: `force` / `fake_pass` / `real` + optional apply/announce/rewards |
-| `/challenge admin_force_complete` | Force-complete active attempt (manual) |
-| `/challenge admin_void` | Void an attempt by id |
+| `/challenge admin user:` → Probe Tadoku link | Inspect the selected member's binding and recent real logs |
+| Admin panel → Preview real (dry) | Diagnostic confirmation with real logs, without changing attempt status |
+| Admin panel → Fake pass / Fake fail (dry) | Synthetic diagnostics only; cannot issue completions or points |
+| Admin panel → Review completion attestation | Enter attempt ID, actual completion time, reason and optional work; review effects before applying |
+| Admin panel → Void attempt id | Reason and reviewed correction preview before voiding |
 
-Defaults are **dry-run** (`apply=false`) so you can validate without awarding clears. Fake modes never write to Tadoku.  
+Diagnostics never award clears and do not activate/expire global attempts or persist matching edits. Synthetic `apply=True` and direct forced/synthetic confirmations are rejected. Administrative attestation preserves evidence, rejects future dates, and requires a separate explicit reason for intentional window exceptions. Apply rechecks the preview author's current admin permissions. It does not automatically announce or grant external rewards; old synthetic award history is retained.
 
 ## Settings (UI or env)
 
@@ -196,9 +196,24 @@ Admin **Settings** page (DB overrides env). Highlights:
 
 ## New year
 
-1. Add `challenges/2027.yaml`  
-2. Admin → Challenges → seed path + optional replace  
-3. Or edit challenges live in the UI  
+1. Publish `challenges/2027.yaml` with **new edition IDs** and explicit `identity_id` links for renewals; never move an existing edition ID to another year or infer identity from its title.
+2. Set publication/availability deliberately. Annual eligibility returns only for a published, available new edition; retirement does not undo itself on January 1.
+3. Admin → Challenges → merge YAML. Supply a reason and review the captured definition/roster impact before applying. Omitted entries/fields remain unchanged; retire editions explicitly. Startup seeds only missing entries, preserving admin edits and retirement.
+4. Existing attempts retain their original edition and deadline across January 1. Special definitions are evergreen and are not regenerated.
+
+## Lifecycle migration and scoring
+
+Read [the implementation handoff](docs/challenge-lifecycle-and-badges-implementation.md) before deploying this schema change. Back up SQLite using its backup API plus catalog/artwork assets, rehearse on a copy, and compare private before/after reports. Do not run a live migration just to inspect the schema.
+
+The lifecycle admin page provides authenticated scoring previews and audited apply/revert operations. `points: null` inherits the global difficulty × duration formula (initial multipliers 1/10/50); an integer is an explicit absolute override. Future-only changes preserve accepted open-attempt scores unless those attempts are explicitly included. Retroactive adjustments retain original awards and signed ledger deltas. A score change does not change completion-based badges.
+
+Catalog YAML merges also require a captured reason/preview/apply workflow. Paste external YAML or choose a bounded source inside `challenges/`; apply never reopens a mutable file. Existing point overrides cannot be silently changed/cleared, and batches publish only final roster sets, not intermediate requirements.
+
+Historical Daily roster repairs are available under `/lifecycle/rosters` with member-progress/bonus previews and audited apply. Ordinary catalog changes and retirement/restoration also require reviewed impact previews; future lifecycle boundaries are forecast separately without granting awards early. Scheduled restoration and explicit cancellation are supported. Discord catalog and void controls now collect an audit reason and offer a private, complete preview before applying.
+
+Tests install a collection-time guard restricting SQLite to memory/OS temporary paths and skip the repository runtime `.env`. Keep test fixtures disposable; never point tests at a live database.
+
+Tadoku fetches are bounded. Incomplete pages, unavailable endpoints, and uncertain log timestamps produce **incomplete evidence**, not authoritative failure or partial progress. Long-window verification uses user-wide logs rather than assuming one contest covers a month/year. Honor-based complete-work challenges, including Tales/Trails, do not depend on Tadoku.
 
 ## Layout
 

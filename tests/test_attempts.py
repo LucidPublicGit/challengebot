@@ -15,6 +15,15 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _attest_completion(member):
+    from app.services import admin_completion, lifecycle
+    attempt = att.active_attempt(member)
+    preview = admin_completion.preview_attestation(attempt['id'], discord_id=member,
+        actual_completed_at=datetime.now(timezone.utc), actor='test-admin', reason='Synthetic fixture attestation')
+    lifecycle.apply_correction(preview, actor='test-admin', reason='Synthetic fixture attestation', operation_id=f'attest:{member}')
+    return att.get_attempt(attempt['id'])
+
+
 def test_category_progress_weights_points_and_deduplicates():
     from app.catalog import get_challenge
 
@@ -483,12 +492,12 @@ def test_admin_fake_pass_dry_and_apply():
         fail = _run(att.admin_test_verify("u5", mode="fake_fail", apply=False))
         assert fail.get("ok") is False
 
-        applied = _run(att.admin_test_verify("u5", mode="fake_pass", apply=True))
-        assert applied.get("ok") is True
-        assert applied.get("method") == "test_fake"
-        assert att.active_attempt("u5") is None
-        # Content stored from param / matched logs
-        assert applied.get("content")
+        rejected = _run(att.admin_test_verify('u5', mode='fake_pass', apply=True))
+        assert rejected['ok'] is False
+        assert att.active_attempt('u5') is not None
+        applied = _attest_completion('u5')
+        assert applied['verify_method'] == 'admin_attestation'
+        assert att.active_attempt('u5') is None
         done = att.list_attempts(discord_id="u5", status="completed", limit=1)
         assert done and att.display_content(done[0])
         counts = att.completion_counts("u5")
@@ -574,7 +583,7 @@ def test_reattempt_setting():
         att.start_attempt(
             "u9", tier="easy", number=4, param="G", guild_id="g"
         )
-        _run(att.admin_test_verify("u9", mode="fake_pass", apply=True))
+        _attest_completion('u9')
         # default allow_reattempt false → one clear only
         blocked = att.start_attempt(
             "u9", tier="easy", number=4, param="G", guild_id="g"
@@ -603,7 +612,7 @@ def test_admin_void():
             "u10", tier="easy", number=4, param="G", guild_id="g"
         )
         aid = r["attempt_id"]
-        _run(att.admin_test_verify("u10", mode="fake_pass", apply=True))
+        _attest_completion('u10')
         out = att.admin_update_attempt(aid, status="void", verify_method="mod")
         assert out["ok"] is True
         rows = att.list_attempts(discord_id="u10", status="void", limit=5)

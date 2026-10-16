@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import asyncio
 import re
+import json
+import uuid
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -39,10 +41,12 @@ from app.challenge_card import (
 )
 from app.congrats import as_discord_framed_congrats, pick_congrats
 from app.db import db_session
+from app.bot_ui import duration_group, duration_label, section_pages, timestamp, point_explanation
 from app.new_challenger import list_templates
 from app.services import attempts as att_svc
 from app.services import progress_status as prog_svc
 from app.services import achievements as ach_svc
+from app.services import badges as badge_svc
 from app.services.rewards import (
     announce,
     announce_completion,
@@ -55,24 +59,33 @@ logger = logging.getLogger(__name__)
 
 
 def _cleared_note() -> str:
-    if att_svc.reattempts_allowed():
-        return "✅ = already cleared."
-    return "✅ = cleared (one-time — can't start again)."
+    return "✅ = already cleared. Start eligibility follows this challenge’s repeat policy."
 
 
 def _challenge_done_tag(challenge_id: str, done_ids: set[str]) -> str:
     if challenge_id not in done_ids:
         return ""
-    if att_svc.reattempts_allowed():
-        return " ✅ cleared"
-    return " ✅ cleared · one-time only"
+    return " ✅ cleared"
+
+
+def _display_points(ch: dict) -> int:
+    if "_ui_points" in ch:
+        return int(ch["_ui_points"])
+    from app.services.scoring import current_policy, points_for_challenge
+
+    with db_session() as conn:
+        return points_for_challenge(ch, current_policy(conn, ch))
+
+
+def _catalog_display_rows(rows: list[dict]) -> list[dict]:
+    from app.services.scoring import current_policy, points_for_challenge
+
+    with db_session() as conn:
+        return [{**c, "_ui_points": points_for_challenge(c, current_policy(conn, c))} for c in rows]
 
 
 def _select_label(c: dict) -> str:
-    note = special_points_note(c)
-    if note:
-        return f"#{c['number']} · {note} · {c['title']}"[:100]
-    return f"#{c['number']} · {c['title']}"[:100]
+    return f"#{c['number']} · {duration_label(c)} · {_display_points(c)} pts · {c['title']}"[:100]
 
 
 # Imported lazily-friendly bits from bot to avoid cycles at import time
@@ -166,6 +179,16 @@ def _catalog_year() -> int:
     return max((int(c["year"]) for c in items), default=2026)
 
 
+def _deadline_preview(ch: dict, start: datetime) -> str:
+    from app.services.lifecycle import calculate_deadline
+
+    try:
+        end = calculate_deadline(ch, start)
+    except ValueError as exc:
+        return f"Deadline unavailable: {exc}"
+    return f"Complete **before** {timestamp(end)} (exclusive deadline)."
+
+
 def _start_embed(
     *,
     title: str = "Start a challenge",
@@ -175,6 +198,11 @@ def _start_embed(
     b = _bot_helpers()
     embed = discord.Embed(title=title, description=description, color=0x5865F2)
     if ch:
+        embed.add_field(
+            name="Duration · award",
+            value=f"{duration_label(ch)} · **{_display_points(ch)} pts**",
+            inline=False,
+        )
         embed.add_field(
             name="Goal",
             value=(
@@ -228,6 +256,7 @@ def _when_pick_for(
     year: int | None = None,
     tier: str | None = None,
     dry_run: bool = False,
+    browse_state: dict | None = None,
 ) -> "WhenPickView":
     return WhenPickView(
         owner_id,
@@ -237,6 +266,7 @@ def _when_pick_for(
         guild_id=guild_id,
         tier=str(tier if tier is not None else ch.get("tier") or ""),
         dry_run=dry_run,
+        browse_state=browse_state,
     )
 
 
@@ -272,6 +302,7 @@ async def _finalize_start(
                     ch=ch,
                     focus=focus,
                     guild_id=guild_id,
+                    browse_state=getattr(restore_view, "browse_state", None),
                 )
                 emb = restored._when_embed()
                 emb.description = (
@@ -579,6 +610,7 @@ class FocusModal(discord.ui.Modal):
         year: int,
         guild_id: str | None,
         tier: str,
+        browse_state: dict | None = None,
     ) -> None:
         label = (ch.get("param_label") or "Focus")[:45]
         super().__init__(title=f"{ch['title']}"[:45])
@@ -587,6 +619,7 @@ class FocusModal(discord.ui.Modal):
         self.year = year
         self.guild_id = guild_id
         self.tier = tier
+        self.browse_state = browse_state or {}
         self.focus_input = discord.ui.TextInput(
             label=label,
             placeholder=f"Your {label.lower()}…",
@@ -604,6 +637,7 @@ class FocusModal(discord.ui.Modal):
             year=self.year,
             guild_id=self.guild_id,
             tier=self.tier,
+            browse_state=self.browse_state,
         )
         emb = view._when_embed()
         if focus:
@@ -896,6 +930,7 @@ class ScheduleView(_OwnerView):
         guild_id: str | None,
         year: int,
         tier: str,
+        browse_state: dict | None = None,
         offset: str | None = None,
         day_rel: int = 0,
         hour: int = 18,
@@ -909,6 +944,7 @@ class ScheduleView(_OwnerView):
         self.guild_id = guild_id
         self.year = year
         self.tier = tier
+        self.browse_state = browse_state or {}
         self.dry_run = dry_run
         self.exact = bool(exact)
         self.offset = _normalize_offset(
@@ -943,6 +979,11 @@ class ScheduleView(_OwnerView):
             self._hhmm(),
             day_only=not self.exact,
         )
+        start = _resolve_schedule_from_picks(self.offset, self.day_rel, self._hhmm())
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        if start <= now and not self.exact and self.day_rel == 0:
+            start = now
+        deadline = _deadline_preview(self.ch, start)
         if self.exact:
             hint = (
                 "Exact time on — pick hour (12 AM–11 PM) and minutes.\n"
@@ -966,6 +1007,7 @@ class ScheduleView(_OwnerView):
             description=(
                 f"{self._dry_banner()}"
                 f"**{self.ch['title']}**\n{when}\n\n"
+                f"{deadline}\n\n"
                 f"{hint}"
             ),
             ch=self.ch,
@@ -1095,6 +1137,7 @@ class ScheduleView(_OwnerView):
                 year=self.year,
                 guild_id=self.guild_id,
                 tier=self.tier,
+                browse_state=self.browse_state,
                 dry_run=self.dry_run,
             )
             msg = _release_view(self) or interaction.message
@@ -1132,6 +1175,7 @@ class WhenPickView(_OwnerView):
         year: int,
         guild_id: str | None,
         tier: str,
+        browse_state: dict | None = None,
         dry_run: bool = False,
     ) -> None:
         super().__init__(owner_id)
@@ -1140,6 +1184,7 @@ class WhenPickView(_OwnerView):
         self.year = year
         self.guild_id = guild_id
         self.tier = tier
+        self.browse_state = browse_state or {}
         self.dry_run = dry_run
         self.needs_tadoku_link = (
             not dry_run
@@ -1185,12 +1230,15 @@ class WhenPickView(_OwnerView):
             )
         off = _default_offset_for(self.owner_id)
         today = _day_label(off, 0)
+        deadline = _deadline_preview(self.ch, datetime.now(timezone.utc).replace(microsecond=0))
         return _start_embed(
             title=("TEST · " if self.dry_run else "") + "When do you want to start?",
             description=(
                 f"{banner}{need}"
                 f"**{self.ch['tier']} #{self.ch['number']}: {self.ch['title']}**\n\n"
                 f"Timezone: `{off}` · {today}\n"
+                f"If started now: {deadline}\n"
+                "The final deadline uses your actual start time.\n\n"
                 "**Start now** or **Schedule** a day "
                 "(optional exact time inside)."
             ),
@@ -1257,6 +1305,7 @@ class WhenPickView(_OwnerView):
             guild_id=self.guild_id,
             year=self.year,
             tier=self.tier,
+            browse_state=self.browse_state,
             offset=_default_offset_for(self.owner_id),
             exact=False,
             dry_run=self.dry_run,
@@ -1282,37 +1331,14 @@ class WhenPickView(_OwnerView):
                 view=None,
             )
             return
-        items = list_challenges(year=self.year, tier=self.tier)
-        done_ids = att_svc.completed_challenge_ids(str(self.owner_id))
         pick = ChallengePickView(
-            self.owner_id,
-            tier=self.tier,
-            year=self.year,
-            guild_id=self.guild_id,
-            challenges=items,
-            done_ids=done_ids,
+            self.owner_id, tier=self.tier, year=self.year, guild_id=self.guild_id,
+            challenges=list_challenges(year=self.year, tier=self.tier),
+            done_ids=att_svc.completed_challenge_ids(str(self.owner_id)),
+            **self.browse_state,
         )
-        lines = [
-            f"**#{c['number']} {c['title']}**"
-            + special_points_suffix(c)
-            + (
-                f" · needs *{c['param_label']}*"
-                if needs_focus_param(c)
-                else ""
-            )
-            + _challenge_done_tag(str(c["id"]), done_ids)
-            for c in items
-        ]
         msg = _release_view(self) or interaction.message
-        await interaction.response.edit_message(
-            embed=_start_embed(
-                title=f"{self.tier} challenges",
-                description=(
-                    f"{_cleared_note()}\nSelect one:\n" + "\n".join(lines)
-                ),
-            ),
-            view=pick,
-        )
+        await interaction.response.edit_message(embed=pick._embed(), view=pick)
         _bind_view_message(pick, msg)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
@@ -1335,133 +1361,128 @@ class WhenPickView(_OwnerView):
 
 
 class ChallengeSelect(discord.ui.Select):
-    def __init__(
-        self, challenges: list[dict], *, done_ids: set[str] | None = None
-    ) -> None:
+    def __init__(self, challenges: list[dict], *, done_ids: set[str] | None = None) -> None:
         self.done_ids = done_ids or set()
-        lock = not att_svc.reattempts_allowed()
-        options = []
-        for c in challenges[:25]:
-            cid = str(c["id"])
-            done = cid in self.done_ids
-            need = c.get("param_label") if needs_focus_param(c) else None
-            if done and lock:
-                desc = "Cleared — can't redo"
-            elif done:
-                desc = "Already cleared"
-            else:
-                desc = (c.get("description") or "")[:100]
-                if need:
-                    desc = f"Needs {need} · {desc}"[:100]
-                note = special_points_note(c)
-                if note:
-                    desc = f"{note} · {desc}"[:100] if desc else note
-            options.append(
-                discord.SelectOption(
-                    label=_select_label(c),
-                    value=cid,
-                    description=desc or None,
-                    emoji="✅" if done else None,
-                )
-            )
         super().__init__(
-            placeholder="Choose a challenge…",
-            min_values=1,
-            max_values=1,
-            options=options,
+            placeholder="Choose a challenge…", row=0,
+            options=[discord.SelectOption(
+                label=_select_label(c), value=str(c["id"]),
+                description=(("Already cleared · " if str(c["id"]) in self.done_ids else "")
+                             + (c.get("description") or ""))[:100] or None,
+                emoji="✅" if str(c["id"]) in self.done_ids else None,
+            ) for c in challenges],
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: ChallengePickView = self.view  # type: ignore[assignment]
         ch = get_challenge(self.values[0])
-        if not ch:
+        if not ch or ch['id'] not in {c['id'] for c in list_challenges(year=ch['year'], tier=ch['tier'])}:
             await interaction.response.send_message(
-                "Challenge not found — try again.", ephemeral=True
-            )
+                "Challenge is no longer available for new starts. Refresh the list.", ephemeral=True)
             return
-        if (
-            str(ch["id"]) in self.done_ids
-            and not att_svc.reattempts_allowed()
-        ):
-            await interaction.response.send_message(
-                "You already cleared this challenge — each one is one-time only.",
-                ephemeral=True,
-            )
-            return
+        state = {"page": view.page, "duration": view.duration}
         if needs_focus_param(ch):
-            await interaction.response.send_modal(
-                FocusModal(
-                    ch,
-                    owner_id=view.owner_id,
-                    year=view.year,
-                    guild_id=view.guild_id,
-                    tier=view.tier,
-                )
-            )
+            await interaction.response.send_modal(FocusModal(
+                ch, owner_id=view.owner_id, year=view.year,
+                guild_id=view.guild_id, tier=view.tier, browse_state=state))
             return
         when = WhenPickView(
-            view.owner_id,
-            ch=ch,
-            focus=None,
-            year=view.year,
-            guild_id=view.guild_id,
-            tier=view.tier,
-        )
+            view.owner_id, ch=ch, focus=None, year=view.year,
+            guild_id=view.guild_id, tier=view.tier, browse_state=state)
         msg = _release_view(view) or interaction.message
-        await interaction.response.edit_message(
-            embed=when._when_embed(),
-            view=when,
-        )
+        await interaction.response.edit_message(embed=when._when_embed(), view=when)
         _bind_view_message(when, msg)
 
 
 class ChallengePickView(_OwnerView):
-    def __init__(
-        self,
-        owner_id: int,
-        *,
-        tier: str,
-        year: int,
-        guild_id: str | None,
-        challenges: list[dict],
-        done_ids: set[str] | None = None,
-    ) -> None:
+    """Difficulty-first catalog, with optional nonempty duration filters."""
+    def __init__(self, owner_id: int, *, tier: str, year: int,
+                 guild_id: str | None, challenges: list[dict],
+                 done_ids: set[str] | None = None, mode: str = "start",
+                 page: int = 0, duration: str = "all") -> None:
         super().__init__(owner_id)
-        self.tier = tier
-        self.year = year
-        self.guild_id = guild_id
-        self.done_ids = done_ids or set()
-        self.add_item(ChallengeSelect(challenges, done_ids=self.done_ids))
+        self.tier, self.year, self.guild_id = tier, year, guild_id
+        self.done_ids, self.mode = done_ids or set(), mode
+        # Catalog availability already accounts for future retirement instants.
+        self.challenges = _catalog_display_rows(challenges)
+        self.duration, self.page = duration, page
+        self._build_items()
 
-    @discord.ui.button(label="← Back", style=discord.ButtonStyle.secondary, row=1)
-    async def back(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        nxt = TierPickView(self.owner_id, year=self.year, guild_id=self.guild_id)
-        msg = _release_view(self) or interaction.message
-        await interaction.response.edit_message(
-            embed=_start_embed(
-                description="Pick a **difficulty**, then a challenge from the list.",
-            ),
-            view=nxt,
-        )
-        _bind_view_message(nxt, msg)
+    def _line(self, c: dict) -> str:
+        text = (f"**#{c['number']} {c['title']}** · {_display_points(c)} pts"
+                + _challenge_done_tag(str(c["id"]), self.done_ids))
+        if needs_focus_param(c):
+            text += f" · needs *{c['param_label']}*"
+        if self.mode == "list":
+            text += f"\n{c.get('description') or ''}"
+            text += f"\nConfirm: {_bot_helpers().verify_label(c)}"
+        return text
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
-    async def cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        self.stop()
-        await interaction.response.edit_message(
-            embed=_start_embed(title="Cancelled", description="No challenge started."),
-            view=None,
-        )
+    def _build_items(self) -> None:
+        self.clear_items()
+        self.pages = section_pages(self.challenges, self._line, duration=self.duration)
+        self.page = max(0, min(self.page, len(self.pages) - 1))
+        rows, _ = self.pages[self.page]
+        if rows and self.mode == "start":
+            self.add_item(ChallengeSelect(rows, done_ids=self.done_ids))
+        groups = list(dict.fromkeys(duration_group(c) for page, _ in section_pages(
+            self.challenges, lambda c: str(c["id"])) for c in page))
+        if len(groups) > 1:
+            select = discord.ui.Select(placeholder="Duration (optional)", row=1, options=[
+                discord.SelectOption(label="All durations", value="all", default=self.duration == "all"),
+                *[discord.SelectOption(label=g.title(), value=g, default=self.duration == g) for g in groups],
+            ])
+            async def on_filter(interaction: discord.Interaction) -> None:
+                self.duration, self.page = select.values[0], 0
+                await self._refresh(interaction)
+            select.callback = on_filter
+            self.add_item(select)
+        _page_buttons(self, self.page, len(self.pages), self._turn, row=2)
+        back = discord.ui.Button(label="← Difficulties", row=3)
+        async def on_back(interaction: discord.Interaction) -> None:
+            nxt = (ListTierView(self.owner_id, year=self.year) if self.mode == "list" else
+                   TierPickView(self.owner_id, year=self.year, guild_id=self.guild_id))
+            msg = _release_view(self) or interaction.message
+            await interaction.response.edit_message(embed=_start_embed(
+                description="Pick a **difficulty**, then browse duration sections."), view=nxt)
+            _bind_view_message(nxt, msg)
+        back.callback = on_back
+        self.add_item(back)
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, row=3)
+        async def on_close(interaction: discord.Interaction) -> None:
+            _release_view(self)
+            await interaction.response.edit_message(embed=_start_embed(title="Closed", description="Closed."), view=None)
+        close.callback = on_close
+        self.add_item(close)
+
+    def _embed(self) -> discord.Embed:
+        emb = _start_embed(title=f"{self.tier.replace('_', ' ').title()} · {self.year}",
+                           description=f"{_cleared_note()}\n\n{self.pages[self.page][1]}")
+        emb.set_footer(text=f"Page {self.page + 1}/{len(self.pages)} · Only you can use these controls · 10 min")
+        return emb
+
+    async def _turn(self, interaction: discord.Interaction, delta: int) -> None:
+        self.page += delta
+        await self._refresh(interaction)
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        self._build_items()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+
+def _page_buttons(view: discord.ui.View, page: int, total: int, callback, *, row: int) -> None:
+    if total <= 1:
+        return
+    for label, delta, disabled in [("← Previous", -1, page == 0), ("Next →", 1, page == total - 1)]:
+        button = discord.ui.Button(label=label, disabled=disabled, row=row)
+        async def turn(interaction: discord.Interaction, step=delta) -> None:
+            await callback(interaction, step)
+        button.callback = turn
+        view.add_item(button)
 
 
 class TierButton(discord.ui.Button):
-    def __init__(
-        self, tier: str, label: str, style: discord.ButtonStyle, *, row: int = 0
-    ) -> None:
+    def __init__(self, tier: str, label: str, style: discord.ButtonStyle, *, row: int = 0) -> None:
         super().__init__(label=label, style=style, row=row)
         self.tier = tier
 
@@ -1469,65 +1490,13 @@ class TierButton(discord.ui.Button):
         view: TierPickView = self.view  # type: ignore[assignment]
         items = list_challenges(year=view.year, tier=self.tier)
         if not items:
-            await interaction.response.send_message(
-                f"No challenges in **{self.label}** for {view.year}.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(f"No challenges in **{self.label}** for {view.year}.", ephemeral=True)
             return
-        done_ids = att_svc.completed_challenge_ids(str(view.owner_id))
-        if view.mode == "list":
-            b = _bot_helpers()
-            lines = [_cleared_note(), ""]
-            for c in items:
-                param = (
-                    f" `<{c['param_label']}>`" if needs_focus_param(c) else ""
-                )
-                tag = _challenge_done_tag(str(c["id"]), done_ids)
-                lines.append(
-                    f"**#{c['number']} {c['title']}**{param}{tag}"
-                    f"{special_points_suffix(c)} — "
-                    f"{c.get('description') or ''} "
-                    f"_(confirm: {b.verify_label(c)})_"
-                )
-            embed = discord.Embed(
-                title=f"{self.label} · {view.year}",
-                description="\n".join(lines)[:4000],
-                color=tier_embed_color(self.tier) or 0x5865F2,
-            )
-            back = ListTierView(view.owner_id, year=view.year)
-            await interaction.response.edit_message(embed=embed, view=back)
-            back.message = interaction.message
-            return
-        lines = []
-        for c in items:
-            need = (
-                f" · needs *{c['param_label']}*"
-                if needs_focus_param(c)
-                else ""
-            )
-            tag = _challenge_done_tag(str(c["id"]), done_ids)
-            lines.append(
-                f"**#{c['number']} {c['title']}**{need}{tag}"
-                f"{special_points_suffix(c)}"
-            )
-        pick = ChallengePickView(
-            view.owner_id,
-            tier=self.tier,
-            year=view.year,
-            guild_id=view.guild_id,
-            challenges=items,
-            done_ids=done_ids,
-        )
+        pick = ChallengePickView(view.owner_id, tier=self.tier, year=view.year,
+                                 guild_id=view.guild_id, challenges=items, mode=view.mode,
+                                 done_ids=att_svc.completed_challenge_ids(str(view.owner_id)))
         msg = _release_view(view) or interaction.message
-        await interaction.response.edit_message(
-            embed=_start_embed(
-                title=f"{self.label} challenges",
-                description=(
-                    f"{_cleared_note()}\nSelect one:\n" + "\n".join(lines)
-                ),
-            ),
-            view=pick,
-        )
+        await interaction.response.edit_message(embed=pick._embed(), view=pick)
         _bind_view_message(pick, msg)
 
 
@@ -1562,8 +1531,137 @@ class ListTierView(TierPickView):
     def __init__(self, owner_id: int, *, year: int) -> None:
         super().__init__(owner_id, year=year, guild_id=None, mode="list")
 
+    @discord.ui.button(label="Past Challenges", style=discord.ButtonStyle.secondary, row=1)
+    async def history(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await _send_challenge_history(interaction)
+
 
 # ----- status / confirm / abandon -----
+
+
+class AttemptPickView(_OwnerView):
+    def __init__(self, owner_id: int, *, attempts: list[dict], action: str, page: int = 0) -> None:
+        super().__init__(owner_id)
+        self.attempts, self.action, self.page = attempts, action, page
+        self._build_items()
+
+    def _line(self, a: dict) -> str:
+        return (f"**Attempt #{a['id']} · {a['title']}** · {a['status']}\n"
+                f"Starts {timestamp(a.get('started_at'))} · ends {timestamp(a.get('ends_at'))}")
+
+    def _build_items(self) -> None:
+        self.clear_items()
+        self.pages = section_pages(self.attempts, self._line)
+        self.page = max(0, min(self.page, len(self.pages) - 1))
+        rows, _ = self.pages[self.page]
+        if rows:
+            select = discord.ui.Select(placeholder=f"Choose attempt to {self.action}…", row=0, options=[
+                discord.SelectOption(label=f"#{a['id']} · {a['title']}"[:100], value=str(a["id"]),
+                                     description=f"{duration_label(a)} · {a['status']}"[:100]) for a in rows])
+            async def choose(interaction: discord.Interaction) -> None:
+                picked = att_svc.resolve_user_attempt(str(self.owner_id), attempt_id=int(select.values[0]),
+                    statuses=("active",) if self.action == "confirm" else ("active", "scheduled"))
+                if not picked.get("ok"):
+                    await interaction.response.send_message(picked.get("error") or "Attempt is no longer open.", ephemeral=True)
+                    return
+                a = picked["attempt"]
+                if self.action == "confirm":
+                    await _begin_confirm(interaction, a)
+                else:
+                    view = AbandonConfirmView(self.owner_id, attempt_id=int(a["id"]),
+                        picker_state={"attempts": self.attempts, "action": self.action, "page": self.page})
+                    msg = _release_view(self) or interaction.message
+                    await interaction.response.edit_message(content=f"Abandon **{a['title']}** (attempt #{a['id']})?", embed=None, view=view)
+                    _bind_view_message(view, msg)
+            select.callback = choose
+            self.add_item(select)
+        _page_buttons(self, self.page, len(self.pages), self._turn, row=1)
+        close = discord.ui.Button(label="Close", row=2)
+        async def on_close(interaction: discord.Interaction) -> None:
+            _release_view(self)
+            await interaction.response.edit_message(content="Closed.", embed=None, view=None)
+        close.callback = on_close
+        self.add_item(close)
+
+    def _embed(self) -> discord.Embed:
+        emb = discord.Embed(title=f"Choose attempt · {self.action}", description=self.pages[self.page][1])
+        emb.set_footer(text=f"Page {self.page + 1}/{len(self.pages)} · Only you · 10 min")
+        return emb
+
+    async def _turn(self, interaction: discord.Interaction, delta: int) -> None:
+        self.page += delta
+        self._build_items()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+
+class HistoryView(_OwnerView):
+    def __init__(self, owner_id: int, *, challenges: list[dict], attempts: list[dict],
+                 year: int | None = None, page: int = 0) -> None:
+        super().__init__(owner_id)
+        self.challenges, self.attempts = challenges, attempts
+        self.year, self.page = year, page
+        self.years = sorted({int(c["year"]) for c in challenges}
+                            | {int(a["edition_year"]) for a in attempts if a.get("edition_year")}, reverse=True)
+        self._build_items()
+
+    def _line(self, c: dict) -> str:
+        state = c.get("lifecycle_state", "active")
+        lines = [f"**{c.get('year')} · {c['tier']} #{c['number']} {c['title']}** · {state}",
+                 str(c.get("description") or "")]
+        for a in self.attempts:
+            if a.get("challenge_id") != c["id"]:
+                continue
+            completed = a.get("actual_completed_at")
+            if a.get("status") == "completed":
+                date = timestamp(completed)
+                if not completed and a.get("completed_at"):
+                    date += f" (legacy recorded completion: {timestamp(a['completed_at'])})"
+                lines.append(f"✅ Attempt #{a['id']} · completed {date} · {point_explanation(a)}")
+            else:
+                lines.append(f"Attempt #{a['id']} · {a.get('status')} · started {timestamp(a.get('started_at'))}")
+        return "\n".join(lines)
+
+    def _build_items(self) -> None:
+        self.clear_items()
+        rows = [c for c in self.challenges if self.year is None or int(c["year"]) == self.year]
+        self.pages = section_pages(rows, self._line)
+        self.page = max(0, min(self.page, len(self.pages) - 1))
+        _page_buttons(self, self.page, len(self.pages), self._turn, row=0)
+        for label, step in [("← Older year", 1), ("Newer year →", -1)]:
+            index = self.years.index(self.year) if self.year in self.years else -1
+            target = index + step if index >= 0 else (0 if step == 1 else -1)
+            button = discord.ui.Button(label=label, row=1, disabled=not 0 <= target < len(self.years))
+            async def choose_year(interaction: discord.Interaction, idx=target) -> None:
+                self.year, self.page = self.years[idx], 0
+                await self._refresh(interaction)
+            button.callback = choose_year
+            self.add_item(button)
+        all_years = discord.ui.Button(label="All years", row=1, disabled=self.year is None)
+        async def show_all(interaction: discord.Interaction) -> None:
+            self.year, self.page = None, 0
+            await self._refresh(interaction)
+        all_years.callback = show_all
+        self.add_item(all_years)
+        close = discord.ui.Button(label="Close", row=2)
+        async def on_close(interaction: discord.Interaction) -> None:
+            _release_view(self)
+            await interaction.response.edit_message(content="Closed.", embed=None, view=None)
+        close.callback = on_close
+        self.add_item(close)
+
+    def _embed(self) -> discord.Embed:
+        emb = discord.Embed(title=f"Past Challenges · {self.year if self.year is not None else 'All years'}",
+                            description=self.pages[self.page][1])
+        emb.set_footer(text=f"Page {self.page + 1}/{len(self.pages)} · Catalog year, including retired entries · 10 min")
+        return emb
+
+    async def _turn(self, interaction: discord.Interaction, delta: int) -> None:
+        self.page += delta
+        await self._refresh(interaction)
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        self._build_items()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
 
 
 class StatusActionsView(_OwnerView):
@@ -1752,9 +1850,10 @@ async def _begin_confirm(
 
 
 class AbandonConfirmView(_OwnerView):
-    def __init__(self, owner_id: int, *, attempt_id: int | None = None) -> None:
+    def __init__(self, owner_id: int, *, attempt_id: int | None = None, picker_state: dict | None = None) -> None:
         super().__init__(owner_id)
         self.attempt_id = attempt_id
+        self.picker_state = picker_state
 
     @discord.ui.button(label="Yes, abandon", style=discord.ButtonStyle.danger)
     async def yes(
@@ -1771,6 +1870,12 @@ class AbandonConfirmView(_OwnerView):
     async def no(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        if self.picker_state:
+            view = AttemptPickView(self.owner_id, **self.picker_state)
+            msg = _release_view(self) or interaction.message
+            await interaction.response.edit_message(content=None, embed=view._embed(), view=view)
+            _bind_view_message(view, msg)
+            return
         await interaction.response.edit_message(content="Kept.", view=None)
 
 
@@ -1869,6 +1974,7 @@ class LinkModal(discord.ui.Modal, title="Link Tadoku"):
                 year=year,
                 tier=self.resume_tier,
                 dry_run=self.dry_run,
+                browse_state=getattr(self.resume_view, "browse_state", None),
             )
             await self._push_resume_panel(
                 interaction,
@@ -1957,44 +2063,14 @@ class AdminPanelView(_OwnerView):
         interaction: discord.Interaction,
         *,
         mode: str,
-        apply: bool,
-        do_announce: bool = False,
-        do_rewards: bool = False,
     ) -> None:
+        if interaction.user.id != self.owner_id or not _admin_only(interaction):
+            await interaction.response.send_message('Admin only.', ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
-        result = await att_svc.admin_test_verify(
-            str(self.target.id),
-            mode=mode,
-            apply=apply,
-            note=f"admin {mode} by {interaction.user.id}",
-        )
-        extra = ""
-        if apply and result.get("ok") and not result.get("dry_run"):
-            att = result.get("attempt") or {}
-            member = None
-            if self.guild:
-                member = self.guild.get_member(self.target.id)
-            if do_rewards and member is not None:
-                got = await apply_rewards(member, tier=att.get("tier") or "easy")
-                extra += f"\nRewards: {', '.join(got) or 'none'}"
-            if do_announce and self.guild:
-                await announce_completion(
-                    interaction.client,
-                    guild=self.guild,
-                    user=self.target,
-                    title=att.get("title") or "?",
-                    tier=att.get("tier") or "?",
-                    number=int(att.get("number") or 0),
-                    param=att.get("param"),
-                    content=result.get("content") or att_svc.display_content(att),
-                    method=str(result.get("method") or mode),
-                )
-                extra += "\nAnnounced."
-        await interaction.followup.send(
-            f"**{mode}** apply={apply} → {self.target.mention}\n"
-            f"{_fmt_test_result(result)}{extra}",
-            ephemeral=True,
-        )
+        result = await att_svc.admin_test_verify(str(self.target.id), mode=mode, apply=False,
+                                               note=f'admin diagnostic {mode} by {interaction.user.id}')
+        await interaction.followup.send(f'**{mode} — diagnostic only** → {self.target.mention}\n{_fmt_test_result(result)}', ephemeral=True)
 
     @discord.ui.button(label="Probe Tadoku link", style=discord.ButtonStyle.secondary, row=0)
     async def probe(
@@ -2019,29 +2095,24 @@ class AdminPanelView(_OwnerView):
     async def preview(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._run_mode(interaction, mode="preview_real", apply=False)
+        await self._run_mode(interaction, mode='preview_real')
 
     @discord.ui.button(label="Fake pass (dry)", style=discord.ButtonStyle.primary, row=1)
     async def fake_dry(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._run_mode(interaction, mode="fake_pass", apply=False)
+        await self._run_mode(interaction, mode='fake_pass')
 
-    @discord.ui.button(label="Fake pass APPLY", style=discord.ButtonStyle.danger, row=1)
-    async def fake_apply(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._run_mode(
-            interaction, mode="fake_pass", apply=True, do_announce=True, do_rewards=True
-        )
+    @discord.ui.button(label='Fake fail (dry)', style=discord.ButtonStyle.secondary, row=1)
+    async def fake_fail(self, interaction, button):
+        await self._run_mode(interaction, mode='fake_fail')
 
-    @discord.ui.button(label="Force complete", style=discord.ButtonStyle.danger, row=2)
-    async def force(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._run_mode(
-            interaction, mode="force", apply=True, do_announce=True, do_rewards=True
-        )
+    @discord.ui.button(label='Review completion attestation', style=discord.ButtonStyle.danger, row=2)
+    async def force(self, interaction, button):
+        if interaction.user.id != self.owner_id or not _admin_only(interaction):
+            await interaction.response.send_message('Admin only.', ephemeral=True)
+            return
+        await interaction.response.send_modal(AdminCompletionModal(self.owner_id, target_id=str(self.target.id)))
 
     @discord.ui.button(label="Void attempt id…", style=discord.ButtonStyle.secondary, row=2)
     async def void_btn(
@@ -2050,8 +2121,134 @@ class AdminPanelView(_OwnerView):
         await interaction.response.send_modal(VoidModal())
 
 
+class AdminCompletionModal(discord.ui.Modal, title='Attest a real completion'):
+    attempt_id = discord.ui.TextInput(label='Attempt ID for the selected member', required=True, max_length=20)
+    actual_in = discord.ui.TextInput(label='Actual completion (ISO time with timezone)', required=True, placeholder='2026-07-23T12:00:00+00:00', max_length=50)
+    reason_in = discord.ui.TextInput(label='Audit reason and basis for attestation', required=True, max_length=1000, style=discord.TextStyle.paragraph)
+    content_in = discord.ui.TextInput(label='Completed work (optional)', required=False, max_length=1000, style=discord.TextStyle.paragraph)
+    exception_in = discord.ui.TextInput(label='Window exception reason (only if intentional)', required=False, max_length=1000, style=discord.TextStyle.paragraph)
+
+    def __init__(self, owner_id, *, target_id):
+        super().__init__()
+        self.owner_id, self.target_id = owner_id, target_id
+
+    async def on_submit(self, interaction):
+        if interaction.user.id != self.owner_id or not _admin_only(interaction):
+            await interaction.response.send_message('Admin only.', ephemeral=True)
+            return
+        from app.services import admin_completion
+        reason = str(self.reason_in.value).strip()
+        try:
+            preview = admin_completion.preview_attestation(int(str(self.attempt_id.value)), discord_id=self.target_id,
+                actual_completed_at=str(self.actual_in.value), actor=f'discord:{interaction.user.id}', reason=reason,
+                content=str(self.content_in.value), exception_reason=str(self.exception_in.value).strip() or None)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await _present_admin_review(interaction, 'correction', preview, reason)
+
+
+class AdminOperationReviewView(_OwnerView):
+    """Owner- and role-checked domain preview with a stable retry key."""
+    def __init__(self, owner_id, *, kind, preview, reason):
+        super().__init__(owner_id, timeout=600)
+        self.kind, self.preview, self.reason = kind, preview, reason
+        self.operation_id = f'discord-review:{uuid.uuid4().hex}'
+
+    async def interaction_check(self, interaction):
+        if not await super().interaction_check(interaction):
+            return False
+        if not _admin_only(interaction):
+            await interaction.response.send_message('Admin only.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Apply reviewed operation', style=discord.ButtonStyle.danger)
+    async def apply_review(self, interaction, button):
+        # Recheck even when callbacks are invoked outside the normal dispatcher.
+        if interaction.user.id != self.owner_id or not _admin_only(interaction):
+            await interaction.response.send_message('Admin only; this preview belongs to its author.', ephemeral=True)
+            return
+        from app.services import catalog_admin, lifecycle
+        fn = {'catalog': catalog_admin.apply_definition, 'lifecycle': catalog_admin.apply_lifecycle,
+              'correction': lifecycle.apply_correction}[self.kind]
+        try:
+            fn(self.preview, actor=f'discord:{interaction.user.id}', reason=self.reason, operation_id=self.operation_id)
+        except ValueError as exc:
+            await interaction.response.send_message(f'Operation rejected: {exc}', ephemeral=True)
+            return
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        await interaction.response.edit_message(content=f'Applied reviewed operation `{self.operation_id}`. No announcement was published.', embed=None, view=self)
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
+    async def cancel_review(self, interaction, button):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message('This preview belongs to its author.', ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(content='Cancelled. Nothing applied.', embed=None, view=None, attachments=[])
+
+
+async def _present_admin_review(interaction, kind, preview, reason):
+    view = AdminOperationReviewView(interaction.user.id, kind=kind, preview=preview, reason=reason)
+    encoded = json.dumps(preview, indent=2, ensure_ascii=False).encode('utf-8')
+    # The complete private attachment avoids silently truncating affected users,
+    # facts or roster progress to an embed budget. It is never written to disk.
+    await interaction.response.send_message(
+        embed=_catalog_embed(title='Review before applying', description=(
+            f'Reason: {reason}\nReview the attached original/new facts and every affected award/progress projection. '
+            'Concurrent changes invalidate this preview. Applying twice uses one operation ID. No automatic announcement.')),
+        file=discord.File(BytesIO(encoded), filename='admin-operation-preview.json'), view=view, ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none())
+    view.message = await interaction.original_response()
+
+
+class AdminReasonModal(discord.ui.Modal, title='Reason for reviewed operation'):
+    reason_in = discord.ui.TextInput(label='Audit reason', required=True, max_length=1000, style=discord.TextStyle.paragraph)
+
+    def __init__(self, owner_id, *, kind, data):
+        super().__init__()
+        self.owner_id, self.kind, self.data = owner_id, kind, data
+
+    async def on_submit(self, interaction):
+        if interaction.user.id != self.owner_id or not _admin_only(interaction):
+            await interaction.response.send_message('Admin only.', ephemeral=True)
+            return
+        from app.services import catalog_admin
+        reason = str(self.reason_in.value).strip()
+        if not reason:
+            await interaction.response.send_message('Enter an audit reason.', ephemeral=True)
+            return
+        try:
+            if self.kind == 'catalog':
+                data = {k: v for k, v in self.data.items() if k not in ('lifecycle_state', 'retired_at', 'restore_at')}
+                preview = catalog_admin.preview_definition(data)
+            else:
+                preview = catalog_admin.preview_lifecycle(reason=reason, **self.data)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await _present_admin_review(interaction, self.kind, preview, reason)
+
+
+class AdminReasonRequestView(_OwnerView):
+    def __init__(self, owner_id, *, kind, data):
+        super().__init__(owner_id, timeout=300)
+        self.kind, self.data = kind, data
+
+    @discord.ui.button(label='Enter reason and preview', style=discord.ButtonStyle.primary)
+    async def reason_button(self, interaction, button):
+        if interaction.user.id != self.owner_id or not _admin_only(interaction):
+            await interaction.response.send_message('Admin only.', ephemeral=True)
+            return
+        await interaction.response.send_modal(AdminReasonModal(self.owner_id, kind=self.kind, data=self.data))
+
+
 class VoidModal(discord.ui.Modal, title="Void attempt"):
     attempt_id = discord.ui.TextInput(label="Attempt id", placeholder="123", required=True)
+    reason_in = discord.ui.TextInput(label='Audit reason', required=True, max_length=1000, style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         b = _bot_helpers()
@@ -2063,10 +2260,17 @@ class VoidModal(discord.ui.Modal, title="Void attempt"):
         except ValueError:
             await interaction.response.send_message("Need a number.", ephemeral=True)
             return
-        r = att_svc.admin_update_attempt(aid, status="void", verify_method="mod")
-        await interaction.response.send_message(
-            "Voided." if r.get("ok") else r.get("error"), ephemeral=True
-        )
+        from app.services import lifecycle
+        reason = str(self.reason_in.value).strip()
+        if not reason:
+            await interaction.response.send_message('Enter an audit reason.', ephemeral=True)
+            return
+        try:
+            preview = lifecycle.preview_correction(aid, {'status': 'void', 'verify_method': 'mod'}, exception_reason=reason)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await _present_admin_review(interaction, 'correction', preview, reason)
 
 
 # ----- admin catalog add / edit / remove -----
@@ -2095,7 +2299,8 @@ def _admin_only(interaction: discord.Interaction) -> bool:
 
 
 def _next_challenge_number(year: int, tier: str) -> int:
-    items = list_challenges(year=year, tier=tier)
+    # Retired editions retain stable numbers and their uniqueness constraint.
+    items = list_challenges(year=year, tier=tier, include_retired=True)
     return max((int(c["number"]) for c in items), default=0) + 1
 
 
@@ -2118,6 +2323,10 @@ def _challenge_payload(ch: dict, **overrides: object) -> dict:
         "fixed_param": ch.get("fixed_param"),
         "points": ch.get("points"),
     }
+    for key in ("identity_id", "edition_id", "duration_group", "repeat_policy", "lifecycle_state",
+                "available_from", "available_until", "published_at", "retired_at", "category"):
+        if key in ch:
+            base[key] = ch[key]
     base.update(overrides)
     return base
 
@@ -2184,7 +2393,7 @@ class _AdminCatalogSelect(discord.ui.Select):
                 )[:100]
                 or None,
             )
-            for c in challenges[:25]
+            for c in challenges
         ]
         super().__init__(
             placeholder="Choose a challenge…",
@@ -2221,7 +2430,27 @@ class _AdminPickView(_OwnerView):
         self.year = year
         self.tier = tier
         self.mode = mode  # edit | remove
-        self.add_item(_AdminCatalogSelect(challenges))
+        self.challenges, self.page = _catalog_display_rows(challenges), 0
+        self.pages = section_pages(self.challenges, lambda c: f"**#{c['number']} {c['title']}** · {_display_points(c)} pts (`{c['id']}`)")
+        self._build_page()
+
+    def _build_page(self) -> None:
+        for child in list(self.children):
+            if isinstance(child, discord.ui.Select) or child.row == 2:
+                self.remove_item(child)
+        rows, _ = self.pages[self.page]
+        if rows:
+            self.add_item(_AdminCatalogSelect(rows))
+        _page_buttons(self, self.page, len(self.pages), self._turn, row=2)
+
+    def _embed(self) -> discord.Embed:
+        return _catalog_embed(title=f"{self.tier} · {self.mode} · {self.page + 1}/{len(self.pages)}",
+                              description=self.pages[self.page][1])
+
+    async def _turn(self, interaction: discord.Interaction, delta: int) -> None:
+        self.page = max(0, min(self.page + delta, len(self.pages) - 1))
+        self._build_page()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
 
     async def on_challenge_picked(
         self, interaction: discord.Interaction, ch: dict
@@ -2230,11 +2459,10 @@ class _AdminPickView(_OwnerView):
             conf = AdminRemoveConfirmView(self.owner_id, ch=ch, year=self.year)
             await interaction.response.edit_message(
                 embed=_catalog_embed(
-                    title="Remove challenge?",
+                    title="Retire challenge?",
                     description=(
-                        "Deletes the **catalog row** only. "
-                        "Past attempts keep their challenge id.\n"
-                        "This cannot be undone from Discord."
+                        "Remove this challenge from new starts. "
+                        "Existing attempts can finish; history and awards are retained."
                     ),
                     ch=ch,
                 ),
@@ -2305,10 +2533,6 @@ class AdminCatalogTierButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
-        lines = [
-            f"**#{c['number']} {c['title']}**{special_points_suffix(c)} (`{c['id']}`)"
-            for c in items
-        ]
         pick = _AdminPickView(
             view.owner_id,
             year=view.year,
@@ -2317,10 +2541,7 @@ class AdminCatalogTierButton(discord.ui.Button):
             mode=view.mode,
         )
         await interaction.response.edit_message(
-            embed=_catalog_embed(
-                title=f"{self.label} · {view.mode}",
-                description="Select one:\n" + "\n".join(lines),
-            ),
+            embed=pick._embed(),
             view=pick,
         )
         pick.message = interaction.message
@@ -2351,28 +2572,16 @@ class AdminRemoveConfirmView(_OwnerView):
         self.ch = ch
         self.year = year
 
-    @discord.ui.button(label="Delete permanently", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Retire challenge", style=discord.ButtonStyle.danger)
     async def confirm(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         if not _admin_only(interaction):
             await interaction.response.send_message("Admin only.", ephemeral=True)
             return
-        cid = str(self.ch["id"])
-        counts = att_svc.attempt_status_counts_for_challenge(cid)
-        att_svc.admin_delete_challenge(cid)
-        self.stop()
-        n = int(counts.get("total") or 0)
-        await interaction.response.edit_message(
-            embed=_catalog_embed(
-                title="Challenge removed",
-                description=(
-                    f"Deleted `{cid}` from the catalog."
-                    + (f" ({n} historical attempt(s) kept.)" if n else "")
-                ),
-            ),
-            view=None,
-        )
+        await interaction.response.send_modal(AdminReasonModal(self.owner_id, kind='lifecycle', data={
+            'challenge_id': str(self.ch['id']), 'action': 'retire', 'identity': False,
+        }))
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(
@@ -2380,7 +2589,7 @@ class AdminRemoveConfirmView(_OwnerView):
     ) -> None:
         self.stop()
         await interaction.response.edit_message(
-            embed=_catalog_embed(title="Cancelled", description="Nothing deleted."),
+            embed=_catalog_embed(title="Cancelled", description="Nothing retired."),
             view=None,
         )
 
@@ -2445,29 +2654,12 @@ class AdminEditModal(discord.ui.Modal, title="Edit challenge"):
             )
             return
         param = str(self.param_in.value or "").strip() or None
-        r = att_svc.admin_upsert_challenge(
-            _challenge_payload(
-                self.ch,
-                title=str(self.title_in.value).strip(),
-                goal_amount=amount,
-                time_limit_hours=hours,
-                param_label=param,
-                description=str(self.desc_in.value or "").strip(),
-            )
-        )
-        if not r.get("ok"):
-            await interaction.response.send_message(
-                r.get("error") or "Save failed.", ephemeral=True
-            )
-            return
-        ch = get_challenge(str(self.ch["id"])) or self.ch
-        edit = AdminEditView(self.owner_id, ch=ch, year=self.year)
-        await interaction.response.send_message(
-            embed=edit._embed(),
-            view=edit,
-            ephemeral=True,
-        )
-        edit.message = await interaction.original_response()
+        data = _challenge_payload(self.ch, title=str(self.title_in.value).strip(),
+                                  goal_amount=amount, time_limit_hours=hours, param_label=param,
+                                  description=str(self.desc_in.value or '').strip())
+        view = AdminReasonRequestView(self.owner_id, kind='catalog', data=data)
+        await interaction.response.send_message('Draft only: enter an audit reason, then review the definition and roster impact before applying.', view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
 
 class _AdminEditGoalSelect(discord.ui.Select):
@@ -2524,7 +2716,7 @@ class AdminEditView(_OwnerView):
             title="Edit challenge",
             description=(
                 "Change goal/media below, or **Edit fields…** for title/amount/hours.\n"
-                "**Verify** / **Concurrent** toggle immediately."
+                "All edits, including **Verify** / **Concurrent**, require a reason and reviewed preview."
             ),
             ch=self.ch,
         )
@@ -2533,19 +2725,8 @@ class AdminEditView(_OwnerView):
         if not _admin_only(interaction):
             await interaction.response.send_message("Admin only.", ephemeral=True)
             return
-        r = att_svc.admin_upsert_challenge(_challenge_payload(self.ch, **overrides))
-        if not r.get("ok"):
-            await interaction.response.send_message(
-                r.get("error") or "Save failed.", ephemeral=True
-            )
-            return
-        fresh = get_challenge(str(self.ch["id"]))
-        if fresh:
-            self.ch = fresh
-        # Rebuild selects so defaults match saved values
-        new = AdminEditView(self.owner_id, ch=self.ch, year=self.year)
-        await interaction.response.edit_message(embed=new._embed(), view=new)
-        new.message = interaction.message
+        await interaction.response.send_modal(AdminReasonModal(self.owner_id, kind='catalog',
+                                                               data=_challenge_payload(self.ch, **overrides)))
 
     @discord.ui.button(
         label="Edit fields…", style=discord.ButtonStyle.primary, row=2
@@ -2705,7 +2886,7 @@ class AdminAddModal(discord.ui.Modal, title="New challenge"):
                 ephemeral=True,
             )
             return
-        existing = list_challenges(year=s.year, tier=s.tier)
+        existing = list_challenges(year=s.year, tier=s.tier, include_retired=True)
         if any(int(c["number"]) == number for c in existing):
             await interaction.response.send_message(
                 f"{s.tier} #{number} already used this year.",
@@ -2713,8 +2894,7 @@ class AdminAddModal(discord.ui.Modal, title="New challenge"):
             )
             return
         param = str(self.param_in.value or "").strip() or None
-        r = att_svc.admin_upsert_challenge(
-            {
+        data = {
                 "id": cid,
                 "year": s.year,
                 "tier": s.tier,
@@ -2728,29 +2908,10 @@ class AdminAddModal(discord.ui.Modal, title="New challenge"):
                 "goal_amount": amount,
                 "media_filter": s.media_filter,
                 "allows_concurrent": s.allows_concurrent,
-            }
-        )
-        if not r.get("ok"):
-            await interaction.response.send_message(
-                r.get("error") or "Create failed.", ephemeral=True
-            )
-            return
-        ch = get_challenge(cid)
-        # Description optional: open edit fields next if they want — show edit view
-        edit = AdminEditView(s.owner_id, ch=ch or {"id": cid}, year=s.year)
-        await interaction.response.send_message(
-            embed=_catalog_embed(
-                title="Challenge created",
-                description=(
-                    f"Added `{cid}`. Adjust description / options below if needed, "
-                    "then **Done**."
-                ),
-                ch=ch,
-            ),
-            view=edit,
-            ephemeral=True,
-        )
-        edit.message = await interaction.original_response()
+        }
+        view = AdminReasonRequestView(s.owner_id, kind='catalog', data=data)
+        await interaction.response.send_message('Draft only: enter an audit reason, then review creation and roster effects before applying.', view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
 
 class AdminAddSetupView(_OwnerView):
@@ -3043,9 +3204,30 @@ async def challenge_start(interaction: discord.Interaction) -> None:
     view.message = await interaction.original_response()
 
 
+async def _send_challenge_history(interaction: discord.Interaction, year: int | None = None) -> None:
+    attempts = att_svc.list_attempts(str(interaction.user.id), limit=None)
+    with db_session() as conn:
+        awards = {int(r["attempt_id"]): dict(r) for r in conn.execute(
+            "SELECT attempt_id, original_points, effective_points FROM award_ledger "
+            "WHERE discord_id=? AND award_type='completion' AND attempt_id IS NOT NULL",
+            (str(interaction.user.id),),
+        )}
+    for attempt in attempts:
+        attempt.update(awards.get(int(attempt["id"]), {}))
+    view = HistoryView(interaction.user.id,
+                       challenges=list_challenges(include_retired=True),
+                       attempts=attempts, year=year)
+    await interaction.response.send_message(embed=view._embed(), view=view, ephemeral=True)
+    view.message = await interaction.original_response()
+
+
 @challenge_group.command(name="list", description="Browse challenges by difficulty")
-async def challenge_list(interaction: discord.Interaction) -> None:
-    year = _catalog_year()
+@app_commands.describe(past="Past Challenges, including retired entries and your history", year="Catalog year (Past Challenges defaults to all years)")
+async def challenge_list(interaction: discord.Interaction, past: bool = False, year: Optional[int] = None) -> None:
+    if past:
+        await _send_challenge_history(interaction, year=year)
+        return
+    year = year if year is not None else _catalog_year()
     view = ListTierView(interaction.user.id, year=year)
     await interaction.response.send_message(
         embed=discord.Embed(
@@ -3083,7 +3265,7 @@ async def challenge_dump(
     if catalog == "achievements":
         text, filename, label = ach_svc.dump_text(), "achievements.txt", "achievements"
     else:
-        text, filename, label = catalog_dump(list_challenges(year=year)), "challenges.txt", "catalog"
+        text, filename, label = catalog_dump(list_challenges(year=year, include_retired=True)), "challenges.txt", "catalog"
     await interaction.followup.send(
         f"Full plain-text {label} attached; copyable messages below.",
         file=discord.File(BytesIO(text.encode("utf-8")), filename=filename),
@@ -3483,6 +3665,13 @@ async def challenge_confirm(
     attempt_id: Optional[int] = None,
 ) -> None:
     uid = str(interaction.user.id)
+    if attempt_id is None:
+        actives = att_svc.active_attempts(uid)
+        if len(actives) > 1:
+            view = AttemptPickView(interaction.user.id, attempts=actives, action="confirm")
+            await interaction.response.send_message(embed=view._embed(), view=view, ephemeral=True)
+            view.message = await interaction.original_response()
+            return
     picked = att_svc.resolve_user_attempt(
         uid, attempt_id=attempt_id, statuses=("active",)
     )
@@ -3677,6 +3866,13 @@ async def challenge_abandon(
     interaction: discord.Interaction,
     attempt_id: Optional[int] = None,
 ) -> None:
+    if attempt_id is None:
+        opens = att_svc.open_attempts(str(interaction.user.id))
+        if len(opens) > 1:
+            view = AttemptPickView(interaction.user.id, attempts=opens, action="abandon")
+            await interaction.response.send_message(embed=view._embed(), view=view, ephemeral=True)
+            view.message = await interaction.original_response()
+            return
     picked = att_svc.resolve_user_attempt(
         str(interaction.user.id),
         attempt_id=attempt_id,
@@ -3820,15 +4016,48 @@ async def challenge_leaderboard(interaction: discord.Interaction) -> None:
     name="scores",
     description="How leaderboard points are calculated",
 )
-async def challenge_scores(interaction: discord.Interaction) -> None:
+@app_commands.describe(attempt_id="Explain the effective award and adjustments for one of your attempts")
+async def challenge_scores(interaction: discord.Interaction, attempt_id: Optional[int] = None) -> None:
+    if attempt_id is not None:
+        attempt = att_svc.get_attempt(attempt_id)
+        if not attempt or str(attempt.get("discord_id")) != str(interaction.user.id):
+            await interaction.response.send_message("No matching attempt of yours.", ephemeral=True)
+            return
+        with db_session() as conn:
+            award = conn.execute("SELECT * FROM award_ledger WHERE attempt_id=? AND award_type='completion'",
+                                 (attempt_id,)).fetchone()
+            adjustments = conn.execute(
+                "SELECT p.* FROM point_adjustments p JOIN award_ledger a ON a.source_key=p.source_key "
+                "WHERE a.attempt_id=? AND a.award_type='completion' ORDER BY p.id", (attempt_id,)).fetchall()
+        if not award:
+            await interaction.response.send_message("No recorded completion award for this attempt.", ephemeral=True)
+            return
+        lines = [f"**Attempt #{attempt_id} · {attempt['title']}**", point_explanation(dict(award))]
+        for adjustment in adjustments:
+            lines.append(f"{adjustment['old_points']} → {adjustment['new_points']} pts "
+                         f"({adjustment['delta']:+}) · {adjustment['reason']} · "
+                         f"recorded {timestamp(adjustment['recorded_at'])}")
+        await interaction.response.defer(ephemeral=True)
+        for chunk in text_chunks("\n".join(lines)):
+            await interaction.followup.send(chunk, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        return
+    from app.services.scoring import current_policy
+    with db_session() as conn:
+        policy = current_policy(conn)
+    base = policy["base_points"]
+    multipliers = policy["multipliers"]
     await interaction.response.send_message(
         "**How points work**\n"
-        "Each clear: Easy **1** · Medium **2** · Hard **3** · Ota-Master **4**. "
-        "Special uses the points on that challenge.\n"
-        "**Sweep bonus** — clear 100% of a rank: **2 ×** that rank’s scale → "
-        "Easy **+2** · Medium **+4** · Hard **+6** · Ota-Master **+8**.\n"
-        "Fails don’t change points. Board: points, then clears, then fewer fails."
-    )
+        f"Base points: Easy **{base['easy']}** · Medium **{base['medium']}** · "
+        f"Hard **{base['hard']}** · Ota-Master **{base['ota_master']}**.\n"
+        f"Duration multipliers: Daily **×{multipliers['daily']}** · Monthly **×{multipliers['monthly']}** · "
+        f"Yearly **×{multipliers['yearly']}**. Edition-specific policies and explicit point overrides can differ. "
+        "Browse/start shows the applicable award; existing attempts retain accepted points unless explicitly recalculated.\n"
+        "Daily sweep bonuses use the required roster for a year and tier. Monthly/Yearly badges add no sweep bonus.\n"
+        "Totals use effective awards, including audited adjustments; clears and completion dates stay unchanged by point changes. "
+        "Use `/challenge scores attempt_id:` for original points and adjustment reasons, or "
+        "`/challenge list past:true` for yearly history.\n"
+        "Fails don’t change points. Board: points, then clears, then fewer fails.", ephemeral=True)
 
 
 class AchievementListView(_OwnerView):
@@ -3964,6 +4193,7 @@ async def challenge_userinfo(
         completed=completed,
         tadoku_linked=tadoku_linked,
         cleared_tiers=swept,
+        duration_badges=badge_svc.duration_badges(tid, year=datetime.now(timezone.utc).year),
         achievements=achievements,
     )
     f = as_discord_file(png, "userinfo-card.png")
@@ -4013,7 +4243,7 @@ async def challenge_admin(
     view = AdminPanelView(interaction.user.id, target, interaction.guild)
     await interaction.response.send_message(
         f"Admin tools for {target.mention}\n"
-        "Use the buttons — dry-run first, APPLY only when sure.",
+        'Diagnostics never award clears. For a real completion, enter an explicit completion time and audit reason, then review before applying. No automatic announcement or rewards.',
         view=view,
         ephemeral=True,
     )

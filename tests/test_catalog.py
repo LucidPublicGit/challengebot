@@ -26,11 +26,11 @@ def test_seed_2026_count():
     path = setup_tmp_db()
     try:
         items = list_challenges(year=2026)
-        assert len(items) == 30
+        assert len(items) == 31  # Tales/Trails is the new Easy Monthly edition.
         tiers = {c["tier"] for c in items}
         assert tiers == {"easy", "medium", "hard", "ota_master", "special"}
         assert {tier: sum(c["tier"] == tier for c in items) for tier in tiers} == {
-            "easy": 6, "medium": 6, "hard": 7, "ota_master": 6, "special": 5
+            "easy": 7, "medium": 6, "hard": 7, "ota_master": 6, "special": 5
         }
         assert sum(1 for c in items if c["tier"] == "special") == 5
         for level, tier, walk_hours, endurance_hours, walk_num, endurance_num in (
@@ -132,7 +132,8 @@ def test_admin_catalog_crud():
         ch2 = get_challenge(cid)
         assert ch2["title"] == "Renamed" and ch2["verify"] == "honor"
         att_svc.admin_delete_challenge(cid)
-        assert get_challenge(cid) is None
+        assert get_challenge(cid)['lifecycle_state'] == 'retired'
+        assert cid not in {c['id'] for c in list_challenges()}
     finally:
         cleanup_db(path)
 
@@ -175,7 +176,7 @@ def test_specials_survive_new_year():
             catalog.write_text(yaml.safe_dump({
                 "year": 2027,
                 "challenges": [
-                    {"id": "easy-1", "tier": "easy", "number": 1,
+                    {"id": "easy-1-2027", "identity_id": "easy-1", "tier": "easy", "number": 1,
                      "title": "2027 Manga", "goal_kind": "volumes",
                      "goal_amount": 3, "media_filter": "manga",
                      "verify": "tadoku"},
@@ -189,7 +190,8 @@ def test_specials_survive_new_year():
         toriyama = get_challenge("medium-6")
         assert toriyama["tier"] == "special"
         assert toriyama["title"] == "鳥山明先生の作品"
-        assert get_challenge("easy-1")["title"] == "2027 Manga"
+        assert get_challenge("easy-1-2027")["title"] == "2027 Manga"
+        assert get_challenge("easy-1")["year"] == 2026  # Original edition is immutable.
         specials = list_challenges(year=2027, tier="special")
         assert {c["id"] for c in specials} >= {
             "easy-5", "medium-5", "medium-6", "medium-7", "medium-8",

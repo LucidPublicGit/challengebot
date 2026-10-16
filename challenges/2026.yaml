@@ -430,3 +430,26 @@ challenges:
       separate 0.5-hour Active Breaks may be light warmup or cooldown
       movement instead, leaving 5 hours of endurance activity. Keep immersing
       during Active Breaks; they count toward the 6 hours. Ordinary rest does not.
+
+  - id: tales-trails-2026
+    identity_id: tales-trails
+    tier: easy
+    number: 7
+    title: Complete any Tales or Trails game
+    duration_group: monthly
+    repeat_policy: annual
+    category: ota
+    allows_concurrent: true
+    param_label: Selected Tales or Trails game title
+    verify: honor
+    goal_kind: complete_work
+    goal_amount: 1
+    media_filter: game
+    description: >-
+      Start a fresh playthrough of one Tales or Trails game within your personal
+      month and finish its main story in Japanese before your exact deadline.
+      Record the selected game title at start and retain it at confirmation.
+      Finishing an almost-complete preexisting save does not qualify.
+      Honor-based complete-work verification; an evidence screenshot is optional.
+      There is no mandatory minimum playtime and Tadoku minutes do not establish
+      a main-story clear.

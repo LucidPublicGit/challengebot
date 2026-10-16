@@ -55,6 +55,11 @@ def test_top_completers_and_total():
                     " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (cid, 2026, tier, num, "T", "", 24, None, "tadoku", "pages", 10, "any"),
                 )
+            # Direct SQL is a fixture import: publish its explicit Daily roster.
+            from app.services.lifecycle import ensure_catalog_records
+            from app.services.badges import publish_rosters
+            ensure_catalog_records(conn)
+            publish_rosters(conn)
             # u1: two easy (2 clears, 2 pts + easy sweep +2 = 4)
             # u2: one ota (1 clear, 4 pts + ota sweep +8 = 12) → leads
             for did, cid in (("u1", "c1"), ("u1", "c1"), ("u2", "c2")):

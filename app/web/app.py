@@ -18,7 +18,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.catalog import list_challenges, special_points_note, upsert_challenges_from_yaml
+from app.catalog import list_challenges, special_points_note
 from app.config import get_settings, merge_runtime
 from app.db import db_session, get_all_settings, set_settings
 from app.services import attempts as att_svc
@@ -30,6 +30,7 @@ security = HTTPBasic(auto_error=False)
 NAV_ITEMS = (
     ("/", "Attempts"),
     ("/challenges", "Challenges"),
+    ("/lifecycle", "Scoring & history"),
     ("/achievements", "Achievements"),
     ("/announcements", "Announcements"),
     ("/users", "Users"),
@@ -122,6 +123,7 @@ input,select,textarea{
   width:100%;padding:.38rem .5rem;border-radius:6px;border:1px solid var(--line);
   background:#0c0f16;color:var(--ink);font:inherit;
 }
+input[type=checkbox],input[type=radio]{width:auto;accent-color:var(--accent2);margin-right:.4rem}
 input:focus,select:focus,textarea:focus,button:focus-visible,a:focus-visible,.btn:focus-visible{
   outline:2px solid var(--accent2);outline-offset:2px;border-color:var(--accent2);
 }
@@ -615,7 +617,9 @@ def create_app(bot=None) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
+        # Same-origin form POSTs need their Origin: browsers may send null under
+        # no-referrer. Keep cross-origin referrers suppressed without breaking CSRF.
+        response.headers["Referrer-Policy"] = "same-origin"
         return response
     from app.web.announcements import register_announcements
 
@@ -623,6 +627,9 @@ def create_app(bot=None) -> FastAPI:
     from app.web.achievements import register_achievements
 
     register_achievements(app, _auth)
+    from app.web.lifecycle import register_lifecycle
+
+    register_lifecycle(app, _auth)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):  # noqa: ARG001
@@ -1038,7 +1045,8 @@ def create_app(bot=None) -> FastAPI:
             raise HTTPException(404)
         sd, st = _iso_to_date_time(a.get("started_at"))
         ed, et = _iso_to_date_time(a.get("ends_at"))
-        cd, ct = _iso_to_date_time(a.get("completed_at"), seconds=True)
+        cd, ct = _iso_to_date_time(a.get("actual_completed_at"), seconds=True)
+        from app.web.lifecycle import correction_fields
         name = a.get("display_name") or a["discord_id"]
         status = a.get("status") or ""
         evidence = _pretty_evidence(a.get("evidence_json"))
@@ -1086,8 +1094,7 @@ def create_app(bot=None) -> FastAPI:
                   {_select_opts(ATTEMPT_STATUSES, status)}
                 </select>
                 <p class="muted" style="margin:.35rem 0 0">
-                  Newly completed attempts use the current time unless a completion date is entered.
-                  Editing an existing completion preserves its date.
+                  Corrections require a reviewed preview. Unknown actual completion dates remain unknown.
                 </p>
               </div>
               <div>
@@ -1123,7 +1130,7 @@ def create_app(bot=None) -> FastAPI:
                 <input type="time" name="ends_time" value="{_esc(et)}" step="60"/>
               </div>
               <div>
-                <label for="completed-date">Completion date (UTC)</label>
+                <label for="completed-date">Actual completion date (UTC; blank = unknown / unchanged)</label>
                 <input id="completed-date" type="date" name="completed_date" value="{_esc(cd)}"/>
               </div>
               <div>
@@ -1137,9 +1144,10 @@ def create_app(bot=None) -> FastAPI:
                   {(' · Completed <b>' + _esc(_human_when(a.get('completed_at'))) + '</b>') if a.get('completed_at') else ''}
                 </p>
               </div>
+              {correction_fields(a)}
             </div>
             <div class="actions">
-              <button type="submit">Save</button>
+              <button type="submit">Preview correction</button>
               <a class="btn secondary" href="{back_href}">Back</a>
             </div>
           </form>
@@ -1222,55 +1230,13 @@ def create_app(bot=None) -> FastAPI:
         return RedirectResponse(f"/?{qs}", status_code=303)
 
     @app.post("/attempts/{attempt_id}")
-    def attempt_save(
-        attempt_id: int,
-        status: str = Form(...),
-        verify_method: str = Form(""),
-        param: str = Form(""),
-        content: str = Form(""),
-        note: str = Form(""),
-        started_date: str = Form(""),
-        started_time: str = Form(""),
-        ends_date: str = Form(""),
-        ends_time: str = Form(""),
-        completed_date: str = Form(""),
-        completed_time: str = Form(""),
-        filter: str = Form("all"),
-        q: str = Form(""),
-        _: None = Depends(_auth),
-    ):
-        started_at = _date_time_to_iso(started_date, started_time)
-        ends_at = _date_time_to_iso(ends_date, ends_time)
-        completed_at = _date_time_to_iso(completed_date, completed_time)
-        if completed_date and not completed_at:
-            raise HTTPException(400, "Enter a valid completion date and time.")
-        if (started_date and not started_at) or (ends_date and not ends_at):
-            raise HTTPException(400, "Enter valid start and end dates and times.")
-        existing = att_svc.get_attempt(attempt_id)
-        if not existing:
-            raise HTTPException(404)
-        previous_date, previous_time = _iso_to_date_time(existing.get("completed_at"), seconds=True)
-        if (completed_date.strip(), completed_time.strip()) == (previous_date, previous_time):
-            completed_at = None  # Preserve precision on unchanged legacy timestamps.
-        result = att_svc.admin_update_attempt(
-            attempt_id,
-            status=status,
-            verify_method=verify_method or None,
-            param=param,
-            content=content,
-            note=note,
-            started_at=started_at,
-            ends_at=ends_at,
-            completed_at=completed_at if status == "completed" else None,
-        )
-        if not result["ok"]:
-            raise HTTPException(400, result["error"])
-        qs = _qs(saved=1, filter=None if filter == "all" else filter, q=(q or "").strip() or None)
-        return RedirectResponse(f"/attempts/{attempt_id}?{qs}", status_code=303)
+    async def attempt_save(attempt_id: int, request: Request, _: None = Depends(_auth)):
+        return await app.state.preview_attempt_correction(request, attempt_id)
 
     def _challenge_form_fields(c: dict | None = None) -> str:
         c = c or {}
         concurrent = bool(int(c.get("allows_concurrent") or 0))
+        from app.web.lifecycle import catalog_fields
         return f"""
             <div class="grid">
               <div><label>Id</label>
@@ -1281,7 +1247,7 @@ def create_app(bot=None) -> FastAPI:
                 <input name="year" value="{_esc(c.get('year') or '2026')}" required/></div>
               <div><label>Number</label>
                 <input name="number" value="{_esc(c.get('number') or '1')}" required/></div>
-              <div><label>Time limit (hours)</label>
+              <div><label>Daily / Special time limit (hours)</label>
                 <input name="time_limit_hours" value="{_esc(c.get('time_limit_hours') or '24')}"/></div>
               <div class="span-2"><label>Title</label>
                 <input name="title" value="{_esc(c.get('title') or '')}" required/></div>
@@ -1306,10 +1272,12 @@ def create_app(bot=None) -> FastAPI:
               </div>
               <div><label>Goal amount</label>
                 <input name="goal_amount" value="{_esc(c.get('goal_amount') or '1')}" required/></div>
-              <div><label>Points <span class="hint">(blank = tier default; Special sets this)</span></label>
-                <input name="points" value="{_esc('' if c.get('points') in (None, '') else c.get('points'))}"/></div>
+              <div><label>Absolute points override <span class="hint">(blank = inherit base × duration multiplier)</span></label>
+                <input name="points" value="{_esc('' if c.get('points') in (None, '') else c.get('points'))}" {"readonly" if c.get("id") else ""}/>
+                {('<p class="muted">Change or explicitly clear existing overrides using <a href="/lifecycle">Scoring &amp; history</a>.</p>') if c.get('id') else ''}</div>
               <div class="span-2"><label>Description</label>
                 <textarea name="description">{_esc(c.get("description") or "")}</textarea></div>
+              {catalog_fields(c)}
             </div>
         """
 
@@ -1318,16 +1286,24 @@ def create_app(bot=None) -> FastAPI:
         year: str = "",
         tier: str = "",
         verify: str = "",
+        duration: str = "",
+        state: str = "active",
         saved: str = "",
         _: None = Depends(_auth),
     ):
-        items = list_challenges()
+        items = list_challenges(include_retired=True)
         years = sorted({str(c.get("year")) for c in items if c.get("year") is not None}, reverse=True)
         yf = (year or "").strip()
         tf = (tier or "").strip().lower()
         vf = (verify or "").strip().lower()
+        df = (duration or "").strip().lower()
+        sf = state if state in ("active", "retired", "all") else "active"
         filtered = []
         for c in items:
+            if df and c.get("duration_group") != df:
+                continue
+            if sf != "all" and c.get("lifecycle_state", "active") != sf:
+                continue
             if yf and str(c.get("year")) != yf:
                 continue
             if tf and str(c.get("tier") or "").lower() != tf:
@@ -1337,9 +1313,9 @@ def create_app(bot=None) -> FastAPI:
             filtered.append(c)
 
         def chip(kind: str, val: str, label: str) -> str:
-            cur = {"year": yf, "tier": tf, "verify": vf}.get(kind, "")
+            cur = {"year": yf, "tier": tf, "verify": vf, "duration": df, "state": sf}.get(kind, "")
             on = "on" if cur == val else ""
-            parts = {"year": yf, "tier": tf, "verify": vf}
+            parts = {"year": yf, "tier": tf, "verify": vf, "duration": df, "state": sf}
             if cur == val:
                 parts[kind] = ""
             else:
@@ -1354,7 +1330,7 @@ def create_app(bot=None) -> FastAPI:
             rows.append(
                 f"<tr>"
                 f"<td class='mono'><a href='/challenges/{_esc(c['id'])}'>{_esc(c['id'])}</a></td>"
-                f"<td>{c['year']}</td>"
+                f"<td>{_esc(c['year'])}<span class='sub'>{_esc(c.get('duration_group') or 'daily')} · {_esc(c.get('lifecycle_state') or 'active')}</span></td>"
                 f"<td>{_esc(c['tier'])} #{c['number']}"
                 f"{(' · ' + _esc(special_points_note(c))) if special_points_note(c) else ''}</td>"
                 f"<td>{_esc(c['title'])}"
@@ -1364,9 +1340,7 @@ def create_app(bot=None) -> FastAPI:
                 f"<td><span class='badge {vbadge}'>{_esc(v)}</span></td>"
                 f"<td class='row-actions'>"
                 f"<a class='btn tiny' href='/challenges/{_esc(c['id'])}'>Edit</a>"
-                f"<form method='post' action='/challenges/{_esc(c['id'])}/delete' "
-                f"onsubmit=\"return confirm('Delete {_esc(c['id'])}? Historical attempts are kept.')\">"
-                f"<button type='submit' class='danger'>Delete</button></form></td>"
+                f"</td>"
                 f"</tr>"
             )
 
@@ -1395,7 +1369,8 @@ def create_app(bot=None) -> FastAPI:
           </div>
         </div>
         <div class="card">
-          <h2>Seed from YAML</h2>
+          <h2>Merge catalog YAML</h2>
+          <p class="muted">Preview before merging. Omitted entries and history remain unchanged. Override and lifecycle changes require their dedicated workflows. Use a source inside the challenges directory, or paste YAML.</p>
           <form method="post" action="/challenges/seed" class="row tight">
             <div>
               <label>Path</label>
@@ -1405,10 +1380,12 @@ def create_app(bot=None) -> FastAPI:
               <label>Mode</label>
               <select name="replace">
                 <option value="0">Upsert only</option>
-                <option value="1">Replace year then seed</option>
+
               </select>
             </div>
-            <div><button type="submit">Seed</button></div>
+            <div><label>Or paste catalog YAML</label><textarea name="catalog_yaml" rows="5" placeholder="year: 2026&#10;challenges: ..."></textarea></div>
+            <div><label>Audit reason</label><textarea name="reason" required maxlength="2000"></textarea></div>
+            <div><button type="submit">Preview catalog merge and roster effects</button></div>
           </form>
         </div>
         <div class="filters">
@@ -1420,6 +1397,8 @@ def create_app(bot=None) -> FastAPI:
         <div class="filters">
           <span class="muted" style="align-self:center">Verify</span>{verify_chips}
         </div>
+        <div class="filters"><span class="muted">Duration</span>{''.join(chip('duration', d, d.title()) for d in ('daily', 'monthly', 'yearly', 'special') if any(c.get('duration_group') == d for c in items))}</div>
+        <div class="filters"><span class="muted">Lifecycle</span>{''.join(chip('state', v, v.title()) for v in ('active', 'retired', 'all'))}</div>
         <div class="card" style="padding:0;overflow:auto">
           {"<table><thead><tr><th>ID</th><th>Year</th><th>Tier</th><th>Title</th><th>Goal</th><th>Verify</th><th></th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>" if rows else empty}
         </div>
@@ -1428,7 +1407,7 @@ def create_app(bot=None) -> FastAPI:
           <div class="block-body">
             <form method="post" action="/challenges/save">
               {_challenge_form_fields()}
-              <div class="actions"><button type="submit">Create / upsert</button></div>
+              <div class="actions"><button type="submit">Preview definition and roster effects</button></div>
             </form>
           </div>
         </details>
@@ -1437,12 +1416,33 @@ def create_app(bot=None) -> FastAPI:
 
     @app.post("/challenges/seed")
     def challenges_seed(
-        path: str = Form(...),
-        replace: str = Form("0"),
+        path: str = Form(''),
+        replace: str = Form('0'),
+        catalog_yaml: str = Form(''),
+        reason: str = Form(''),
         _: None = Depends(_auth),
     ):
-        upsert_challenges_from_yaml(path, replace_year=replace == "1")
-        return RedirectResponse("/challenges?saved=1", status_code=303)
+        from app.services import catalog_import
+        from app.web.lifecycle import _reason
+        if replace != '0':
+            raise HTTPException(400, 'Replacement imports are disabled. Merge the catalog and retire editions explicitly.')
+        reason = _reason({'reason': reason})
+        content = catalog_yaml
+        if not content.strip():
+            root = Path(__file__).resolve().parents[2] / 'challenges'
+            try:
+                source = Path(path).resolve()
+                if not source.is_relative_to(root.resolve()) or source.suffix.lower() not in ('.yaml', '.yml'):
+                    raise ValueError('Catalog source must be a YAML file inside the challenges directory; paste external catalogs instead')
+                with source.open('rb') as stream:
+                    content = stream.read(catalog_import.MAX_BYTES + 1)
+            except (OSError, ValueError) as exc:
+                raise HTTPException(400, 'Choose a readable YAML file inside the challenges directory, or paste YAML') from exc
+        try:
+            data = catalog_import.parse_yaml(content)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return app.state.preview_catalog_import(data, reason)
 
     @app.post("/challenges/save")
     def challenges_save(
@@ -1461,10 +1461,34 @@ def create_app(bot=None) -> FastAPI:
         description: str = Form(""),
         points: str = Form(""),
         category: str = Form("ota"),
+        duration_group: str = Form("daily"),
+        repeat_policy: str = Form("once_ever"),
+        identity_id: str = Form(""),
+        available_from: str = Form(""),
+        available_until: str = Form(""),
+        reason: str = Form(""),
         _: None = Depends(_auth),
     ):
-        result = att_svc.admin_upsert_challenge(
-            {
+        from app.catalog import get_challenge
+        from app.web.lifecycle import DURATIONS, REPEATS, _instant, _number, _reason
+
+        _reason({"reason": reason})
+        if duration_group not in DURATIONS or repeat_policy not in REPEATS:
+            raise HTTPException(400, "Invalid duration or repeat policy.")
+        if duration_group == "daily" and not 0 < time_limit_hours <= 24:
+            raise HTTPException(400, "Daily windows must be positive and at most 24 hours.")
+        if (tier == "special") != (duration_group == "special"):
+            raise HTTPException(400, "Special challenges must retain the Special duration group.")
+        start = _instant(available_from, "availability start")
+        end = _instant(available_until, "availability end")
+        if start and end and start >= end:
+            raise HTTPException(400, "Availability end must follow its start.")
+        existing = get_challenge(id)
+        if existing and (str(existing.get("points") if existing.get("points") is not None else "") != points.strip()):
+            raise HTTPException(400, "Use the scoring preview to change or clear an existing override.")
+        if points.strip():
+            _number(points, "Points override", integer=True)
+        data = {
                 "id": id,
                 "year": year,
                 "tier": tier,
@@ -1480,16 +1504,22 @@ def create_app(bot=None) -> FastAPI:
                 "description": description,
                 "points": points.strip() or None,
                 "category": category,
-            }
-        )
-        if not result["ok"]:
-            raise HTTPException(400, result["error"])
-        return RedirectResponse(f"/challenges/{id}?saved=1", status_code=303)
+                "duration_group": duration_group,
+                "repeat_policy": repeat_policy,
+                "identity_id": identity_id.strip() or None,
+                "available_from": start,
+                "available_until": end,
+                "actor": f"web:{get_settings().ui_username or 'admin'}",
+                "source": "web",
+                "reason": reason.strip(),
+        }
+        return app.state.preview_catalog_definition(data, reason.strip())
 
     @app.get("/challenges/{cid}", response_class=HTMLResponse)
     def challenge_one(cid: str, saved: str = "", _: None = Depends(_auth)):
-        items = list_challenges()
-        c = next((x for x in items if x["id"] == cid), None)
+        from app.catalog import get_challenge
+        from app.web.lifecycle import challenge_panel
+        c = get_challenge(cid)
         if not c:
             raise HTTPException(404)
         counts = att_svc.attempt_status_counts_for_challenge(cid)
@@ -1520,21 +1550,18 @@ def create_app(bot=None) -> FastAPI:
           <form method="post" action="/challenges/save">
             {_challenge_form_fields(c)}
             <div class="actions">
-              <button type="submit">Save</button>
-              <button class="danger" formaction="/challenges/{_esc(cid)}/delete" formmethod="post"
-                onclick="return confirm('Delete this challenge? Historical attempts are kept.')">Delete</button>
+              <button type="submit">Preview definition and roster effects</button>
               <a class="btn secondary" href="/challenges">Back</a>
             </div>
           </form>
         </div>
-        <p class="muted">Deleting removes the catalog row only; past attempts keep their challenge_id.</p>
+        {challenge_panel(c)}
         """
         return _page(title_html, body, "/challenges", subtitle=subtitle)
 
     @app.post("/challenges/{cid}/delete")
     def challenge_delete(cid: str, _: None = Depends(_auth)):
-        att_svc.admin_delete_challenge(cid)
-        return RedirectResponse("/challenges?saved=1", status_code=303)
+        raise HTTPException(409, "Hard deletion is disabled. Open the challenge and preview an audited retirement.")
 
     @app.get("/users", response_class=HTMLResponse)
     def users_page(q: str = "", saved: str = "", _: None = Depends(_auth)):

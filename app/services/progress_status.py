@@ -84,7 +84,20 @@ def list_active_attempts() -> list[dict]:
             "WHERE a.status = 'active' "
             "ORDER BY a.id ASC"
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            att = dict(row)
+            # Existing attempts use accepted rules, not a mutable catalog join.
+            try:
+                rules = json.loads(att.get("rules_snapshot_json") or "{}")
+            except (TypeError, ValueError):
+                rules = {}
+            for key in ("title", "tier", "number", "verify", "goal_kind", "goal_amount",
+                        "media_filter", "param_label", "time_limit_hours", "description", "duration_group"):
+                if key in rules:
+                    att[key] = rules[key]
+            result.append(att)
+        return result
 
 
 def is_tadoku_poll_target(att: dict) -> bool:
@@ -160,6 +173,11 @@ def progress_snapshot(att: dict) -> dict[str, Any]:
     if goal_f <= 0:
         return {}
     meta = _status_meta_from_att(att)
+    if meta.get("evidence_status") == "incomplete":
+        return {}
+    window = meta.get("evidence_window")
+    if window and window != [att.get("started_at"), att.get("ends_at")]:
+        return {}
     prog = meta.get("last_progress")
     if prog is None:
         return {}
@@ -186,6 +204,8 @@ def progress_display(att: dict) -> str:
     linked = bool((att.get("tadoku_user_id") or "").strip())
     st = (att.get("status") or "").lower()
     goal_f, kind = _goal_suffix(att)
+    if _status_meta_from_att(att).get("evidence_status") == "incomplete":
+        return "evidence incomplete"
     snap = progress_snapshot(att)
     if snap:
         return str(snap["label"])
@@ -450,8 +470,17 @@ async def check_goal_milestones(
         logger.warning(
             "status Tadoku fetch failed attempt=%s: %s", att.get("id"), exc
         )
+        # A previous success must not remain an automatic completion signal
+        # after a failed or truncated fetch (especially after a correction).
+        meta["goal_ok"] = False
+        meta["last_progress"] = None
+        meta["evidence_status"] = "incomplete"
+        meta["evidence_error"] = str(exc)[:400]
         return []
 
+    meta["evidence_status"] = "complete"
+    meta.pop("evidence_error", None)
+    meta["evidence_window"] = [att.get("started_at"), att.get("ends_at")]
     result = evaluate_logs(
         logs,
         goal_kind=att.get("goal_kind") or "",
@@ -630,6 +659,17 @@ async def collect_status_events_for_attempt(
     now = _aware(now or _now())
     aid = int(att["id"])
     meta = get_status_meta(aid)
+    window = [att.get("started_at"), att.get("ends_at")]
+    if meta.get("effective_window") != window:
+        if meta.get("effective_window"):
+            meta.setdefault("prior_windows", []).append(meta["effective_window"])
+        meta["effective_window"] = window
+        meta["deadline_revision"] = att.get("correction_revision", 0)
+        meta["goal_ok"] = False
+        meta["last_progress"] = None
+        meta["last_tadoku_poll_at"] = None
+        # Keep sent milestone/DM markers: revising a deadline must not resend
+        # notifications already delivered for this attempt.
     events: list[StatusEvent] = []
     events.extend(check_time_milestones(att, meta, now))
     goal_events = await check_goal_milestones(

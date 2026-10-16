@@ -62,7 +62,7 @@ def test_category_rings_use_points_and_cards_omit_branding():
         assert "25%" in texts and "No challenges yet" in texts
         assert "/ 4 pts" in texts
         assert not any(t == "Physical challenges only" or t.startswith("of ") for t in texts)
-        asyncio.run(render_all_demo_cards())
+        asyncio.run(render_all_demo_cards(fetch_covers=False))
     assert not any("ChallengeTracker" in t or "Challenge Tracker" in t for t in texts)
     assert _clean_footer("ChallengeTracker · /challenge scores") == "/challenge scores"
     assert _clean_footer("Challenge Tracker") == ""
@@ -166,7 +166,7 @@ OUT_DIR = ROOT / "data" / "card_previews"
 def test_print_every_card_format():
     """Render every card kind to data/card_previews/ and print paths."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    cards = asyncio.run(render_all_demo_cards())
+    cards = asyncio.run(render_all_demo_cards(fetch_covers=False))
     extra = ("userinfo", "leaderboard")
     kinds_expected = [k for k in KIND_STYLE if k not in extra] + list(extra)
     assert [k for k, _ in cards] == kinds_expected

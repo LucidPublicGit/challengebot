@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -161,7 +162,20 @@ def _attempt_join_rows(
             "ORDER BY a.id DESC",
             (discord_id, *statuses),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_captured_rules(dict(r)) for r in rows]
+
+
+def _captured_rules(attempt: dict) -> dict:
+    """Definition fields are accepted at start, not at confirmation time."""
+    try:
+        rules = json.loads(attempt.get('rules_snapshot_json') or '{}')
+        effective = json.loads(attempt.get('effective_completion_json') or '{}')
+    except (ValueError, TypeError):
+        return attempt
+    fields = ('title', 'tier', 'number', 'verify', 'goal_kind', 'goal_amount',
+              'media_filter', 'param_label', 'time_limit_hours', 'allows_concurrent',
+              'category', 'duration_group', 'repeat_policy', 'points')
+    return {**attempt, **{k: effective.get(k, rules[k]) for k in fields if k in rules}}
 
 
 def _attempt_join_row(discord_id: str, statuses: tuple[str, ...]) -> dict | None:
@@ -173,6 +187,8 @@ def challenge_allows_concurrent(ch: dict | None) -> bool:
     """True when challenge_defs.allows_concurrent is set (opt-in long-term)."""
     if not ch:
         return False
+    if ch.get('duration_group') in ('monthly', 'yearly'):
+        return True
     raw = ch.get("allows_concurrent")
     if isinstance(raw, bool):
         return raw
@@ -313,7 +329,7 @@ def get_attempt(attempt_id: int) -> dict | None:
             "WHERE a.id=?",
             (int(attempt_id),),
         ).fetchone()
-        return dict(row) if row else None
+        return _captured_rules(dict(row)) if row else None
 
 
 def _attempts_where(
@@ -475,17 +491,24 @@ def expire_overdue() -> list[dict]:
             "FROM attempts a "
             "JOIN challenge_defs c ON c.id = a.challenge_id "
             "LEFT JOIN users u ON u.discord_id = a.discord_id "
-            "WHERE a.status='active' AND a.ends_at < ?",
+            "WHERE a.status='active' AND a.ends_at <= ?",
             (now,),
         ).fetchall()
         expired = [dict(r) for r in rows]
         if expired:
             conn.execute(
                 "UPDATE attempts SET status='expired' "
-                "WHERE status='active' AND ends_at < ?",
+                "WHERE status='active' AND ends_at <= ?",
                 (now,),
             )
+            for row in expired:
+                _record_transition(conn, row, 'expired', row['ends_at'])
         return expired
+
+
+def _record_transition(conn, before: dict, status: str, effective_at: str) -> None:
+    conn.execute('INSERT INTO attempt_events(attempt_id,event_type,before_json,after_json,effective_at,recorded_at,actor,source,reason) VALUES(?,?,?,?,?,?,?,?,?)',
+                 (before['id'], status, json.dumps({'status': before['status']}), json.dumps({'status': status}), effective_at, utcnow_iso(), 'system', 'attempts', 'Attempt lifecycle transition'))
 
 
 def activate_due_scheduled() -> list[dict]:
@@ -509,12 +532,34 @@ def activate_due_scheduled() -> list[dict]:
                 (now,),
             )
             for row in due:
+                from app.services import scoring
+                raw = conn.execute('SELECT * FROM challenge_defs WHERE id=?', (row['challenge_id'],)).fetchone()
+                accepted = json.loads(row.get('rules_snapshot_json') or '{}')
+                score_rules = {**dict(raw), **accepted, 'points': raw['points']}
+                previous_score = json.loads(row.get('scoring_snapshot_json') or '{}')
+                explicit = previous_score.get('explicit_scoring_revision') or {}
+                # A reviewed include-open recalculation performed after the
+                # actual start must survive delayed scheduler activation.
+                preserve_explicit = explicit.get('effective_at') and parse_iso(explicit['effective_at']) >= parse_iso(row['started_at'])
+                score = previous_score if preserve_explicit else scoring.capture_snapshot(conn, score_rules, at=row['started_at'])
+                score_json = row['scoring_snapshot_json'] if preserve_explicit else json.dumps(score)
+                conn.execute('INSERT INTO attempt_events(attempt_id,event_type,before_json,after_json,effective_at,recorded_at,actor,source,reason) VALUES(?,?,?,?,?,?,?,?,?)',
+                             (row['id'], 'scheduled_scoring_cutover', row.get('scoring_snapshot_json'), score_json, row['started_at'], now, 'system', 'scheduler', 'Scoring entitlement captured at actual scheduled start; original advertised policy retained here'))
+                conn.execute('UPDATE attempts SET scoring_snapshot_json=? WHERE id=?', (score_json, row['id']))
+                _record_transition(conn, row, 'active', row['started_at'])
                 row["status"] = "active"
         return due
 
 
 def tick_lifecycle() -> tuple[list[dict], list[dict]]:
-    """Activate due schedules, then expire overdue actives."""
+    """Publish effective availability boundaries, activate schedules, expire actives."""
+    # Scheduled retirement/publication must publish its prospective Daily roster
+    # at the effective boundary, even if nobody edits the catalog that day.
+    from app.services.badges import publish_rosters
+    from app.services.lifecycle import materialize_restorations
+    with db_session() as conn:
+        materialize_restorations(conn)
+        publish_rosters(conn)
     activated = activate_due_scheduled()
     expired = expire_overdue()
     return activated, expired
@@ -596,7 +641,7 @@ def start_attempt(
                 ),
             }
 
-    if not rt["allow_reattempt"]:
+    if ch.get('repeat_policy', 'legacy') == 'legacy' and not rt["allow_reattempt"]:
         with db_session() as conn:
             done = conn.execute(
                 "SELECT id FROM attempts WHERE discord_id=? AND challenge_id=? "
@@ -630,10 +675,25 @@ def start_attempt(
         if start_dt <= now + timedelta(seconds=30):
             start_dt = now
 
-    hours = _bound_hours(ch.get("time_limit_hours"))
-    ends = start_dt + timedelta(hours=hours)
+    from app.services.lifecycle import calculate_deadline, validate_start, capture_attempt, ensure_catalog_records
+    try:
+        ends = calculate_deadline(ch, start_dt)
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
     status = "active" if start_dt <= now else "scheduled"
     with db_session() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        ensure_catalog_records(conn)
+        ch = dict(conn.execute('SELECT * FROM challenge_defs WHERE id=?', (ch['id'],)).fetchone())
+        try:
+            validate_start(conn, ch, discord_id, start_dt)
+        except ValueError as exc:
+            return {'ok': False, 'error': str(exc)}
+        # Recheck the legacy exception in the same write transaction as insertion.
+        if ch.get('repeat_policy') == 'legacy' and not rt['allow_reattempt']:
+            if conn.execute("SELECT 1 FROM attempts WHERE discord_id=? AND challenge_id=? AND status='completed'", (discord_id, ch['id'])).fetchone():
+                return {'ok': False, 'error': 'You already cleared this challenge — each one is one-time only.'}
+        ends = calculate_deadline(ch, start_dt)
         cur = conn.execute(
             "INSERT INTO attempts("
             "discord_id, challenge_id, param, status, started_at, ends_at, guild_id"
@@ -649,6 +709,7 @@ def start_attempt(
             ),
         )
         attempt_id = cur.lastrowid
+        capture_attempt(conn, attempt_id, ch)
 
     return {
         "ok": True,
@@ -687,6 +748,7 @@ def abandon_attempt(
                 "WHERE id=? AND status='scheduled'",
                 (att["id"],),
             )
+        _record_transition(conn, att, 'abandoned' if was_active else 'cancelled', utcnow_iso())
     out = {**att, "status": "abandoned"}
     if was_active:
         out["verify_method"] = "quit"
@@ -749,8 +811,9 @@ def user_update_attempt_content(
     aliases: str | None = None,
     log_ids: str | None = None,
     clear_fixup: bool = False,
+    reason: str = 'Owner content/focus/match correction',
 ) -> dict[str, Any]:
-    """Owner edit of content/param/Tadoku fixup on own attempt (any status)."""
+    """Audited owner edit of content/param/Tadoku fixup on own attempt (any status)."""
     from app.services.verify import strip_content_labels
 
     q = (
@@ -764,7 +827,10 @@ def user_update_attempt_content(
     else:
         q += " AND a.status IN ('active','scheduled','completed','expired','abandoned') "
         q += "ORDER BY a.id DESC LIMIT 1"
+    if not str(reason or '').strip():
+        return {'ok': False, 'error': 'An audit reason is required.'}
     with db_session() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         row = conn.execute(q, args).fetchone()
         if not row:
             return {"ok": False, "error": "Attempt not found."}
@@ -792,11 +858,24 @@ def user_update_attempt_content(
             fix["log_ids"] = _parse_exclude(log_ids)
         fixup_s = _dump_fixup(fix["aliases"], fix["log_ids"])
 
-        conn.execute(
-            "UPDATE attempts SET content=?, param=?, fixup_json=? "
-            "WHERE id=? AND discord_id=?",
-            (new_content, new_param, fixup_s, att["id"], discord_id),
-        )
+        if (new_content, new_param, fixup_s) != (att.get('content'), att.get('param'), att.get('fixup_json')):
+            from app.services.lifecycle import _object
+            import uuid
+            operation_id = f'owner-correction:{uuid.uuid4().hex}'
+            meta = _object(att.get('effective_completion_json'))
+            meta.update(content=new_content, param=new_param, fixup_json=fixup_s)
+            reminders = _object(att.get('status_json'))
+            reminders.update(goal_ok=False, last_progress=None, last_tadoku_poll_at=None)
+            conn.execute(
+                "UPDATE attempts SET content=?, param=?, fixup_json=?, correction_revision=correction_revision+1, "
+                "effective_completion_json=?, status_json=?, "
+                "original_completion_json=CASE WHEN status='completed' THEN COALESCE(original_completion_json,?) ELSE original_completion_json END "
+                "WHERE id=? AND discord_id=?",
+                (new_content, new_param, fixup_s, json.dumps(meta), json.dumps(reminders), json.dumps(att), att['id'], discord_id),
+            )
+            current = dict(conn.execute('SELECT * FROM attempts WHERE id=?', (att['id'],)).fetchone())
+            conn.execute('INSERT INTO attempt_events(attempt_id,event_type,before_json,after_json,effective_at,recorded_at,actor,source,reason,operation_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                         (att['id'], 'owner_content_correction', json.dumps(att), json.dumps(current), utcnow_iso(), utcnow_iso(), str(discord_id), 'discord_user', reason.strip(), operation_id))
     return {
         "ok": True,
         "attempt_id": att["id"],
@@ -832,11 +911,14 @@ async def confirm_attempt(
     dry_run: evaluate only, never write completed.
     fake_logs: admin test inject — skip Tadoku fetch, run evaluate_logs on these.
     """
-    activate_due_scheduled()
-    expire_overdue()
+    if not dry_run and (force_honor or fake_logs is not None):
+        return {'ok': False, 'error': 'Administrative and synthetic completions require the reviewed correction workflow.'}
+    if not dry_run:
+        activate_due_scheduled()
+        expire_overdue()
     if attempt_id is None:
-        only_sched = scheduled_attempts(discord_id)
-        actives = active_attempts(discord_id)
+        only_sched = _attempt_join_rows(discord_id, ('scheduled',)) if dry_run else scheduled_attempts(discord_id)
+        actives = _attempt_join_rows(discord_id, ('active',)) if dry_run else active_attempts(discord_id)
         if not actives and only_sched:
             if len(only_sched) == 1:
                 scheduled = only_sched[0]
@@ -871,13 +953,15 @@ async def confirm_attempt(
         }
     att = picked["attempt"]
 
-    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now = datetime.now(timezone.utc)
     ends = parse_iso(att["ends_at"])
     if ends.tzinfo is None:
         ends = ends.replace(tzinfo=timezone.utc)
-    if now > ends and not dry_run:
-        expire_overdue()
-        return {"ok": False, "error": "Challenge window has ended."}
+    if now >= ends:
+        if not dry_run:
+            expire_overdue()
+        return {'ok': False, 'dry_run': dry_run, 'would_complete': False,
+                'error': 'Challenge window has ended. Use a reviewed correction to attest an earlier completion.'}
 
     ch_verify = att.get("verify") or "tadoku"
     rt = _runtime()
@@ -893,6 +977,11 @@ async def confirm_attempt(
         _parse_exclude(log_ids),
     )
 
+    if att.get('duration_group') in ('monthly', 'yearly') and att.get('goal_kind') == 'complete_work':
+        selected = str(att.get('param') or '').strip()
+        supplied = str(param_override if param_override is not None else content or selected).strip()
+        if supplied != selected:
+            return {'ok': False, 'error': 'The selected work is captured at start. Use an audited correction to change its title.', 'attempt': att}
     if param_override is not None:
         verify_param = (param_override or "").strip() or None
     elif ignore_param:
@@ -901,14 +990,11 @@ async def confirm_attempt(
         verify_param = att.get("param")
 
     # Persist any new aliases / log ids provided on this confirm
-    if aliases is not None or log_ids is not None:
-        dump = _dump_fixup(alias_list, include_ids)
-        with db_session() as conn:
-            conn.execute(
-                "UPDATE attempts SET fixup_json=? WHERE id=?",
-                (dump, att["id"]),
-            )
-        att["fixup_json"] = dump
+    if (aliases is not None or log_ids is not None) and not dry_run:
+        user_update_attempt_content(discord_id, attempt_id=att['id'],
+                                    aliases=','.join(alias_list), log_ids=','.join(include_ids),
+                                    reason='Verification matching corrections supplied during confirmation')
+        att = get_attempt(att['id']) or att
 
     use_honor = force_honor or (
         honor_override and bool(rt.get("allow_honor_override", True))
@@ -1279,10 +1365,15 @@ async def admin_test_verify(
       fake_pass    — synthetic logs that should pass
       fake_fail    — synthetic logs that should fail
       force        — honor/manual complete without Tadoku
-    apply=True writes completion (except pure fail cases).
+    Diagnostic only: apply=True is rejected. Real administrative completions
+    require an explicit completion-time attestation and reviewed correction.
+    Existing historical synthetic awards remain readable and are not erased.
     """
+    if apply:
+        return {'ok': False, 'dry_run': True, 'error': 'Diagnostics cannot award completions. Use the reviewed administrative attestation workflow.'}
     mode = (mode or "preview_real").lower().strip()
-    att = active_attempt(discord_id)
+    active_rows = _attempt_join_rows(discord_id, ('active',))
+    att = active_rows[0] if active_rows else None
     if not att and mode != "force":
         # force still needs active attempt via confirm_attempt
         pass
@@ -1351,7 +1442,9 @@ def _complete(
     logs: list[dict[str, Any]] | None = None,
     content: str | None = None,
 ) -> dict[str, Any]:
-    now = utcnow_iso()
+    # Start instants retain subsecond precision. Truncating confirmation to a
+    # whole second could otherwise put an immediate clear before its start.
+    now = datetime.now(timezone.utc).isoformat()
     matched = (verify_result.matched_log_ids if verify_result else None) or []
     content_val = content or resolve_content(
         param=att.get("param"),
@@ -1398,6 +1491,20 @@ def _complete(
         )
         if not cur.rowcount:
             return {"ok": False, "error": "This attempt is no longer active."}
+        completion_facts = {
+            **snapshot, 'status': 'completed', 'completed_at': now,
+            'confirmed_at': now, 'verified_at': now,
+            'verify_method': method, 'evidence_json': json.dumps(evidence),
+            'note': note, 'content': content_val,
+            'edition_year': att.get('edition_year') or (dict(challenge or {}).get('year')),
+            'completion_time_quality': 'confirmation_proxy',
+        }
+        conn.execute('UPDATE attempts SET confirmed_at=?, verified_at=?, original_completion_json=COALESCE(original_completion_json,?), effective_completion_json=? WHERE id=?',
+                     (now, now, json.dumps(completion_facts), json.dumps(completion_facts), att['id']))
+        _record_transition(conn, att, 'completed', now)
+        from app.services import scoring, badges
+        scoring.ensure_completion_award(conn, att['id'])
+        badges.sync_user(conn, str(att['discord_id']))
         sync_user(conn, str(att["discord_id"]))
     att_out = {**att, "content": content_val, "status": "completed", "completed_at": now}
     return {
@@ -1494,11 +1601,24 @@ def admin_update_attempt(
             if challenge:
                 conn.execute("UPDATE attempts SET challenge_snapshot_json=? WHERE id=?",
                              (completion_snapshot(dict(challenge)), aid))
+        import uuid
+        operation_id = 'legacy-admin:' + str(uuid.uuid4())
+        conn.execute('UPDATE attempts SET correction_revision=COALESCE(correction_revision,0)+1 WHERE id=?', (aid,))
+        conn.execute('INSERT INTO attempt_events(attempt_id,event_type,before_json,after_json,effective_at,recorded_at,actor,source,reason,operation_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                     (aid, 'legacy_admin_correction', json.dumps(dict(previous)), json.dumps(dict(current)), utcnow_iso(), utcnow_iso(), 'legacy_admin', 'legacy_admin', 'Compatibility admin update; use preview/apply correction for intentional timing exceptions', operation_id))
+        from app.services import scoring, badges
+        scoring.sync_user(conn, str(current['discord_id']))
+        badges.sync_user(conn, str(current['discord_id']))
         sync_user(conn, str(current["discord_id"]))
     return {"ok": True}
 
 
-def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
+def admin_upsert_challenge(data: dict[str, Any], *, conn=None, publish=True) -> dict[str, Any]:
+    """Compatibility writer; reviewed services supply their own transaction.
+
+    New human administration should use catalog_admin preview/apply. Explicit
+    actor/source/reason is retained on new immutable definition revisions.
+    """
     required = ["id", "year", "tier", "number", "title", "goal_kind", "goal_amount"]
     for k in required:
         if k not in data or data[k] in (None, ""):
@@ -1520,10 +1640,24 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
         if raw_pts in (None, "", "null")
         else sql_int(raw_pts, lo=0, hi=COUNTER_MAX)
     )
-    with db_session() as conn:
+    with (nullcontext(conn) if conn is not None else db_session()) as conn:
+        previous_revision = conn.execute('SELECT COALESCE(MAX(id),0) FROM definition_revisions').fetchone()[0]
         existing = conn.execute(
             "SELECT * FROM challenge_defs WHERE id=?", (data["id"],)
         ).fetchone()
+        if existing and data.get('identity_id') and data['identity_id'] != existing['identity_id']:
+            return {'ok': False, 'error': 'A published edition cannot change permanent identity'}
+        if existing and int(data['year']) != int(existing['year']):
+            return {'ok': False, 'error': 'Publish a new edition ID rather than changing its catalog year.'}
+        group = str(data.get('duration_group') or (existing['duration_group'] if existing else ('special' if data['tier'] == 'special' else 'daily'))).lower()
+        repeat = str(data.get('repeat_policy') or (existing['repeat_policy'] if existing else 'legacy')).lower()
+        if group not in ('daily', 'monthly', 'yearly', 'special') or repeat not in ('legacy', 'annual', 'once_ever'):
+            return {'ok': False, 'error': 'Invalid duration group or repeat policy'}
+        from app.services.lifecycle import calculate_deadline, ensure_catalog_records
+        try:
+            calculate_deadline({**data, 'duration_group': group}, datetime.now(timezone.utc))
+        except ValueError as exc:
+            return {'ok': False, 'error': str(exc)}
         category = str(
             data.get("category") or (existing["category"] if existing else "ota")
         ).strip().lower()
@@ -1567,21 +1701,31 @@ def admin_upsert_challenge(data: dict[str, Any]) -> dict[str, Any]:
                 category,
             ),
         )
+        conn.execute('UPDATE challenge_defs SET identity_id=?, edition_id=?, duration_group=?, repeat_policy=? WHERE id=?', (
+            existing['identity_id'] if existing else data.get('identity_id') or data['id'],
+            existing['edition_id'] if existing else data.get('edition_id') or data['id'], group, repeat, data['id']))
+        for field in ('available_from', 'available_until', 'published_at'):
+            if field in data:
+                conn.execute(f'UPDATE challenge_defs SET {field}=? WHERE id=?', (data[field] or None, data['id']))
+        ensure_catalog_records(conn)
+        from app.services.badges import publish_rosters
+        if publish:
+            publish_rosters(conn)
         updated = conn.execute(
             "SELECT * FROM challenge_defs WHERE id=?", (data["id"],)
         ).fetchone()
-        record_change(conn, existing, updated)
+        actor = str(data.get('actor') or 'legacy_admin')
+        reason = str(data.get('reason') or 'Compatibility catalog update')
+        source = str(data.get('source') or 'legacy_admin')
+        conn.execute('UPDATE definition_revisions SET actor=?,source=?,reason=? WHERE id>? AND challenge_id=?',
+                     (actor, source, reason, previous_revision, data['id']))
+        record_change(conn, existing, updated, note=reason)
     return {"ok": True}
 
 
 def admin_delete_challenge(challenge_id: str) -> dict[str, Any]:
-    with db_session() as conn:
-        existing = conn.execute(
-            "SELECT * FROM challenge_defs WHERE id=?", (challenge_id,)
-        ).fetchone()
-        conn.execute("DELETE FROM challenge_defs WHERE id=?", (challenge_id,))
-        record_change(conn, existing, None)
-    return {"ok": True}
+    from app.services.lifecycle import retire_challenge
+    return retire_challenge(challenge_id, actor='legacy_admin', reason='Administrative retirement (legacy delete action)')
 
 
 def completed_challenge_ids(discord_id: str) -> set[str]:
@@ -1682,11 +1826,13 @@ def _scored_board() -> list[dict[str, Any]]:
         d["points"] = sql_int(d.get("points") or 0)
         out.append(d)
     if out:
-        swept_map = completed_tiers_for([str(d["discord_id"]) for d in out])
-        for d in out:
-            extra = _sweep_bonus_total(swept_map.get(str(d["discord_id"]), []))
-            d["points"] = sql_int(int(d["points"]) + extra)
-            d["n"] = d["points"]
+        with db_session() as conn:
+            from app.services import scoring, badges
+            for d in out:
+                scoring.sync_user(conn, str(d['discord_id']))
+                badges.sync_user(conn, str(d['discord_id']))
+                d['points'] = scoring.user_points(conn, str(d['discord_id']))
+                d['n'] = d['points']
         out.sort(
             key=lambda d: (-int(d["points"]), -int(d["clears"]), int(d["fails"]))
         )
@@ -1704,15 +1850,10 @@ def top_completers(limit: int = 15) -> list[dict[str, Any]]:
 def challenge_points(discord_id: str) -> int:
     """Tier-weighted leaderboard points (clears + sweep bonuses)."""
     with db_session() as conn:
-        row = conn.execute(
-            f"SELECT COALESCE(SUM({_TIER_POINTS_SQL}), 0) AS n "
-            "FROM attempts a "
-            "JOIN challenge_defs c ON c.id=a.challenge_id "
-            "WHERE a.discord_id=? AND a.status='completed'",
-            (str(discord_id),),
-        ).fetchone()
-        base = int(row["n"] if row else 0)
-    return sql_int(base + _sweep_bonus_total(completed_tiers(str(discord_id))))
+        from app.services import scoring, badges
+        scoring.sync_user(conn, str(discord_id))
+        badges.sync_user(conn, str(discord_id))
+        return scoring.user_points(conn, str(discord_id))
 
 
 def leaderboard_standing(discord_id: str) -> dict[str, Any]:
@@ -1725,7 +1866,7 @@ def leaderboard_standing(discord_id: str) -> dict[str, Any]:
         0,
     )
     if points <= 0:
-        return {"points": 0, "rank": None, "ranked": ranked}
+        return {"points": points, "rank": None, "ranked": ranked}
     better = sum(1 for r in rows if int(r["points"]) > points)
     return {"points": points, "rank": better + 1, "ranked": ranked}
 
@@ -1738,47 +1879,21 @@ def completed_tiers(discord_id: str, year: int | None = None) -> list[str]:
 def completed_tiers_for(
     discord_ids: list[str], year: int | None = None
 ) -> dict[str, list[str]]:
-    """Map discord_id → swept tiers (easy < medium < hard < ota_master)."""
-    out: dict[str, list[str]] = {str(i): [] for i in discord_ids}
+    """Daily-only styling, backed by earned year-scoped receipts."""
     ids = [str(i) for i in discord_ids if i]
+    out: dict[str, list[str]] = {str(i): [] for i in discord_ids}
     if not ids:
         return out
     with db_session() as conn:
+        from app.services import badges
         if year is None:
-            row = conn.execute(
-                "SELECT MAX(year) AS y FROM challenge_defs"
-            ).fetchone()
-            year = int(row["y"]) if row and row["y"] is not None else None
-        if year is None:
-            return out
-        catalog = conn.execute(
-            "SELECT LOWER(tier) AS tier, COUNT(*) AS n FROM challenge_defs "
-            "WHERE year=? GROUP BY LOWER(tier)",
-            (int(year),),
-        ).fetchall()
-        need = {
-            str(r["tier"]): int(r["n"])
-            for r in catalog
-            if int(r["n"]) > 0 and str(r["tier"]) in _TIER_RANK
-        }
-        if not need:
-            return out
-        ph = ",".join("?" * len(ids))
-        rows = conn.execute(
-            "SELECT a.discord_id AS did, LOWER(c.tier) AS tier, "
-            "COUNT(DISTINCT a.challenge_id) AS n "
-            "FROM attempts a JOIN challenge_defs c ON c.id=a.challenge_id "
-            f"WHERE a.status='completed' AND c.year=? AND a.discord_id IN ({ph}) "
-            "GROUP BY a.discord_id, LOWER(c.tier)",
-            [int(year), *ids],
-        ).fetchall()
-    got: dict[str, dict[str, int]] = {}
-    for r in rows:
-        got.setdefault(str(r["did"]), {})[str(r["tier"])] = int(r["n"])
-    order = ("easy", "medium", "hard", "ota_master")
-    for did in ids:
-        have = got.get(did, {})
-        out[did] = [t for t in order if t in need and have.get(t, 0) >= need[t]]
+            # Name styling and compact Daily stamps roll over with the header,
+            # even when next year's catalog has not yet been published.
+            year = datetime.now(timezone.utc).year
+        for did in ids:
+            badges.sync_user(conn, did)
+            tiers = {r['tier'] for r in conn.execute("SELECT tier FROM badge_receipts WHERE discord_id=? AND duration_group='daily' AND year=? AND status='active'", (did, int(year)))}
+            out[did] = [tier for tier in _TIER_RANK if tier in tiers]
     return out
 
 
@@ -1796,10 +1911,12 @@ def tier_slot_progress(
             year = int(row["y"]) if row and row["y"] is not None else None
         if year is None:
             return out
+        from app.catalog import availability_sql
+        predicate, times = availability_sql()
         catalog = conn.execute(
             "SELECT id, LOWER(tier) AS tier FROM challenge_defs "
-            "WHERE year=? ORDER BY number, id",
-            (int(year),),
+            "WHERE year=? AND duration_group='daily' AND " + predicate + ' ORDER BY number, id',
+            (int(year), *times),
         ).fetchall()
         done = {
             str(r["challenge_id"])
@@ -1829,20 +1946,29 @@ def category_progress(discord_id: str, year: int | None = None) -> dict[str, dic
             year = row["y"] if row else None
         if year is None:
             return out
+        from app.services import scoring
+        scoring.sync_user(conn, str(discord_id))
+        from app.catalog import availability_sql
+        predicate, times = availability_sql('c')
         rows = conn.execute(
-            "SELECT c.*, EXISTS(SELECT 1 FROM attempts a "
-            "WHERE a.challenge_id=c.id AND a.discord_id=? "
-            "AND a.status='completed') AS cleared "
-            "FROM challenge_defs c WHERE c.year=?",
-            (str(discord_id), int(year)),
+            "SELECT c.*, l.effective_points AS earned_points, a.rules_snapshot_json AS earned_rules, "
+            "a.effective_completion_json AS earned_facts FROM challenge_defs c "
+            "LEFT JOIN attempts a ON a.id=(SELECT first.id FROM attempts first WHERE first.challenge_id=c.id "
+            "AND first.discord_id=? AND first.status='completed' ORDER BY first.id LIMIT 1) "
+            "LEFT JOIN award_ledger l ON l.attempt_id=a.id AND l.award_type='completion' "
+            "WHERE c.year=? AND " + predicate,
+            (str(discord_id), int(year), *times),
         ).fetchall()
     for row in rows:
         c = dict(row)
+        if c['earned_points'] is not None:
+            accepted = {**json.loads(c.get('earned_rules') or '{}'), **json.loads(c.get('earned_facts') or '{}')}
+            c.update({key: accepted[key] for key in ('category', 'media_filter') if accepted.get(key) is not None})
         stats = out[c["category"]]
-        points = max(0, reward_points(c))
+        points = int(c['earned_points']) if c['earned_points'] is not None else reward_points(c)
         stats["total"] += 1
         stats["total_points"] += points
-        if not c["cleared"]:
+        if c['earned_points'] is None:
             continue
         stats["clears"] += 1
         stats["points"] += points
