@@ -1,12 +1,50 @@
 # Challenge lifecycle and badges: implementation and deployment handoff
 
-Status: **deployed on the Mac mini, 2026-10-16**, including Weekly, compressed
-scoring, four duration badges and scoped formula administration. The release is
-running with Discord connected and commands synced. Advanced workflow limitations
-and the remaining manual acceptance coverage are listed below; deployment does
-not claim every item in the broader planning document is implemented.
+Status: **follow-up patch deployed on the Mac mini, 2026-10-17 UTC
+(2026-10-16 Pacific)** from source commit `9594779`. The earlier release includes
+Weekly, compressed scoring, four duration badges and scoped formula administration.
+The patch adds reviewed confirmation/scoring fixes and the revert optimization.
+Discord is connected and commands are synced. Advanced workflow limitations and
+remaining manual acceptance coverage are listed below; deployment does not claim
+every item in the broader planning document is implemented.
 
-## Current continuation status — locally validated release candidate
+## Follow-up patch deployment — 2026-10-17 UTC
+
+- Explicit user authorization to deploy followed the completed commit/push.
+  Built with `docker-compose.yml` plus `compose.mac.yaml` from an allow-listed,
+  tracked source/assets context. Runtime data, `.env` and Tailscale state were
+  excluded; the build used `--env-file /dev/null` and `env_file: !reset []`.
+- Release image: `challengebot-release:patch-20261017t014342z`.
+  Deployed image identity:
+  `sha256:93078a02b133ff0f793b67cacff3e4d3ab45c60fbb1a4a62c8c1ce6bb0e6023d`.
+  Deployed application file hashes match the committed source.
+- Before cutover, saved a private consistent SQLite online backup plus matching
+  catalogs, achievement definitions/uploads, artwork and protected configuration.
+  Retained the exact running image as
+  `challengebot-rollback:pre-patch-20261017t014342z`. No Tailscale state was copied.
+- Initial backup rehearsal passed initialization and second-start reconciliation.
+  Then stopped only the application writer, verified no nonempty WAL remained,
+  took a final consistent pre-upgrade snapshot, and repeated both rehearsal checks
+  successfully before recreating only `challengetracker` with the tested image.
+- Exact final candidate passed the network-disabled, read-only, tmpfs-only Linux
+  scoring smoke at 1,000 synthetic members / 12,000 attempts: preview 0.376s,
+  apply 0.422s, revert 0.037s, including retries, snapshot/award restoration,
+  initialization after apply/revert, integrity and foreign keys.
+- Post-deployment consistent snapshot reconciles against the final pre-upgrade
+  baseline: every member's effective points and attempt counts/statuses are
+  unchanged; database integrity is `ok` and foreign keys are clean.
+- `/health` reports `{"ok":true,"discord":true}`; the application is healthy.
+  Authenticated lifecycle/catalog/history/roster pages return 200 with expected
+  controls and origin/referrer policy. Discord login and command sync are confirmed.
+  The gateway remains healthy with the same container ID and start time; it was
+  not recreated or restarted. No test announcements were sent.
+- An isolated restore drill using the preserved old image and final pre-upgrade
+  backup passed integrity/FKs and reconciled counts, statuses and all member totals.
+  Backups, runtime configuration, logs, reports and metadata remain private outside
+  Git. The deployed patch is complete; live interaction/endpoint-contract and broader
+  load acceptance remain the separately documented limitations, not new release work.
+
+## Follow-up validation history — before patch deployment
 
 - Revalidated the current checkout: **347 passed, 1 skipped**, with the two
   existing deprecation warnings; `git diff --check` is clean. The skip is the new
@@ -62,15 +100,12 @@ not claim every item in the broader planning document is implemented.
   SQLite. It checked scoped awards/overrides, open snapshots, exact restoration,
   retries, initialization after apply/revert, and integrity/FKs. This was a targeted
   scoring smoke, not a full Linux pytest run or live Discord/Tadoku acceptance.
-- **Release state:** the previously reviewed confirmation/scoring fixes, revert
-  optimization and validation are packaged as a local follow-up commit, not deployed
-  or pushed. No production database, credentials,
-  member evidence or running service was accessed. The deployed release recorded
-  below remains unchanged; current health was not rechecked during this continuation.
-- **Next release step:** obtain explicit deployment authorization, then use the
-  private backup/rehearsal/restore procedure
-  below. Real Discord member/admin acceptance, controlled live Tadoku contract checks
-  and broader concurrent/large-catalog load coverage remain outstanding.
+- The validation work above initially used no production database, credentials,
+  member evidence or running service. Source commit `9594779` was subsequently
+  pushed and deployed with explicit authorization as recorded at the top of this
+  document. No further implementation or deployment step is pending for this patch.
+  Real Discord member/admin acceptance, controlled live Tadoku contract checks and
+  broader concurrent/large-catalog load coverage remain outstanding.
 
 Reproduce the opt-in synthetic check (use the project's Python environment):
 
@@ -78,7 +113,7 @@ Reproduce the opt-in synthetic check (use the project's Python environment):
 CHALLENGEBOT_LOAD_MEMBERS=1000 python -m pytest -o addopts='' -q -s tests/test_scoring_load.py
 ```
 
-## Post-deployment validation follow-up — local only
+## Earlier post-deployment validation notes — historical, since deployed above
 
 - Re-ran the baseline suite: **302 passed**, with the same two existing
   deprecation warnings. Added eight disposable-database regression cases covering
