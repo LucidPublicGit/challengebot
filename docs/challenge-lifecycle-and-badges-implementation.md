@@ -6,6 +6,128 @@ running with Discord connected and commands synced. Advanced workflow limitation
 and the remaining manual acceptance coverage are listed below; deployment does
 not claim every item in the broader planning document is implemented.
 
+## Current continuation status — locally validated release candidate
+
+- Revalidated the current checkout: **347 passed, 1 skipped**, with the two
+  existing deprecation warnings; `git diff --check` is clean. The skip is the new
+  opt-in synthetic scale check, which passed separately at both sizes below.
+- Added `tests/test_scoring_load.py`, using the existing fail-closed disposable
+  SQLite guards, real catalog backfill and receipt synchronization, and no network
+  providers. It covers scoped Monthly recalculation with inherited/absolute Monthly
+  and unrelated Weekly awards; completed/active/scheduled attempts; original rules
+  and award preservation; every member's totals; apply/revert retries; initialization
+  after apply and revert; exact snapshot restoration; and SQLite integrity/FKs.
+- **200 synthetic members / 2,400 attempts** passed: preview 0.081s, apply 0.096s,
+  revert 0.352s. **1,000 members / 12,000 attempts** passed: preview 0.405s,
+  apply 0.471s, revert **8.551s**. These are single-run local observations, not
+  latency guarantees, concurrent-load results, Docker benchmarks or live acceptance.
+  Seeded histories intentionally exercise multiple statuses on the same edition;
+  this is a scoring stress fixture, not an end-to-end eligibility simulation.
+- Profiling reproduced the slow revert and attributed over eight seconds to JSON
+  decoding: each receipt/open snapshot reparsed the complete saved operation result.
+  `revert_operation` now decodes that immutable result once under the existing write
+  lock, retaining the same policy checks, compensation and legacy snapshot fallback.
+  A non-timing regression verifies one decode across multiple receipts and opens.
+- Both scale checks pass after optimization: at 200 members, preview 0.081s,
+  apply 0.093s, revert **0.010s**; at 1,000 members, preview 0.399s, apply 0.468s,
+  revert **0.049s** (about 170× faster than the initial observation). Exact award,
+  rule, snapshot and total restoration, retry idempotency and restart checks pass.
+  These remain local synthetic observations, not general performance guarantees.
+- Focused independent review returned **no actionable findings**, with narrow
+  signoff for cached result decoding, the decode-count regression and disposable
+  scale test. The reviewer independently passed **342 tests, 1 skipped** and the
+  1,000-member / 12,000-attempt scale check (revert **0.054s**), plus five
+  disposable checks for missing snapshot maps/entries and complete transaction
+  rollback on changed-open, changed-receipt-policy and void-receipt conflicts.
+  `git diff --check` passed. This is local scoped signoff, not release-wide/live
+  acceptance. Concurrent and broader-catalog performance remain unvalidated.
+- Converted the reviewer's five one-off probes into durable parameterized tests:
+  missing open-snapshot map, missing individual entry, and transaction rollback on
+  changed-open, changed-receipt-policy and void-receipt conflicts. The rollback
+  tests compare attempts, awards, adjustments, policies, operations, definitions
+  and metadata before/after rejection. All 27 focused scoring regressions pass.
+  A second focused independent review returned **no actionable findings** and
+  narrow signoff for all five additions. The reviewer passed 44 scoring tests
+  and the 1,000-member scale check (revert 0.054s), including retries/restarts.
+- Built `challengebot-lifecycle-validation:release-candidate` with the Mac Compose
+  pair from an allow-listed temporary source/assets context. Runtime `.env`, DB,
+  Tailscale state and other runtime directories were excluded; `--env-file /dev/null`
+  plus `env_file: !reset []` excluded runtime configuration. No Compose `up` ran.
+  Built manifest: `sha256:54d07a2611c80193da947ccba1214627c02bdd987a4c48a0c945cf21d8f506bc`.
+- The Python 3.12 Linux image passed the 1,000-member / 12,000-attempt scoring
+  round trip with preview 0.375s, apply 0.421s and revert **0.038s**. The smoke
+  reused the scale-test function with only its pytest import/decorator removed,
+  invoking it against a new temporary directory. The container had network disabled,
+  read-only root, dropped capabilities, no host mounts/configuration and tmpfs-only
+  SQLite. It checked scoped awards/overrides, open snapshots, exact restoration,
+  retries, initialization after apply/revert, and integrity/FKs. This was a targeted
+  scoring smoke, not a full Linux pytest run or live Discord/Tadoku acceptance.
+- **Release state:** the previously reviewed confirmation/scoring fixes, revert
+  optimization and validation are packaged as a local follow-up commit, not deployed
+  or pushed. No production database, credentials,
+  member evidence or running service was accessed. The deployed release recorded
+  below remains unchanged; current health was not rechecked during this continuation.
+- **Next release step:** obtain explicit deployment authorization, then use the
+  private backup/rehearsal/restore procedure
+  below. Real Discord member/admin acceptance, controlled live Tadoku contract checks
+  and broader concurrent/large-catalog load coverage remain outstanding.
+
+Reproduce the opt-in synthetic check (use the project's Python environment):
+
+```sh
+CHALLENGEBOT_LOAD_MEMBERS=1000 python -m pytest -o addopts='' -q -s tests/test_scoring_load.py
+```
+
+## Post-deployment validation follow-up — local only
+
+- Re-ran the baseline suite: **302 passed**, with the same two existing
+  deprecation warnings. Added eight disposable-database regression cases covering
+  the default-scoring cutover across active/scheduled attempts, inherited/absolute
+  awards, and corrected tier/duration classifications. They verify scoped base
+  preservation for inherited awards, unchanged absolute overrides, retained original
+  rules and audited prior snapshots, restart/delayed activation, completion totals
+  and foreign-key integrity.
+- The expanded local suite passes: **341 passed**, with only the existing
+  Starlette/httpx and Pillow deprecation warnings; `git diff --check` is clean.
+  These tests are local follow-up changes, not a new deployed release.
+- The fresh read-only independent review completed and found three issues:
+  in-flight confirmation could overwrite a reviewed correction, current catalog
+  overrides could hide older inherited awards from recalculation, and revert
+  conflicts included disjoint or already-withdrawn policy revisions. These are
+  resolved locally by the changes below, not deployed fixes or a release-wide
+  review signoff.
+- Confirmation now checks active status and correction revision under a write
+  lock before committing, rejects stale verification, and retains current scoring
+  snapshots for scoring-only changes. Four synthetic provider-wait regressions
+  cover reviewed reclassification, owner content edits, voids and scoring-only
+  revisions.
+- Historical recalculation now inspects each receipt/open snapshot's accepted
+  override rather than excluding an entire edition using its current catalog
+  override. Revert conflicts ignore withdrawn revisions and proven-disjoint
+  catalog scopes, while retaining protection for still-effective overlapping
+  revisions and scopes that may intersect in future editions. Twenty-one new
+  scoring regressions cover inherited versus absolute awards, open/scheduled
+  snapshots, mixed/disjoint scopes, successive reverts and genuine conflicts.
+- The scoring implementation delegate ended with a provider authentication error
+  after leaving changes; the parent inspected those changes and reran the complete
+  suite successfully. The second read-only review confirmed the two scoring
+  fixes and original provider-wait reproduction, but found a narrower concurrent
+  writer edge when saving aliases/log IDs adopted a newer revision after deriving
+  old verification inputs. Matching saves now require the originally selected
+  active revision and return their accepted row under the same lock; confirmation
+  derives verification inputs only afterward. Six additional cases cover edits
+  before/after matching saves and ordinary alias/log-ID confirmation.
+- The third focused read-only review returned **no actionable findings** and
+  narrow signoff for the matching-revision fix and its interactions with the
+  previously reviewed changes. It independently passed all **341 tests**, reran
+  all six matching scenarios with corrections on a separate writer thread, and
+  confirmed `git diff --check`. Together with the second round's scoring signoff,
+  this closes the reported local review findings, not release-wide/live acceptance.
+  These fixes are local and uncommitted; production remains unchanged.
+- No production database, runtime configuration, live member evidence or running
+  service was accessed or changed for this follow-up. Live Discord interaction,
+  Tadoku endpoint-contract and load acceptance remain outstanding.
+
 ## Weekly and revised defaults — deployed 2026-10-16
 
 - Removed the **Past Challenges** button from the Discord difficulty picker.
@@ -171,16 +293,16 @@ not claim every item in the broader planning document is implemented.
   Explicit open scoring revisions carry policy ID, actor/reason/cutover and actual
   applied snapshots for exact compensating revert. An explicit revision applied
   after a delayed scheduled start survives scheduler catch-up.
-- Versioned Daily rosters include Physical and exclude Monthly/Yearly. Earned
+- Versioned Daily rosters include Physical and exclude Weekly/Monthly/Yearly. Earned
   receipts retain their qualifying roster; completion correction checks alternatives
   before revocation. Daily bonus entitlement is unique per user/year/tier. Lifetime
-  Monthly/Yearly receipts retain lower tiers and alternative qualifying clears.
+  Weekly/Monthly/Yearly receipts retain lower tiers and alternative qualifying clears.
 - Deliberate historical Daily roster repair at `/lifecycle/rosters`: read-only
   preview, explicit requirements, member progress/award/signed-bonus impact,
   stale/tamper rejection and atomic idempotent apply. Immutable supersession chains
   retain old roster and receipt history and cannot branch. Repair reconciliation
   is scoped to the selected Daily cohort, not unrelated lifetime awards.
-- Up to three header badges 日/月/年, highest tier for each duration; Daily header,
+- Up to four header badges 日/週/月/年, highest tier for each duration; Daily header,
   compact stamps and name styling use the current UTC year. Achievement artwork
   and profile sections remain. Mac CJK fallback fonts and long-name truncation added.
 - Difficulty-first duration sections, populated duration filters with All, bounded
@@ -234,7 +356,7 @@ initial synthetic rehearsals and container smoke checks used no live database,
 member evidence, service credentials or Tailscale state. The release rehearsal
 above separately used a private recoverable production backup.
 
-- Latest follow-up local suite: **302 passed**, with Starlette/httpx and Pillow
+- Latest follow-up local suite: **341 passed**, with Starlette/httpx and Pillow
   deprecation warnings only. `git diff --check` is clean.
 - `tests/conftest.py` installs safety guards during collection: SQLite connections
   may target only memory or resolved OS temporary roots; repository runtime `.env`
@@ -294,8 +416,9 @@ python -m pytest -o addopts='' -q
 1. Browser scoring preview/apply/revert and card visual inspection passed. Discord
    command registration and gateway readiness are verified; real member/admin
    interaction acceptance has not been exercised. Targeted authorization, actor,
-   source, stale-preview and entitlement tests pass; no completed independent
-   review signoff is claimed. Private compatibility helpers with `legacy_admin`
+   source, stale-preview and entitlement tests pass. The local follow-up fixes
+   have narrow independent review signoff as recorded above, not release-wide or
+   live-interaction acceptance. Private compatibility helpers with `legacy_admin`
    defaults must not be exposed as a shortcut around reviewed operations.
 2. Edition/identity retirement, restoration and cancellation support one pending
    retirement/restoration pair. A dedicated editor for multiple disjoint future
@@ -307,8 +430,11 @@ python -m pytest -o addopts='' -q
    dates and unknown historical bonuses remain explicit provenance. The production
    rehearsal and deployed reconciliation passed without rewriting these unknowns.
 5. Startup observed successful live user-wide Tadoku pagination. A controlled live
-   endpoint-contract/cross-contest/year acceptance test and large-dataset load test
-   have not been performed. Incomplete evidence remains unavailable rather than
+   endpoint-contract/cross-contest/year acceptance test has not been performed.
+   The local synthetic scoring scale check above passed through 12,000 attempts,
+   and the identified repeated-decoding revert bottleneck is fixed locally;
+   concurrent workload, large-catalog and
+   live-data performance acceptance remain open. Incomplete evidence remains unavailable rather than
    definitive failure. Full-graph fingerprints and atomic recalculations favor
    correctness; staged background batches are not implemented.
 6. Calendar arithmetic is UTC. Host Compose timezone does not change captured

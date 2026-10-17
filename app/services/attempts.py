@@ -812,6 +812,7 @@ def user_update_attempt_content(
     log_ids: str | None = None,
     clear_fixup: bool = False,
     reason: str = 'Owner content/focus/match correction',
+    expected_revision: int | None = None,
 ) -> dict[str, Any]:
     """Audited owner edit of content/param/Tadoku fixup on own attempt (any status)."""
     from app.services.verify import strip_content_labels
@@ -835,6 +836,10 @@ def user_update_attempt_content(
         if not row:
             return {"ok": False, "error": "Attempt not found."}
         att = dict(row)
+        if expected_revision is not None and (
+            att['status'] != 'active' or int(att.get('correction_revision') or 0) != expected_revision
+        ):
+            return {'ok': False, 'error': 'Attempt changed during verification; confirm again.'}
         new_content = att.get("content")
         if content is not None:
             new_content = (content or "").strip() or None
@@ -876,8 +881,12 @@ def user_update_attempt_content(
             current = dict(conn.execute('SELECT * FROM attempts WHERE id=?', (att['id'],)).fetchone())
             conn.execute('INSERT INTO attempt_events(attempt_id,event_type,before_json,after_json,effective_at,recorded_at,actor,source,reason,operation_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
                          (att['id'], 'owner_content_correction', json.dumps(att), json.dumps(current), utcnow_iso(), utcnow_iso(), str(discord_id), 'discord_user', reason.strip(), operation_id))
+        # Return the accepted row while still holding the lock. A separate
+        # reload could silently adopt a concurrent correction's newer revision.
+        accepted = dict(conn.execute('SELECT * FROM attempts WHERE id=?', (att['id'],)).fetchone())
     return {
         "ok": True,
+        "attempt": accepted,
         "attempt_id": att["id"],
         "content": new_content,
         "param": new_param,
@@ -953,6 +962,22 @@ async def confirm_attempt(
         }
     att = picked["attempt"]
 
+    # Persist matching changes against exactly the revision selected above,
+    # before deriving any verification inputs. Never reload a newer revision
+    # after deriving the work title, deadline or verification method.
+    if (aliases is not None or log_ids is not None) and not dry_run:
+        fix = _parse_fixup(att.get('fixup_json'))
+        updated = user_update_attempt_content(
+            discord_id, attempt_id=att['id'],
+            aliases=','.join(_merge_unique(fix.get('aliases') or [], _parse_exclude(aliases))),
+            log_ids=','.join(_merge_unique(fix.get('log_ids') or [], _parse_exclude(log_ids))),
+            reason='Verification matching corrections supplied during confirmation',
+            expected_revision=int(att.get('correction_revision') or 0),
+        )
+        if not updated.get('ok'):
+            return updated
+        att = _captured_rules({**att, **updated['attempt']})
+
     now = datetime.now(timezone.utc)
     ends = parse_iso(att["ends_at"])
     if ends.tzinfo is None:
@@ -988,13 +1013,6 @@ async def confirm_attempt(
         verify_param = None
     else:
         verify_param = att.get("param")
-
-    # Persist any new aliases / log ids provided on this confirm
-    if (aliases is not None or log_ids is not None) and not dry_run:
-        user_update_attempt_content(discord_id, attempt_id=att['id'],
-                                    aliases=','.join(alias_list), log_ids=','.join(include_ids),
-                                    reason='Verification matching corrections supplied during confirmation')
-        att = get_attempt(att['id']) or att
 
     use_honor = force_honor or (
         honor_override and bool(rt.get("allow_honor_override", True))
@@ -1465,6 +1483,20 @@ def _complete(
     with db_session() as conn:
         from app.services.achievements import completion_snapshot, sync_user
 
+        # Verification may await a provider while a reviewed correction (or an
+        # owner content/matching edit) changes the attempt. Lock before checking
+        # its revision so stale evidence cannot overwrite that accepted state.
+        conn.execute('BEGIN IMMEDIATE')
+        current = conn.execute('SELECT * FROM attempts WHERE id=?', (att['id'],)).fetchone()
+        if not current or current['status'] != 'active':
+            return {"ok": False, "error": "This attempt is no longer active."}
+        revision = int(att.get('correction_revision') or 0)
+        if int(current['correction_revision'] or 0) != revision:
+            return {"ok": False, "error": "Attempt changed during verification; confirm again."}
+        # Scoring-only changes need not invalidate verification, but their current
+        # snapshots must be retained in completion facts rather than stale copies.
+        att = _captured_rules({**att, **dict(current)})
+
         if evidence.get("log_source") == "tadoku":
             binding = conn.execute("SELECT tadoku_user_id FROM users WHERE discord_id=?",
                                    (att["discord_id"],)).fetchone()
@@ -1478,7 +1510,7 @@ def _complete(
         cur = conn.execute(
             "UPDATE attempts SET status='completed', completed_at=?, "
             "verify_method=?, evidence_json=?, note=?, content=?, challenge_snapshot_json=? "
-            "WHERE id=? AND status='active'",
+            "WHERE id=? AND status='active' AND COALESCE(correction_revision,0)=?",
             (
                 now,
                 method,
@@ -1487,6 +1519,7 @@ def _complete(
                 content_val,
                 completion_snapshot(snapshot),
                 att["id"],
+                revision,
             ),
         )
         if not cur.rowcount:

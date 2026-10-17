@@ -81,6 +81,62 @@ def test_new_defaults_and_weekly_honor_completion_concurrency_and_restart():
         cleanup_db(path)
 
 
+@pytest.mark.parametrize('status', ['active', 'scheduled'])
+@pytest.mark.parametrize('override', [None, 7])
+@pytest.mark.parametrize('changes, expected', [({'duration_group': 'yearly'}, 10), ({'tier': 'medium'}, 5)])
+def test_default_cutover_preserves_scoped_corrected_open_entitlements(status, override, changes, expected):
+    path = setup_tmp_db()
+    try:
+        cid = 'tales-trails-2026'
+        preview = scoring.preview_recalculation({'base_points': {'easy': 4}},
+                                                {'edition_ids': [cid], 'retroactive': False})
+        scoring.apply_recalculation(preview, actor='test-admin', reason='Scoped accepted base',
+                                    operation_id='pre-cutover-scoped-base')
+        attempts.ensure_user('cutover-member')
+        start = datetime.now(timezone.utc) - timedelta(hours=1)
+        with db_session() as conn:
+            conn.execute('UPDATE challenge_defs SET points=? WHERE id=?', (override, cid))
+            challenge = dict(conn.execute('SELECT * FROM challenge_defs WHERE id=?', (cid,)).fetchone())
+            aid = conn.execute('INSERT INTO attempts(discord_id,challenge_id,param,status,started_at,ends_at) VALUES(?,?,?,?,?,?)',
+                               ('cutover-member', cid, 'Synthetic selected game', status, start.isoformat(),
+                                lifecycle.calculate_deadline(challenge, start).isoformat())).lastrowid
+            lifecycle.capture_attempt(conn, aid, challenge)
+        original_rules = attempts.get_attempt(aid)['rules_snapshot_json']
+        correction = lifecycle.preview_correction(aid, changes, recompute_deadline=True)
+        lifecycle.apply_correction(correction, actor='test-reviewer', reason='Correct classification',
+                                   operation_id='pre-cutover-correction')
+        old_snapshot = attempts.get_attempt(aid)['scoring_snapshot_json']
+        with db_session() as conn:
+            conn.execute("DELETE FROM meta WHERE key='duration-defaults-compressed-v1'")
+            conn.execute("DELETE FROM scoring_policies WHERE operation_id='duration-defaults-compressed-v1'")
+            conn.execute("DELETE FROM admin_operations WHERE operation_id='duration-defaults-compressed-v1'")
+        init_db(path)
+        revised = attempts.get_attempt(aid)['scoring_snapshot_json']
+        snapshot = json.loads(revised)
+        assert snapshot['points'] == (override if override is not None else expected)
+        assert attempts.get_attempt(aid)['rules_snapshot_json'] == original_rules
+        with db_session() as conn:
+            operation = conn.execute("SELECT payload_json FROM admin_operations WHERE operation_id='duration-defaults-compressed-v1'").fetchone()
+            changes_recorded = json.loads(operation[0])['open_attempts']
+        if override is None:
+            assert snapshot['policy']['base_points']['easy'] == 4
+            assert changes_recorded[0]['old_snapshot'] == old_snapshot
+        else:
+            # Absolute awards are deliberately excluded from the default rollout.
+            assert revised == old_snapshot
+            assert not changes_recorded
+        init_db(path)
+        if status == 'scheduled':
+            attempts.activate_due_scheduled()
+        assert json.loads(attempts.get_attempt(aid)['scoring_snapshot_json']) == snapshot
+        assert attempts._complete(attempts.get_attempt(aid), method='honor', evidence={'honor': True}, note=None)['ok']
+        with db_session() as conn:
+            assert scoring.user_points(conn, 'cutover-member') == (override if override is not None else expected)
+            assert not conn.execute('PRAGMA foreign_key_check').fetchall()
+    finally:
+        cleanup_db(path)
+
+
 def test_default_cutover_updates_open_preserves_completed_and_later_admin_changes():
     path = setup_tmp_db()
     try:

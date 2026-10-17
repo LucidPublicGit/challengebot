@@ -62,6 +62,13 @@ def _instant(value=None):
     return dt.astimezone(timezone.utc)
 
 
+def _unreverted_revisions(rows):
+    rows = list(rows)
+    reverted = {_load(row['policy_json'])['reverts_policy_id'] for row in rows
+                if 'reverts_policy_id' in _load(row['policy_json'])}
+    return [row for row in rows if row['id'] not in reverted]
+
+
 def current_policy(conn, challenge=None, *, at=None, through_id=None) -> dict:
     cutoff = _instant(at)
     result = {'base_points': dict(BASE_POINTS), 'multipliers': dict(LEGACY_MULTIPLIERS), 'formula_version': 'linear_v1'}
@@ -72,11 +79,7 @@ def current_policy(conn, challenge=None, *, at=None, through_id=None) -> dict:
     # Replaying the remaining revisions restores each challenge's applicable
     # baseline even when prior edition/identity/year scopes overlap differently.
     # Filtering first retains the original formula for historical snapshots.
-    reverted = {_load(row['policy_json'])['reverts_policy_id'] for row in rows
-                if 'reverts_policy_id' in _load(row['policy_json'])}
-    for row in rows:
-        if row['id'] in reverted:
-            continue
+    for row in _unreverted_revisions(rows):
         scope = _load(row['scope_json'])
         scoped = any(k in scope for k in ('edition_ids', 'identity_ids', 'years'))
         if scoped and (challenge is None or not _scope_match(challenge, scope)):
@@ -349,6 +352,32 @@ def _scope_match(ch, scope):
     return True
 
 
+def _scopes_overlap(conn, left, right):
+    # Formula replay uses only catalog scope; date/retroactive filters apply to
+    # receipts and open attempts, not the policy for future starts.
+    for field in ('edition_ids', 'identity_ids', 'years'):
+        if field in left and not left[field] or field in right and not right[field]:
+            return False
+        if field in left and field in right and not set(left[field]) & set(right[field]):
+            return False
+    editions = left.get('edition_ids', right.get('edition_ids'))
+    if editions is None:
+        # Identity/year scopes can also intersect in editions published later.
+        return True
+    if 'edition_ids' in left and 'edition_ids' in right:
+        editions = set(left['edition_ids']) & set(right['edition_ids'])
+    for edition in editions:
+        ch = conn.execute('SELECT id AS edition_id,identity_id,year FROM challenge_editions WHERE id=?',
+                          (edition,)).fetchone()
+        if ch is None:
+            ch = conn.execute('SELECT COALESCE(edition_id,id) AS edition_id,COALESCE(identity_id,id) AS identity_id,year '
+                              'FROM challenge_defs WHERE COALESCE(edition_id,id)=?', (edition,)).fetchone()
+        # An unknown edition cannot prove that the scopes are disjoint.
+        if ch is None or (_scope_match(dict(ch), left) and _scope_match(dict(ch), right)):
+            return True
+    return False
+
+
 def _date_match(a, scope):
     field = scope.get('date_field', 'started_at')
     value = a.get('actual_completed_at') if field == 'completed_at' else a.get(field)
@@ -396,7 +425,8 @@ def _preview(conn, policy, scope, include_open, include_overrides):
             continue
         if ch['points'] is not None and not include_overrides and 'points_override' not in policy:
             excluded.append(ch['id'])
-            continue
+            # The catalog override governs future starts. Historical inherited
+            # receipts/snapshots in this edition must still be examined below.
         if 'points_override' in policy:
             definitions.append({'id': ch['id'], 'old_points': ch['points'], 'new_points': policy['points_override']})
             ch['points'] = policy['points_override']
@@ -539,6 +569,12 @@ def revert_operation(operation_id, *, actor, reason, revert_operation_id):
         if conn.execute('SELECT 1 FROM admin_operations WHERE reverts_operation_id=?', (operation_id,)).fetchone():
             raise ValueError('operation has already been reverted')
         preview = _load(original['payload_json'])
+        # The result contains every applied open snapshot. Decode once, not once
+        # per receipt/snapshot, so large reverts do not repeatedly parse the
+        # entire operation result while holding the SQLite write lock.
+        original_result = _load(original['result_json'])
+        original_policy_id = original_result['policy_id']
+        applied_open = original_result.get('open_snapshots', {})
         # Compensation subtracts the original delta from the current effective award;
         # intervening operations are retained instead of restoring cached totals.
         adjusted = []
@@ -552,7 +588,7 @@ def revert_operation(operation_id, *, actor, reason, revert_operation_id):
             adjusted.append({'source_key': change['source_key'], 'new_points': target})
         for source in preview['changes']:
             receipt = conn.execute('SELECT current_policy_id,metadata_json FROM award_ledger WHERE source_key=?', (source['source_key'],)).fetchone()
-            if receipt['current_policy_id'] != _load(original['result_json'])['policy_id']:
+            if receipt['current_policy_id'] != original_policy_id:
                 raise ValueError('source scoring policy changed since operation; explicit new preview required')
             metadata = _load(receipt['metadata_json'])
             if 'points_override' in preview['policy']:
@@ -568,23 +604,25 @@ def revert_operation(operation_id, *, actor, reason, revert_operation_id):
             conn.execute('UPDATE challenge_defs SET points=? WHERE id=?', (d['old_points'], d['id']))
         for a in preview['open_attempts']:
             current = conn.execute('SELECT scoring_snapshot_json,status FROM attempts WHERE id=?', (a['attempt_id'],)).fetchone()
-            expected_snapshot = _load(original['result_json']).get('open_snapshots', {}).get(str(a['attempt_id']), a['new_snapshot'])
+            expected_snapshot = applied_open.get(str(a['attempt_id']), a['new_snapshot'])
             if not current or current[1] not in ('active','scheduled') or current[0] != _json(expected_snapshot):
                 raise ValueError('open attempt changed since operation')
             conn.execute('UPDATE attempts SET scoring_snapshot_json=? WHERE id=?', (a['old_snapshot'], a['attempt_id']))
-        # Revert only changed fields. Reject later overlapping formula revisions.
-        original_policy_id = _load(original['result_json'])['policy_id']
-        for field in ('base_points', 'multipliers'):
-            keys = preview['policy'].get(field, {})
-            if not keys:
+        # Revert only changed fields. Use the same withdrawal replay as policy
+        # reads, then reject only later revisions with overlapping catalog scope.
+        rows = conn.execute('SELECT id,policy_json,scope_json FROM scoring_policies ORDER BY id')
+        for later in _unreverted_revisions(rows):
+            if later['id'] <= original_policy_id:
                 continue
-            for later in conn.execute('SELECT policy_json FROM scoring_policies WHERE id>?', (original_policy_id,)):
-                if 'formula_version' in _load(later[0]) or set(_load(later[0]).get(field, {})) & set(keys):
-                    raise ValueError('policy changed since operation; explicit new preview required')
-        if 'formula_version' in preview['policy']:
-            for later in conn.execute('SELECT policy_json FROM scoring_policies WHERE id>?', (original_policy_id,)):
-                if set(_load(later[0])) & {'formula_version', 'base_points', 'multipliers'}:
-                    raise ValueError('policy changed since operation; explicit new preview required')
+            value = _load(later['policy_json'])
+            overlaps = any(
+                keys and ('formula_version' in value or set(keys) & set(value.get(field, {})))
+                for field in ('base_points', 'multipliers')
+                for keys in (preview['policy'].get(field, {}),)
+            ) or ('formula_version' in preview['policy'] and
+                  bool(set(value) & {'formula_version', 'base_points', 'multipliers'}))
+            if overlaps and _scopes_overlap(conn, preview['scope'], _load(later['scope_json'])):
+                raise ValueError('policy changed since operation; explicit new preview required')
         # Do not flatten heterogeneous prior scopes into a single replacement.
         # This internal marker is append-only and cannot be supplied as a policy
         # through preview_recalculation's public validation.
