@@ -2,6 +2,13 @@
 
 Discord bot + admin UI for yearly immersion challenges. Users log on **tadoku.app**; the bot verifies clears against Tadoku when possible.
 
+**Tadoku sign-in migration:** this bot only reads public user/contest logs and does
+not sign in or store Tadoku session cookies. No cookie migration is needed here;
+keep these requests anonymous (do not add `Authorization` or `X-Session-Token`).
+Tadoku's new `tadoku_session` cookie replaces `ory_kratos_session` only in clients
+that act as a signed-in account, such as Immersion Tracker. The log endpoints,
+user IDs and response bodies are unchanged.
+
 The current repository is [LucidPublicGit/challengebot](https://github.com/LucidPublicGit/challengebot).
 `ChallengeTracker` is the former repository name. The Mac mini checkout is
 `/Users/lucid/DevEnvPublic/challengebot`; its compatibility path

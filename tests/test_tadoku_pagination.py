@@ -14,6 +14,12 @@ END = datetime(2027, 1, 1, tzinfo=timezone.utc)
 
 def run_fetch(pages, **kwargs):
     async def request(client, method, url, **params):
+        # Public evidence must stay anonymous across Tadoku's identity migration.
+        assert method == "GET"
+        for name in ("Authorization", "X-Session-Token", "Cookie"):
+            assert name not in client.headers
+            assert name not in params.get("headers", {})
+        assert not client.cookies
         return httpx.Response(200, json=pages[params["params"]["page"]])
     with patch("app.tadoku.client.bounded_request", request):
         return asyncio.run(fetch_user_logs("synthetic", since=START, until=END, **kwargs))
