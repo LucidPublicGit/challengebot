@@ -1300,7 +1300,8 @@ async def preview_attempt_logs(
                 "id": str(log.get("id") or ""),
                 "series": series,
                 "amount": log.get("amount"),
-                "unit": log.get("unit") or log.get("unit_name"),
+                "unit": log.get("unit_key") or log.get("unit") or log.get("unit_name"),
+                "duration_seconds": log.get("duration_seconds"),
                 "tags": log.get("tags"),
             }
         )
@@ -1352,7 +1353,8 @@ async def probe_tadoku_link(
                 "id": log.get("id"),
                 "created_at": log.get("created_at"),
                 "amount": log.get("amount"),
-                "unit": log.get("unit") or log.get("unit_name"),
+                "unit": log.get("unit_key") or log.get("unit") or log.get("unit_name"),
+                "duration_seconds": log.get("duration_seconds"),
                 "tags": log.get("tags"),
                 "description": (log.get("description") or "")[:80],
             }

@@ -73,7 +73,7 @@ def _tags(log: dict) -> set[str]:
 
 
 def _unit_name(log: dict) -> str:
-    u = log.get("unit") or log.get("unit_name") or ""
+    u = log.get("unit_key") or log.get("unit") or log.get("unit_name") or ""
     if isinstance(u, dict):
         u = u.get("name") or u.get("label") or ""
     return str(u).strip().lower()

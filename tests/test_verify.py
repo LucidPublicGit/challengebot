@@ -442,3 +442,21 @@ if __name__ == "__main__":
             fn()
             print("ok", name)
     print("test_verify ok")
+
+
+def test_tadoku_canonical_unit_key_takes_precedence():
+    result = evaluate_logs(
+        [{"id": "key-log", "unit_key": "characters", "unit_name": "Page",
+          "amount": 20000, "activity": {"id": 1, "name": "Reading"}, "tags": ["vn"]}],
+        goal_kind="characters", goal_amount=20000, media_filter="vn",
+    )
+    assert result.ok, result.detail
+
+
+def test_tadoku_time_only_log_counts_minutes():
+    result = evaluate_logs(
+        [{"id": "time-log", "unit_name": "", "amount": 0,
+          "duration_seconds": 1800, "activity": {"id": 2, "name": "Listening"}, "tags": ["anime"]}],
+        goal_kind="minutes", goal_amount=30, media_filter="anime",
+    )
+    assert result.ok, result.detail
